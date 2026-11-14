@@ -1,7 +1,14 @@
 import { Canvas } from '@react-three/fiber'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { WorldServerUnavailableError, sceneMeshUrl, useSceneMeshAvailable, useWorld } from '../scene/api'
+import {
+  WorldServerUnavailableError,
+  sceneMeshUrl,
+  useDetectedFurniture,
+  useSceneMeshAvailable,
+  useWorld,
+} from '../scene/api'
 import { CameraController } from '../scene/CameraController'
+import { DetectedFurniture } from '../scene/DetectedFurniture'
 import { useEditorStore } from '../scene/editorStore'
 import { Furniture } from '../scene/Furniture'
 import { buildFloorGeometry } from '../scene/geometry'
@@ -9,7 +16,7 @@ import { PlacementController } from '../scene/PlacementController'
 import { SceneModel } from '../scene/SceneModel'
 import { SelectionController } from '../scene/SelectionController'
 import { TransformGizmo } from '../scene/TransformGizmo'
-import type { Floor, Scene } from '../scene/types'
+import type { DetectedObject, Floor, Scene } from '../scene/types'
 import { ShowcaseViewport } from '../showcase/ShowcaseViewport'
 import { ControlsHint, type Controls } from './ControlsHint'
 import { FlyIndicator } from './FlyIndicator'
@@ -51,34 +58,52 @@ export function SceneViewport({ sceneId }: SceneViewportProps) {
   )
 }
 
-type View = 'editor' | 'textured'
+type View = 'editor' | 'textured' | 'furnished'
+
+/** Stable empty list, so hiding scanned furniture doesn't rebuild every render. */
+const NO_DETECTED: DetectedObject[] = []
 
 const VIEWS: [view: View, label: string][] = [
   ['editor', 'Editor'],
   ['textured', 'Textured'],
+  ['furnished', 'Furnished'],
 ]
 
 /**
- * The editor, and Matterport's textured player of the defurnished space
- * beside it. The editor stays mounted while hidden so its camera and state
- * survive a switch; the player loads the first time it's shown and stays.
+ * The editor, and Matterport's textured player beside it, which the Textured
+ * and Furnished views share: one shows the defurnished space, the other the
+ * space as scanned, from the same spot. The editor stays mounted while hidden
+ * so its camera and state survive a switch; the player loads the first time
+ * it's shown and stays.
  */
 function SceneViews({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; meshUrl?: string }) {
   const [view, setView] = useState<View>('editor')
   const [texturedOpened, setTexturedOpened] = useState(false)
+  const { data: detection } = useDetectedFurniture(scene.id)
+  const scanned = useMemo(
+    () => detection?.objects.filter((object) => object.floor_id === floor.id) ?? [],
+    [detection, floor.id],
+  )
+  const [showScanned, setShowScanned] = useState(true)
+  const detected = showScanned ? scanned : NO_DETECTED
   const show = (next: View) => {
-    if (next === 'textured') setTexturedOpened(true)
+    if (next !== 'editor') setTexturedOpened(true)
     setView(next)
   }
 
   return (
     <>
       <div className={`absolute inset-0 ${view === 'editor' ? '' : 'invisible'}`}>
-        <SceneCanvas scene={scene} floor={floor} meshUrl={meshUrl} />
+        <SceneCanvas scene={scene} floor={floor} meshUrl={meshUrl} detected={detected} />
       </div>
       {texturedOpened && (
-        <div className={`absolute inset-0 ${view === 'textured' ? '' : 'invisible'}`}>
-          <ShowcaseViewport scene={scene} floor={floor} />
+        <div className={`absolute inset-0 ${view === 'editor' ? 'invisible' : ''}`}>
+          <ShowcaseViewport
+            scene={scene}
+            floor={floor}
+            detected={detected}
+            version={view === 'furnished' ? 'furnished' : 'defurnished'}
+          />
         </div>
       )}
       <div
@@ -103,6 +128,16 @@ function SceneViews({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; mes
           </button>
         ))}
       </div>
+      {scanned.length > 0 && (
+        <button
+          type="button"
+          aria-pressed={showScanned}
+          onClick={() => setShowScanned((shown) => !shown)}
+          className="absolute top-3 right-3 rounded-md border border-hairline bg-white px-2.5 py-1 text-xs font-medium text-ink-secondary shadow-[0_4px_12px_rgba(26,31,54,0.08)] hover:text-ink aria-pressed:text-ink"
+        >
+          {showScanned ? 'Hide' : 'Show'} scanned furniture ({scanned.length})
+        </button>
+      )}
     </>
   )
 }
@@ -111,7 +146,17 @@ function SceneViews({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; mes
  * The canvas plus its controls. Clicking captures the pointer for flying
  * around; Esc gives it back.
  */
-function SceneCanvas({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; meshUrl?: string }) {
+function SceneCanvas({
+  scene,
+  floor,
+  meshUrl,
+  detected,
+}: {
+  scene: Scene
+  floor: Floor
+  meshUrl?: string
+  detected: DetectedObject[]
+}) {
   const focusTarget = useRef<HTMLDivElement>(null)
   const [active, setActive] = useState(false)
   // Depend on the room data only: furniture edits replace `floor` but must
@@ -130,6 +175,7 @@ function SceneCanvas({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; me
         <hemisphereLight args={['#ffffff', '#d5dbe1', 1.6]} />
         <directionalLight position={[8, 14, 6]} intensity={1.4} />
         <SceneModel geometry={geometry} meshUrl={meshUrl} />
+        <DetectedFurniture objects={detected} assets={scene.assets} />
         <Furniture floor={floor} assets={scene.assets} />
         <TransformGizmo floor={floor} />
         <CameraController element={focusTarget} geometry={geometry} onActiveChange={setActive} />

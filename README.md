@@ -26,9 +26,11 @@ planned (see `TECH_STACK.md`).
 
 ```text
 apps/
+├── detect-furniture/   Furniture detection CLI (scan → measured boxes)
 ├── import-scene/       Matterport import CLI
 └── web/                React + Three.js editor (Vite)
 crates/
+├── furniture-detect/   Furnished vs defurnished mesh diff into furniture boxes
 ├── matterport/         Matterport API and normalization boundary
 ├── server/             HTTP server exposing the world API (cargo run -p tflop-server)
 └── world-core/         Canonical scene types and world rules
@@ -111,3 +113,27 @@ Imported scenes include a built-in five-item furniture catalog: chair, desk,
 meeting table, sofa, and storage cabinet. These entries contain real-world
 placeholder dimensions but no GLB URI yet, so renderers should display boxes
 until final models are assigned.
+
+## Detect furniture from the scan
+
+The editor shows the defurnished mesh, so the real furniture is detected and
+drawn back in as measured boxes (hitboxes for later simulation). Download the
+furnished mesh from the MatterPak (about 140 MB) once, then run the detector:
+
+```bash
+cargo run -p import-scene -- --furnished-mesh
+cargo run --release -p detect-furniture
+```
+
+This writes `data/prepared-scenes/<model-id>.detected.json`, which the editor
+draws as translucent boxes (toggle with **Hide/Show scanned furniture**).
+
+The detector (`crates/furniture-detect`) is deterministic. Surfaces in the
+furnished mesh that are more than about 10 cm from any surface of the
+defurnished mesh are furniture. They are voxelized, projected to a top-down
+grid, split into connected pieces, and fitted with the smallest rotated
+rectangle; the height is the top of each piece. Things hanging above a large
+vertical gap (a chandelier over a table) are ignored, and footprints that fill
+their rectangle poorly (an L-shaped sofa) are split into several boxes. Each
+box is drawn as the catalog asset closest to it in size, whatever the
+furniture actually is; the measured box is always the object's size.

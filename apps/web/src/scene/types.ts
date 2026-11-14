@@ -160,3 +160,30 @@ export interface CheckEditsResponse {
   valid: boolean
   error: WorldApiErrorBody | null
 }
+
+// Furniture detected in the scan (crates/furniture-detect), written by
+// `cargo run -p detect-furniture` beside the scene.
+
+export const DETECTION_SCHEMA_VERSION = 2
+
+export interface Detection {
+  schema_version: number
+  scene_id: string
+  objects: DetectedObject[]
+}
+
+/** One piece of scanned furniture as an upright, measured box. */
+export interface DetectedObject {
+  id: string
+  floor_id: string
+  room_id: string | null
+  room_type: string | null
+  /** Catalog asset closest in size, drawn in place of the real furniture. */
+  asset_id: string | null
+  /** Bottom centre, on the floor. */
+  position_m: Vec3
+  yaw_degrees: number
+  /** Measured size; width is the long side. */
+  size_m: Dimensions3
+  footprint_area_m2: number
+}

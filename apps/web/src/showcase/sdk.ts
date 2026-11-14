@@ -54,6 +54,8 @@ export const SWEEP_TRANSITION = {
 
 /** `View.ViewType.DEFURNISH`: the copy of the space with furniture removed. */
 export const DEFURNISH_VIEW_TYPE = 'viewtype.defurnish'
+/** `View.ViewType.BASE` / `LAYERED_BASE`: the space as scanned, furniture and all. */
+export const BASE_VIEW_TYPES = ['viewtype.base', 'viewtype.layeredbase']
 
 export interface ShowcaseView {
   readonly id: string

@@ -4,8 +4,8 @@
 
 import type * as THREE from 'three'
 import { categoryColor, EDGE_COLOR } from '../scene/furnitureStyle'
-import { Z_UP_TO_Y_UP } from '../scene/placement'
-import type { Dimensions3, Floor, FurnitureAsset, Quaternion, Vec3 } from '../scene/types'
+import { Z_UP_TO_Y_UP, zRotation } from '../scene/placement'
+import type { DetectedObject, Dimensions3, Floor, FurnitureAsset, Quaternion, Vec3 } from '../scene/types'
 import type { MpSdk, SceneComponent } from './sdk'
 
 /** One box to draw, in canonical Z-up coordinates. */
@@ -16,6 +16,8 @@ export interface FurnitureItem {
   scale: Vec3
   size: Dimensions3
   color: string
+  /** Below 1 draws the box see-through, like scanned furniture in the editor. */
+  opacity?: number
 }
 
 /** The floor's placed furniture as boxes, the way the editor draws them. */
@@ -36,6 +38,23 @@ export function furnitureItems(floor: Pick<Floor, 'objects'>, assets: FurnitureA
     ]
   })
 }
+
+/** Furniture detected in the scan, as see-through boxes of its measured size. */
+export function detectedFurnitureItems(objects: DetectedObject[], assets: FurnitureAsset[]): FurnitureItem[] {
+  const categories = new Map(assets.map((asset) => [asset.id, asset.category]))
+  return objects.map((object) => ({
+    id: object.id,
+    position: object.position_m,
+    rotation: zRotation(object.yaw_degrees),
+    scale: { x: 1, y: 1, z: 1 },
+    size: object.size_m,
+    color: categoryColor((object.asset_id && categories.get(object.asset_id)) || ''),
+    opacity: DETECTED_OPACITY,
+  }))
+}
+
+/** Matches the editor's scanned-furniture boxes. */
+const DETECTED_OPACITY = 0.55
 
 interface FurnitureInputs {
   items: FurnitureItem[]
@@ -80,7 +99,13 @@ class FurnitureComponent implements SceneComponent<FurnitureInputs> {
       // Bottom face at the origin, i.e. standing on the floor.
       const box = new three.BoxGeometry(width, depth, height).translate(0, 0, height / 2)
       const edges = new three.EdgesGeometry(box)
-      const material = new three.MeshBasicMaterial({ color: item.color })
+      const opacity = item.opacity ?? 1
+      const material = new three.MeshBasicMaterial({
+        color: item.color,
+        transparent: opacity < 1,
+        opacity,
+        depthWrite: opacity >= 1,
+      })
       this.owned.push(box, edges, material)
 
       const group = new three.Group()

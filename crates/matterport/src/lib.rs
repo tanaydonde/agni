@@ -29,6 +29,15 @@ pub enum MatterportError {
         edge_id: String,
         vertex_count: usize,
     },
+    #[error("the MatterPak for model {model_id} is {availability}, not unlocked")]
+    MatterPakUnavailable {
+        model_id: String,
+        availability: String,
+    },
+    #[error("the MatterPak could not be read: {0}")]
+    MatterPakArchive(#[from] zip::result::ZipError),
+    #[error("the MatterPak contains no OBJ mesh")]
+    MatterPakMissingMesh,
     #[error(transparent)]
     InvalidScene(#[from] SceneValidationErrors),
 }
