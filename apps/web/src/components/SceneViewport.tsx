@@ -10,6 +10,9 @@ import { SceneModel } from '../scene/SceneModel'
 import { SelectionController } from '../scene/SelectionController'
 import { TransformGizmo } from '../scene/TransformGizmo'
 import type { Floor, Scene } from '../scene/types'
+import { ShowcaseViewport } from '../showcase/ShowcaseViewport'
+import { ControlsHint, type Controls } from './ControlsHint'
+import { FlyIndicator } from './FlyIndicator'
 
 interface SceneViewportProps {
   /** Scene the dev setup expects; only used in setup instructions. */
@@ -30,11 +33,7 @@ export function SceneViewport({ sceneId }: SceneViewportProps) {
   return (
     <ViewportFrame>
       {scene && floor ? (
-        <SceneCanvas
-          scene={scene}
-          floor={floor}
-          meshUrl={meshAvailable ? sceneMeshUrl(scene.id) : undefined}
-        />
+        <SceneViews scene={scene} floor={floor} meshUrl={meshAvailable ? sceneMeshUrl(scene.id) : undefined} />
       ) : isPending ? (
         <ViewportMessage>Loading scene…</ViewportMessage>
       ) : error instanceof WorldServerUnavailableError ? (
@@ -49,6 +48,62 @@ export function SceneViewport({ sceneId }: SceneViewportProps) {
         <ViewportMessage>This scene has no floors with rooms.</ViewportMessage>
       )}
     </ViewportFrame>
+  )
+}
+
+type View = 'editor' | 'textured'
+
+const VIEWS: [view: View, label: string][] = [
+  ['editor', 'Editor'],
+  ['textured', 'Textured'],
+]
+
+/**
+ * The editor, and Matterport's textured player of the defurnished space
+ * beside it. The editor stays mounted while hidden so its camera and state
+ * survive a switch; the player loads the first time it's shown and stays.
+ */
+function SceneViews({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; meshUrl?: string }) {
+  const [view, setView] = useState<View>('editor')
+  const [texturedOpened, setTexturedOpened] = useState(false)
+  const show = (next: View) => {
+    if (next === 'textured') setTexturedOpened(true)
+    setView(next)
+  }
+
+  return (
+    <>
+      <div className={`absolute inset-0 ${view === 'editor' ? '' : 'invisible'}`}>
+        <SceneCanvas scene={scene} floor={floor} meshUrl={meshUrl} />
+      </div>
+      {texturedOpened && (
+        <div className={`absolute inset-0 ${view === 'textured' ? '' : 'invisible'}`}>
+          <ShowcaseViewport scene={scene} floor={floor} />
+        </div>
+      )}
+      <div
+        role="radiogroup"
+        aria-label="View"
+        className="absolute top-3 left-1/2 flex -translate-x-1/2 rounded-md border border-hairline bg-white p-0.5 text-xs font-medium shadow-[0_4px_12px_rgba(26,31,54,0.08)]"
+      >
+        {VIEWS.map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            role="radio"
+            aria-checked={view === value}
+            onClick={() => show(value)}
+            className={
+              view === value
+                ? 'rounded bg-accent px-2.5 py-1 text-white'
+                : 'rounded px-2.5 py-1 text-ink-secondary hover:text-ink'
+            }
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    </>
   )
 }
 
@@ -81,17 +136,12 @@ function SceneCanvas({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; me
         <SelectionController element={focusTarget} floor={floor} />
         <PlacementController scene={scene} floor={floor} />
       </Canvas>
-      {active && (
-        <>
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-0 rounded-lg ring-2 ring-inset ring-accent"
-          />
-          <Crosshair />
-        </>
-      )}
+      {active && <FlyIndicator />}
       <PlacementStatus />
-      <ControlsHint active={active} />
+      <ControlsHint
+        title={active ? 'Flying' : 'Editing'}
+        controls={active ? FLY_CONTROLS : EDIT_CONTROLS}
+      />
     </div>
   )
 }
@@ -122,24 +172,12 @@ function PlacementStatus() {
   return (
     <div
       role="status"
-      className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 rounded-md border border-danger/30 bg-white px-3 py-1.5 text-xs font-medium text-danger shadow-[0_4px_12px_rgba(26,31,54,0.08)]"
+      className="pointer-events-none absolute top-14 left-1/2 -translate-x-1/2 rounded-md border border-danger/30 bg-white px-3 py-1.5 text-xs font-medium text-danger shadow-[0_4px_12px_rgba(26,31,54,0.08)]"
     >
       {text}
     </div>
   )
 }
-
-/** Marks the middle of the view in fly mode, which pinch and orbit aim at. */
-function Crosshair() {
-  return (
-    <div
-      aria-hidden
-      className="pointer-events-none absolute top-1/2 left-1/2 size-1.5 -translate-1/2 rounded-full bg-white ring-1 ring-ink/60"
-    />
-  )
-}
-
-type Controls = [keys: string[], action: string][]
 
 const EDIT_CONTROLS: Controls = [
   [['Click'], 'Select'],
@@ -166,32 +204,6 @@ const FLY_CONTROLS: Controls = [
   [['F'], 'Reset view'],
   [['Esc'], 'Back to editing'],
 ]
-
-function ControlsHint({ active }: { active: boolean }) {
-  const controls = active ? FLY_CONTROLS : EDIT_CONTROLS
-  return (
-    <div className="pointer-events-none absolute bottom-3 left-3 flex flex-col gap-2 rounded-lg border border-hairline bg-white px-3 py-2.5 text-xs text-ink-secondary shadow-[0_4px_12px_rgba(26,31,54,0.08)]">
-      <span className="font-medium text-ink">{active ? 'Flying' : 'Editing'}</span>
-      <div className="grid grid-cols-[auto_auto] items-center gap-x-3 gap-y-1.5">
-        {controls.map(([keys, action]) => (
-          <div key={action} className="contents">
-            <span className="flex gap-1">
-              {keys.map((key) => (
-                <kbd
-                  key={key}
-                  className="rounded border border-control-border bg-canvas px-1.5 font-mono text-[11px] leading-[18px] text-ink"
-                >
-                  {key}
-                </kbd>
-              ))}
-            </span>
-            <span>{action}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
 
 function ViewportFrame({ children }: { children: ReactNode }) {
   return (
