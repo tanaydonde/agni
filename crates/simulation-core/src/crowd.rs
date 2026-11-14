@@ -1313,7 +1313,7 @@ fn mix(value: u64) -> u64 {
 }
 
 /// A repeatable number in `[0, 1)` for these inputs.
-fn unit(seed: u64, substep: u64, left: u64, right: u64) -> f64 {
+pub(crate) fn unit(seed: u64, substep: u64, left: u64, right: u64) -> f64 {
     let hash = mix(seed ^ mix(substep ^ mix(left ^ mix(right.wrapping_add(1)))));
     (hash >> 11) as f64 / (1_u64 << 53) as f64
 }

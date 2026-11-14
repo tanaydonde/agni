@@ -1,12 +1,16 @@
 //! Deterministic occupant evacuation over the static simulation grid.
 //!
-//! Each frame, every floor gets one [`ExitField`] from its exits, costed
-//! around fire and crowds, and every occupant who has started moving walks
-//! downhill on it. The [`Crowd`] does the walking, so occupants queue at
-//! doors, step around each other, and contest space with firefighters.
+//! Not everyone heads for the same door: each occupant is given a random
+//! exit, among those reachable from where they start, and keeps it unless
+//! fire cuts it off; then they head for the nearest exit they can still
+//! reach, for good. Each frame, every exit in use gets an [`ExitField`]
+//! costed around fire and crowds, and every occupant who has started moving
+//! walks downhill on their exit's field. The [`Crowd`] does the walking, so
+//! occupants queue at doors, step around each other, and contest space with
+//! firefighters.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     sync::Arc,
 };
 
@@ -16,7 +20,9 @@ use thiserror::Error;
 use crate::{
     Agent, AgentFrame, AgentRole, GridCoordinate, OCCUPANT_RADIUS_M, OccupantPhase, OccupantSpawn,
     Simulation, SimulationConfig, SimulationError, SimulationGrid, SurfaceFireNodeFrame,
-    crowd::{Crowd, CrowdConfig, CrowdGroup, Goal, Intent, PassageMap, SINGLE_FILE_MAX_WIDTH_M},
+    crowd::{
+        Crowd, CrowdConfig, CrowdGroup, Goal, Intent, PassageMap, SINGLE_FILE_MAX_WIDTH_M, unit,
+    },
     exit_field::ExitField,
     nav::{
         HazardMap, NavProfile, body_walkable_cells, exit_target_list, neighbors, room_floor_index,
@@ -37,6 +43,8 @@ pub struct Evacuation {
     exit_ids: Vec<String>,
     /// Per floor: each exit approach cell and its exit index.
     exit_cells: HashMap<String, Vec<(GridCoordinate, u32)>>,
+    /// The exit each occupant is heading for, by exit index.
+    assigned_exits: Vec<Option<u32>>,
     room_floors: HashMap<String, String>,
     /// What this frame's plan wants, one per agent.
     intents: Vec<Intent>,
@@ -77,11 +85,15 @@ impl Evacuation {
             (simulation.agents().to_vec(), exit_ids, exit_cells)
         };
 
+        let walkable = grids
+            .iter()
+            .map(|grid| body_walkable_cells(grid, OCCUPANT_RADIUS_M))
+            .collect::<Vec<_>>();
+        let assigned_exits =
+            assign_exits(&agents, &grids, &walkable, &exit_cells, config.random_seed);
         Ok(Self {
-            walkable: grids
-                .iter()
-                .map(|grid| body_walkable_cells(grid, OCCUPANT_RADIUS_M))
-                .collect(),
+            walkable,
+            assigned_exits,
             passages: grids
                 .iter()
                 .map(|grid| PassageMap::build(grid, SINGLE_FILE_MAX_WIDTH_M))
@@ -206,10 +218,18 @@ impl Evacuation {
         self.time_seconds = time_seconds;
     }
 
-    /// One field per grid, with every body standing in the building adding
+    /// Per grid: a field to the nearest exit, and one to each exit someone
+    /// still inside is heading for. Every body standing in the building adds
     /// crowding cost.
-    fn exit_fields(&self, others: &[Agent]) -> Vec<Option<Arc<ExitField>>> {
+    fn exit_fields(&self, others: &[Agent]) -> Vec<Option<FloorFields>> {
         let crowding_cost = self.crowd.config().crowding_cost_per_body;
+        let in_use = self
+            .agents
+            .iter()
+            .zip(&self.assigned_exits)
+            .filter(|(agent, _)| agent.is_active())
+            .filter_map(|(_, exit)| *exit)
+            .collect::<BTreeSet<_>>();
         self.grids
             .iter()
             .zip(&self.walkable)
@@ -223,14 +243,31 @@ impl Evacuation {
                         }
                     }
                 }
-                Some(Arc::new(ExitField::build(
-                    grid,
-                    walkable,
-                    targets,
-                    &self.hazards,
-                    NavProfile::OCCUPANT,
-                    &crowding,
-                )))
+                let build = |targets: &[(GridCoordinate, u32)]| {
+                    Arc::new(ExitField::build(
+                        grid,
+                        walkable,
+                        targets,
+                        &self.hazards,
+                        NavProfile::OCCUPANT,
+                        &crowding,
+                    ))
+                };
+                let mut per_exit = HashMap::new();
+                for &exit in &in_use {
+                    let cells = targets
+                        .iter()
+                        .copied()
+                        .filter(|&(_, label)| label == exit)
+                        .collect::<Vec<_>>();
+                    if !cells.is_empty() {
+                        per_exit.insert(exit, build(&cells));
+                    }
+                }
+                Some(FloorFields {
+                    nearest: build(targets),
+                    per_exit,
+                })
             })
             .collect()
     }
@@ -240,7 +277,7 @@ impl Evacuation {
         index: usize,
         time_seconds: f64,
         delta_seconds: f64,
-        fields: &[Option<Arc<ExitField>>],
+        fields: &[Option<FloorFields>],
     ) -> Intent {
         let agent = &mut self.agents[index];
         let AgentRole::Occupant(state) = &agent.role else {
@@ -266,8 +303,10 @@ impl Evacuation {
             .grids
             .iter()
             .position(|grid| grid.floor_id == agent.floor_id);
-        let field = grid_index.and_then(|grid| fields.get(grid).cloned().flatten());
-        let (Some(grid_index), Some(field)) = (grid_index, field) else {
+        let floor_fields = grid_index
+            .and_then(|grid| fields.get(grid))
+            .and_then(Option::as_ref);
+        let (Some(grid_index), Some(floor_fields)) = (grid_index, floor_fields) else {
             set_phase(agent, OccupantPhase::Rerouting);
             return Intent::HOLD;
         };
@@ -276,19 +315,27 @@ impl Evacuation {
             set_phase(agent, OccupantPhase::Rerouting);
             return Intent::HOLD;
         };
-        // A body standing just off a reachable cell center routes from the
-        // neighbor it steps onto.
-        let exit = field
-            .exit(cell)
-            .or_else(|| field.next_cell(cell).and_then(|next| field.exit(next)));
-        let Some(exit) = exit else {
-            set_phase(agent, OccupantPhase::Rerouting);
-            return Intent::HOLD;
+
+        // Their own exit, if fire hasn't cut it off; otherwise the nearest
+        // one they can still reach, from now on.
+        let assigned = self.assigned_exits[index];
+        let own = assigned
+            .and_then(|exit| floor_fields.per_exit.get(&exit))
+            .filter(|field| reached_exit(field, cell).is_some());
+        let (field, exit, changed) = if let Some(field) = own {
+            (Arc::clone(field), assigned, false)
+        } else {
+            let field = &floor_fields.nearest;
+            let Some(exit) = reached_exit(field, cell) else {
+                set_phase(agent, OccupantPhase::Rerouting);
+                return Intent::HOLD;
+            };
+            self.assigned_exits[index] = Some(exit);
+            (Arc::clone(field), Some(exit), assigned.is_some())
         };
 
-        let exit_id = self.exit_ids.get(exit as usize).cloned();
+        let exit_id = exit.and_then(|exit| self.exit_ids.get(exit as usize).cloned());
         if let AgentRole::Occupant(state) = &mut agent.role {
-            let changed = state.target_exit_id.is_some() && state.target_exit_id != exit_id;
             state.phase = if changed {
                 OccupantPhase::Rerouting
             } else {
@@ -304,6 +351,91 @@ impl Evacuation {
         }
     }
 }
+
+/// One floor's exit fields for a frame.
+struct FloorFields {
+    /// To whichever exit is cheapest from each cell.
+    nearest: Arc<ExitField>,
+    /// To one exit each, for the exits someone inside is heading for.
+    per_exit: HashMap<u32, Arc<ExitField>>,
+}
+
+/// The exit `field` leads to from `cell`. A body standing just off a
+/// reachable cell center routes from the neighbor it steps onto.
+fn reached_exit(field: &ExitField, cell: GridCoordinate) -> Option<u32> {
+    field
+        .exit(cell)
+        .or_else(|| field.next_cell(cell).and_then(|next| field.exit(next)))
+}
+
+/// Gives each occupant a random exit, evenly among the exits on their floor
+/// they can reach from where they start in the empty building. Repeatable
+/// for a seed.
+fn assign_exits(
+    agents: &[Agent],
+    grids: &[SimulationGrid],
+    walkable: &[Vec<bool>],
+    exit_cells: &HashMap<String, Vec<(GridCoordinate, u32)>>,
+    seed: u64,
+) -> Vec<Option<u32>> {
+    // One field per exit, with no fire and nobody in the way.
+    let fields = grids
+        .iter()
+        .zip(walkable)
+        .map(|(grid, walkable)| {
+            let mut exits = exit_cells
+                .get(&grid.floor_id)
+                .map(|cells| cells.iter().map(|&(_, exit)| exit).collect::<Vec<_>>())
+                .unwrap_or_default();
+            exits.sort_unstable();
+            exits.dedup();
+            exits
+                .into_iter()
+                .map(|exit| {
+                    let cells = exit_cells[&grid.floor_id]
+                        .iter()
+                        .copied()
+                        .filter(|&(_, label)| label == exit)
+                        .collect::<Vec<_>>();
+                    let field = ExitField::build(
+                        grid,
+                        walkable,
+                        &cells,
+                        &HazardMap::default(),
+                        NavProfile::OCCUPANT,
+                        &[],
+                    );
+                    (exit, field)
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    agents
+        .iter()
+        .enumerate()
+        .map(|(index, agent)| {
+            let grid = grids
+                .iter()
+                .position(|grid| grid.floor_id == agent.floor_id)?;
+            let cell = grids[grid].world_to_cell(agent.position_m)?;
+            let reachable = fields[grid]
+                .iter()
+                .filter(|(_, field)| reached_exit(field, cell).is_some())
+                .map(|(exit, _)| *exit)
+                .collect::<Vec<_>>();
+            if reachable.is_empty() {
+                return None;
+            }
+            let roll = unit(seed, u64::MAX, index as u64, EXIT_ROLL);
+            let pick = ((roll * reachable.len() as f64) as usize).min(reachable.len() - 1);
+            Some(reachable[pick])
+        })
+        .collect()
+}
+
+/// Keeps exit rolls apart from the crowd's other random draws.
+const EXIT_ROLL: u64 = 0x0E_C17;
 
 /// Whether a body takes up floor space others must route around.
 fn blocks_the_way(agent: &Agent) -> bool {

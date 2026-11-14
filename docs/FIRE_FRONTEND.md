@@ -43,8 +43,9 @@ The final payload is `SimulationResults`. Choose a frame using
 - `frame.fires`: CFAST's room-level representation of the Rust heat output.
 - `frame.agents`: occupants advanced by the Rust evacuation engine. It honors
   pre-movement delay and walking speed, routes to exterior doors/passages,
-  replans around fire and crowds, and uses `rerouting` when it changes exit
-  or no safe path is available. Occupants and firefighters move through one
+  replans around fire and crowds, and uses `rerouting` when fire makes it
+  change exit or no safe path is available. Nobody walks into burning
+  cells. Occupants and firefighters move through one
   shared crowd (see "Crowds" below), and each agent's `movement` says how:
   `stopped`, `walking`, `queued` (held up by people in the way), or
   `squeezing` (pressing past someone). The web app tints queued blobs red and
@@ -72,8 +73,10 @@ sub-steps; frames default to 0.5 s.
 - Firefighters outrank occupants: they usually win a contest for space (they
   give way 20% of the time, by seeded roll), but are always slowed by
   squeezing past people and by walking against an evacuating crowd.
-- Occupants route on a shared exit field with a crowding cost, so people at
-  the back of a long queue may head for another exit.
+- Each occupant is given a random exit (evenly among the exits they can
+  reach, repeatable per seed), so people don't all head for the nearest
+  door. If fire cuts their exit off they switch, for good, to the nearest
+  exit they can still reach (`rerouting`). Routes avoid crowded cells.
 
 `POST /api/agents/spawn_occupants` takes `{ "count": 1..200, "layout":
 "spread" | "crowded" }`. `spread` (the default) has Gemini place people;
