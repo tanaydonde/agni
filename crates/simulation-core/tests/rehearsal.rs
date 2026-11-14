@@ -231,7 +231,7 @@ fn fire_active(frame: &RehearsalFrame) -> bool {
 }
 
 fn phase(frame: &RehearsalFrame) -> OccupantPhase {
-    let AgentFrameRole::Occupant { phase } = frame.agents[0].role else {
+    let AgentFrameRole::Occupant { phase, .. } = frame.agents[0].role else {
         panic!("expected occupant")
     };
     phase
@@ -266,6 +266,7 @@ fn occupant(id: &str, x: f64, y: f64, delay: f64) -> OccupantSpawn {
         position_m: point(x, y),
         walking_speed_m_per_s: 1.2,
         pre_movement_delay_seconds: delay,
+        injured: false,
     }
 }
 

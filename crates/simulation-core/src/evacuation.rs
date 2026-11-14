@@ -21,7 +21,7 @@ use std::{
     sync::Arc,
 };
 
-use tflop_world_core::{OpeningTopologyError, Scene};
+use tflop_world_core::{OpeningTopologyError, Scene, Vec3};
 use thiserror::Error;
 
 use crate::{
@@ -262,6 +262,36 @@ impl Evacuation {
         }
     }
 
+    /// Moves people a firefighter is carrying with them, and lets go of those
+    /// carried out.
+    pub(crate) fn apply_carries(&mut self, carries: &[Carry]) {
+        for carry in carries {
+            let Some(agent) = self
+                .agents
+                .iter_mut()
+                .find(|agent| agent.id == carry.occupant_id)
+            else {
+                continue;
+            };
+            match carry.state {
+                CarryState::Holding {
+                    position_m,
+                    velocity_m_per_s,
+                } => {
+                    agent.velocity_m_per_s = velocity_m_per_s;
+                    agent.position_m = position_m;
+                    agent.movement = crate::Movement::Walking;
+                    set_phase(agent, OccupantPhase::Carried);
+                }
+                CarryState::Delivered => {
+                    agent.velocity_m_per_s = ZERO;
+                    agent.movement = crate::Movement::Stopped;
+                    set_phase(agent, OccupantPhase::Exited);
+                }
+            }
+        }
+    }
+
     /// Records who reached an exit once the crowd has moved.
     pub(crate) fn finish(&mut self, time_seconds: f64) {
         for index in 0..self.agents.len() {
@@ -473,7 +503,13 @@ impl Evacuation {
             state.walking_speed_m_per_s,
             state.phase,
         );
-        if matches!(phase, OccupantPhase::Exited | OccupantPhase::Incapacitated) {
+        if matches!(
+            phase,
+            OccupantPhase::Exited
+                | OccupantPhase::Incapacitated
+                | OccupantPhase::Injured
+                | OccupantPhase::Carried
+        ) {
             return Intent::HOLD;
         }
         let Some(alerted_at) = self.alerted_at[index] else {
@@ -630,7 +666,9 @@ const EXIT_ROLL: u64 = 0x0E_C17;
 /// Whether a body takes up floor space others must route around.
 fn blocks_the_way(agent: &Agent) -> bool {
     match &agent.role {
-        AgentRole::Occupant(state) => !matches!(state.phase, OccupantPhase::Exited),
+        AgentRole::Occupant(state) => {
+            !matches!(state.phase, OccupantPhase::Exited | OccupantPhase::Carried)
+        }
         AgentRole::Firefighter(state) => !matches!(
             state.phase,
             crate::FirefighterPhase::Staging | crate::FirefighterPhase::Exited
@@ -713,7 +751,25 @@ pub enum EvacuationError {
     InvalidTime { time_seconds: f64 },
 }
 
-const ZERO: tflop_world_core::Vec3 = tflop_world_core::Vec3 {
+/// A firefighter carrying an occupant, after the crowd has moved.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Carry {
+    pub occupant_id: String,
+    pub state: CarryState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum CarryState {
+    /// Being carried, moving with the firefighter.
+    Holding {
+        position_m: Vec3,
+        velocity_m_per_s: Vec3,
+    },
+    /// Carried out of the building.
+    Delivered,
+}
+
+const ZERO: Vec3 = Vec3 {
     x: 0.0,
     y: 0.0,
     z: 0.0,

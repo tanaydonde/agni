@@ -1,11 +1,11 @@
 use std::collections::BTreeSet;
 
 use tflop_simulation_core::{
-    AgentFrame, AgentFrameRole, CROWD_GIVE_M, CombustionState, CrewReport, CrewSpawn,
+    AgentFrame, AgentFrameRole, CROWD_GIVE_M, CombustionState, CrewReport, CrewSpawn, Evacuation,
     FIREFIGHTER_RADIUS_M, FireMaterialCatalog, FirefighterPhase, Firefighting, FirefightingConfig,
-    FirefightingError, Movement, OCCUPANT_RADIUS_M, Rehearsal, RehearsalFrame, Simulation,
-    SimulationConfig, SimulationGrid, SurfaceFireConfig, SurfaceFireNodeFrame, SurfaceFireWorld,
-    reachable_exit_cells,
+    FirefightingError, Movement, OCCUPANT_RADIUS_M, OccupantPhase, OccupantSpawn, Rehearsal,
+    RehearsalFrame, Simulation, SimulationConfig, SimulationGrid, SurfaceFireConfig,
+    SurfaceFireNodeFrame, SurfaceFireWorld, reachable_exit_cells,
 };
 use tflop_world_core::{
     BoundaryEdge, BoundaryKind, Dimensions3, Floor, FurnitureAsset, FurnitureObject, Mobility,
@@ -507,6 +507,145 @@ fn run(
 
 fn rehearsal(scene: &Scene, crew: Option<CrewSpawn>) -> Rehearsal {
     rehearsal_with(scene, crew, FirefightingConfig::default())
+}
+
+#[test]
+fn an_injured_occupant_on_the_route_is_carried_out() {
+    let scene = scene_fixture(false);
+    let mut rehearsal = rescue_rehearsal(&scene, &["west"], &[injured("hurt", 2.0, 5.5)]);
+    let mut frames = vec![rehearsal.step(1.0).expect("steps")];
+    frames.extend(rehearsal.run_until(400.0, 1.0).expect("run succeeds"));
+
+    let report = report(&rehearsal);
+    assert!(
+        report.memory.rescued.contains_key("hurt"),
+        "{:?}",
+        report.memory
+    );
+    assert!(
+        rehearsal.is_settled(),
+        "everyone is out once the rescue is done"
+    );
+    let hurt = |frame: &RehearsalFrame| {
+        frame
+            .agents
+            .iter()
+            .find(|agent| agent.id == "hurt")
+            .map(occupant_phase)
+            .expect("the injured occupant is in every frame")
+    };
+    assert_eq!(hurt(&frames[0]), OccupantPhase::Injured);
+    assert!(
+        frames
+            .iter()
+            .any(|frame| hurt(frame) == OccupantPhase::Carried)
+    );
+    assert_eq!(hurt(frames.last().expect("frames")), OccupantPhase::Exited);
+    assert!(
+        frames
+            .iter()
+            .any(|frame| phase(firefighter(frame, LEADER)) == FirefighterPhase::Carrying)
+    );
+    // Carried beside the firefighter.
+    for frame in &frames {
+        if hurt(frame) == OccupantPhase::Carried {
+            let carried = frame
+                .agents
+                .iter()
+                .find(|agent| agent.id == "hurt")
+                .expect("hurt");
+            assert!(distance(carried.position_m, firefighter(frame, LEADER).position_m) < 1e-9);
+        }
+    }
+}
+
+#[test]
+fn the_fire_is_fought_before_a_rescue() {
+    let scene = scene_fixture(false);
+    let mut rehearsal = rescue_rehearsal(&scene, &["east"], &[injured("hurt", 5.0, 5.5)]);
+    let mut frames = vec![rehearsal.ignite_object("chair-east").expect("ignites")];
+    frames.extend(rehearsal.run_until(400.0, 1.0).expect("run succeeds"));
+
+    let first = |wanted: &[FirefighterPhase]| {
+        frames
+            .iter()
+            .position(|frame| wanted.contains(&phase(firefighter(frame, LEADER))))
+            .expect("the crew gets to it")
+    };
+    let sprayed = first(&[FirefighterPhase::Suppressing]);
+    let rescued = first(&[FirefighterPhase::Rescuing, FirefighterPhase::Carrying]);
+    assert!(
+        sprayed < rescued,
+        "sprayed at frame {sprayed}, rescued at {rescued}"
+    );
+    assert!(report(&rehearsal).memory.rescued.contains_key("hurt"));
+}
+
+#[test]
+fn injured_people_never_move_on_their_own() {
+    let scene = scene_fixture(false);
+    let fire = SurfaceFireWorld::from_scene(
+        &scene,
+        &FireMaterialCatalog::default(),
+        SurfaceFireConfig::default(),
+    )
+    .expect("fire world builds");
+    let evacuation = Evacuation::new(
+        &scene,
+        &[injured("hurt", 2.0, 5.5)],
+        SimulationConfig::default(),
+    )
+    .expect("evacuation builds")
+    .with_alarm(tflop_simulation_core::AlarmConfig::Immediate);
+    let mut rehearsal = Rehearsal::new(fire, Some(evacuation));
+    let frames = rehearsal.run_until(30.0, 1.0).expect("run succeeds");
+    assert!(frames.iter().all(|frame| {
+        let agent = &frame.agents[0];
+        occupant_phase(agent) == OccupantPhase::Injured
+            && agent.position_m.x == 2.0
+            && agent.position_m.y == 5.5
+    }));
+    assert!(!rehearsal.is_settled(), "nobody has carried them out");
+}
+
+fn rescue_rehearsal(scene: &Scene, route: &[&str], occupants: &[OccupantSpawn]) -> Rehearsal {
+    let fire = SurfaceFireWorld::from_scene(
+        scene,
+        &FireMaterialCatalog::default(),
+        SurfaceFireConfig::default(),
+    )
+    .expect("fire world builds");
+    let evacuation =
+        Evacuation::new(scene, occupants, SimulationConfig::default()).expect("evacuation builds");
+    let crew = Firefighting::new(
+        scene,
+        &[CrewSpawn {
+            member_count: 1,
+            ..crew(route)
+        }],
+        SimulationConfig::default(),
+        FirefightingConfig::default(),
+    )
+    .expect("crew is valid");
+    Rehearsal::new(fire, Some(evacuation)).with_firefighting(crew)
+}
+
+fn injured(id: &str, x: f64, y: f64) -> OccupantSpawn {
+    OccupantSpawn {
+        id: id.to_owned(),
+        floor_id: "floor-1".to_owned(),
+        position_m: point(x, y),
+        walking_speed_m_per_s: 1.2,
+        pre_movement_delay_seconds: 0.0,
+        injured: true,
+    }
+}
+
+fn occupant_phase(agent: &AgentFrame) -> OccupantPhase {
+    let AgentFrameRole::Occupant { phase, .. } = agent.role else {
+        panic!("{} is not an occupant", agent.id);
+    };
+    phase
 }
 
 fn rehearsal_with(scene: &Scene, crew: Option<CrewSpawn>, config: FirefightingConfig) -> Rehearsal {

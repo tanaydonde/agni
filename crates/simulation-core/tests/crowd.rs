@@ -282,6 +282,7 @@ fn occupants(count: usize) -> Vec<OccupantSpawn> {
             position_m,
             walking_speed_m_per_s: 1.4,
             pre_movement_delay_seconds: 0.0,
+            injured: false,
         })
         .collect()
 }
@@ -302,7 +303,7 @@ fn inside(frame: &RehearsalFrame) -> Vec<&AgentFrame> {
         .agents
         .iter()
         .filter(|agent| match &agent.role {
-            AgentFrameRole::Occupant { phase } => *phase != OccupantPhase::Exited,
+            AgentFrameRole::Occupant { phase, .. } => *phase != OccupantPhase::Exited,
             AgentFrameRole::Firefighter { phase, .. } => {
                 !matches!(phase, FirefighterPhase::Staging | FirefighterPhase::Exited)
             }
@@ -319,7 +320,7 @@ fn occupant_frames(frame: &RehearsalFrame) -> impl Iterator<Item = &AgentFrame> 
 
 fn phase(agent: &AgentFrame) -> OccupantPhase {
     match agent.role {
-        AgentFrameRole::Occupant { phase } => phase,
+        AgentFrameRole::Occupant { phase, .. } => phase,
         AgentFrameRole::Firefighter { .. } => panic!("{} is not an occupant", agent.id),
     }
 }

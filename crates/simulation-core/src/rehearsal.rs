@@ -133,7 +133,10 @@ impl Rehearsal {
         let time_seconds = self.fire.time_seconds() + delta_seconds;
         let mut water = Vec::new();
         if let Some(firefighting) = &mut self.firefighting {
-            water = firefighting.plan(time_seconds, &self.last_fire)?.0;
+            let occupants = self.evacuation.as_ref().map_or(&[][..], Evacuation::agents);
+            water = firefighting
+                .plan(time_seconds, &self.last_fire, occupants)?
+                .0;
             for suppression in &water {
                 suppression.validate()?;
             }
@@ -164,6 +167,9 @@ impl Rehearsal {
         }
         if let Some(firefighting) = &mut self.firefighting {
             firefighting.finish(fire.time_seconds);
+            if let Some(evacuation) = &mut self.evacuation {
+                evacuation.apply_carries(&firefighting.carries());
+            }
         }
         self.record(fire)
     }

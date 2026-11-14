@@ -20,7 +20,7 @@ use tflop_simulation_core::{
     AlarmConfig, CrewSpawn, Evacuation, FireMaterialCatalog, Firefighting, FirefightingConfig,
     OccupantSpawn, Rehearsal, RehearsalError, RehearsalFrame, SIMULATION_RESULTS_SCHEMA_VERSION,
     SimulationConfig, SimulationEngine, SimulationResults, SurfaceFireConfig, SurfaceFireError,
-    SurfaceFireWorld,
+    SurfaceFireWorld, choose_injured,
 };
 use tflop_world_core::{Scene, resolve_opening_connections};
 
@@ -49,7 +49,17 @@ pub(crate) struct SimulateFireRequest {
     /// When occupants learn about the fire.
     #[serde(default)]
     alarm: AlarmMode,
+    /// Share of occupants who start the run injured and must be carried
+    /// out. Chosen at random by `seed`.
+    #[serde(default)]
+    injured_fraction: Option<f64>,
+    /// Repeatable randomness for the run: who is injured, exit choices, and
+    /// crowd contests.
+    #[serde(default)]
+    seed: u64,
 }
+
+const DEFAULT_INJURED_FRACTION: f64 = 0.1;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -165,7 +175,7 @@ fn run(
         duration,
     );
 
-    let evacuation = build_evacuation(&scene, &request.occupants, request.alarm)?;
+    let evacuation = build_evacuation(&scene, request)?;
     let (fire, excluded_object_ids) = build_fire_world(&mut scene)?;
     if excluded_object_ids.iter().any(|id| id == object_id) {
         return Err((
@@ -177,7 +187,7 @@ fn run(
             }),
         ));
     }
-    let firefighting = build_firefighting(&scene, &request.crews)?;
+    let firefighting = build_firefighting(&scene, request)?;
     let frames = run_rehearsal(fire, evacuation, firefighting, object_id, duration, step)?;
 
     let results = SimulationResults {
@@ -209,7 +219,7 @@ fn run_hybrid(
 ) -> Result<SimulateFireResponse, Failure> {
     let object_id = request.object_id.as_str();
     require_object(&source_scene, object_id)?;
-    let evacuation = build_evacuation(&source_scene, &request.occupants, request.alarm)?;
+    let evacuation = build_evacuation(&source_scene, request)?;
 
     let prepared = prepare_cfast_scene(&source_scene)
         .map_err(|error| simulation_failure("cfast_preparation_failed", error.to_string()))?;
@@ -243,7 +253,7 @@ fn run_hybrid(
     let (surface_frames, agent_frames): (Vec<_>, Vec<_>) = run_rehearsal(
         fire,
         evacuation,
-        build_firefighting(&scene, &request.crews)?,
+        build_firefighting(&scene, request)?,
         object_id,
         duration,
         step,
@@ -314,35 +324,53 @@ fn run_hybrid(
 
 fn build_evacuation(
     scene: &Scene,
-    occupants: &[OccupantSpawn],
-    alarm: AlarmMode,
+    request: &SimulateFireRequest,
 ) -> Result<Option<Evacuation>, Failure> {
-    if occupants.is_empty() {
+    if request.occupants.is_empty() {
         return Ok(None);
     }
-    let alarm = match alarm {
+    let alarm = match request.alarm {
         AlarmMode::Detected => AlarmConfig::default(),
         AlarmMode::Immediate => AlarmConfig::Immediate,
     };
-    Evacuation::new(scene, occupants, SimulationConfig::default())
+    let mut occupants = request.occupants.clone();
+    choose_injured(
+        &mut occupants,
+        request
+            .injured_fraction
+            .filter(|fraction| fraction.is_finite())
+            .unwrap_or(DEFAULT_INJURED_FRACTION),
+        request.seed,
+    );
+    Evacuation::new(scene, &occupants, simulation_config(request))
         .map(|evacuation| Some(evacuation.with_alarm(alarm)))
         .map_err(|error| simulation_failure("evacuation_failed", error.to_string()))
 }
 
 /// Crews are built on the same scene as the fire world, so the rooms they
 /// search and spray match the fire's room IDs.
-fn build_firefighting(scene: &Scene, crews: &[CrewSpawn]) -> Result<Option<Firefighting>, Failure> {
-    if crews.is_empty() {
+fn build_firefighting(
+    scene: &Scene,
+    request: &SimulateFireRequest,
+) -> Result<Option<Firefighting>, Failure> {
+    if request.crews.is_empty() {
         return Ok(None);
     }
     Firefighting::new(
         scene,
-        crews,
-        SimulationConfig::default(),
+        &request.crews,
+        simulation_config(request),
         FirefightingConfig::default(),
     )
     .map(Some)
     .map_err(|error| simulation_failure("firefighting_failed", error.to_string()))
+}
+
+fn simulation_config(request: &SimulateFireRequest) -> SimulationConfig {
+    SimulationConfig {
+        random_seed: request.seed,
+        ..SimulationConfig::default()
+    }
 }
 
 fn require_object(scene: &Scene, object_id: &str) -> Result<(), Failure> {

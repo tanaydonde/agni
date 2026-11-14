@@ -1,6 +1,9 @@
 //! Firefighter crews: they arrive at an entrance, walk the building room by
 //! room along their route without knowing where the fire is, put out any
-//! fire they see, and leave once every room they can reach has been entered.
+//! fire they see, carry out any injured person they find, and leave once
+//! every room they can reach has been entered. Fire comes first: an injured
+//! person is picked up once no fire the crew knows of is left, and once
+//! picked up is carried all the way out.
 //!
 //! Knowledge rule: [`decide`] reads only a crew's [`CrewMemory`], which is
 //! updated from what its leader can observe: the room it stands in, and heat
@@ -22,9 +25,10 @@ use thiserror::Error;
 use crate::{
     Agent, AgentFrame, AgentRole, CombustionState, CrewSpawn, DEFAULT_NOZZLE_COOLING_KW,
     DEFAULT_NOZZLE_HALF_ANGLE_DEGREES, DEFAULT_NOZZLE_REACH_M, FirefighterPhase, GridCoordinate,
-    ScenarioValidationErrors, Simulation, SimulationConfig, SimulationError, SimulationGrid,
-    Suppression, SurfaceFireNodeFrame,
+    OccupantPhase, ScenarioValidationErrors, Simulation, SimulationConfig, SimulationError,
+    SimulationGrid, Suppression, SurfaceFireNodeFrame,
     crowd::{Crowd, CrowdConfig, CrowdGroup, Goal, Intent, PassageMap, SINGLE_FILE_MAX_WIDTH_M},
+    evacuation::{Carry, CarryState},
     exterior_exits,
     nav::{
         Hazard, HazardMap, NavProfile, distance_2d, distance_field, exit_targets, find_path,
@@ -52,7 +56,12 @@ pub struct FirefightingConfig {
     /// Followers keep between these distances from the leader.
     pub follow_min_m: f64,
     pub follow_max_m: f64,
+    /// Walking speed while carrying someone out.
+    pub carry_speed_m_per_s: f64,
 }
+
+/// A firefighter picks someone up from this close.
+const PICKUP_DISTANCE_M: f64 = 0.8;
 
 impl Default for FirefightingConfig {
     fn default() -> Self {
@@ -65,6 +74,7 @@ impl Default for FirefightingConfig {
             approach_fraction: 0.8,
             follow_min_m: 0.7,
             follow_max_m: 1.5,
+            carry_speed_m_per_s: 0.6,
         }
     }
 }
@@ -79,6 +89,17 @@ pub struct CrewMemory {
     pub visited: BTreeMap<String, f64>,
     /// Rooms the crew found no route to.
     pub unreachable: BTreeSet<String>,
+    /// Injured occupants the crew has seen and not yet picked up, by ID.
+    pub known_injured: BTreeMap<String, InjuredSighting>,
+    /// When the crew carried each occupant out, by ID.
+    pub rescued: BTreeMap<String, f64>,
+}
+
+/// Where the crew last saw an injured occupant.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InjuredSighting {
+    pub position_m: Vec3,
+    pub room_ids: Vec<String>,
 }
 
 /// One crew's state, for tests and run metrics.
@@ -107,6 +128,8 @@ pub struct Firefighting {
     /// Moves crews when firefighting runs on its own, outside a
     /// [`Rehearsal`](crate::Rehearsal).
     crowd: Crowd,
+    /// Occupants carried out this frame, not yet reported.
+    delivered: Vec<String>,
     time_seconds: f64,
 }
 
@@ -157,6 +180,7 @@ impl Firefighting {
                     memory: CrewMemory::default(),
                     room_target: None,
                     spray_target: None,
+                    carrying: None,
                 },
                 phase: FirefighterPhase::Staging,
             });
@@ -187,6 +211,7 @@ impl Firefighting {
             crews: crew_states,
             true_hazards: HazardMap::default(),
             crowd: Crowd::new(CrowdConfig::default(), simulation_config.random_seed),
+            delivered: Vec::new(),
             time_seconds: 0.0,
         })
     }
@@ -199,7 +224,7 @@ impl Firefighting {
         time_seconds: f64,
         fire: &[SurfaceFireNodeFrame],
     ) -> Result<Vec<Suppression>, FirefightingError> {
-        let (suppressions, delta_seconds) = self.plan(time_seconds, fire)?;
+        let (suppressions, delta_seconds) = self.plan(time_seconds, fire, &[])?;
         if delta_seconds > 0.0 {
             let mut crowd =
                 std::mem::replace(&mut self.crowd, Crowd::new(CrowdConfig::default(), 0));
@@ -211,12 +236,14 @@ impl Firefighting {
     }
 
     /// Decides what every crew does over `[current time, time_seconds]`
-    /// given the fire as it stood at the start of the interval. Returns the
-    /// water to apply over it and the interval's length.
+    /// given the fire and the `occupants` as they stood at the start of the
+    /// interval. Returns the water to apply over it and the interval's
+    /// length.
     pub(crate) fn plan(
         &mut self,
         time_seconds: f64,
         fire: &[SurfaceFireNodeFrame],
+        occupants: &[Agent],
     ) -> Result<(Vec<Suppression>, f64), FirefightingError> {
         if !time_seconds.is_finite() || time_seconds < self.time_seconds {
             return Err(FirefightingError::InvalidTime { time_seconds });
@@ -232,7 +259,8 @@ impl Firefighting {
 
         let mut suppressions = Vec::new();
         for crew_index in 0..self.crews.len() {
-            if let Some(suppression) = self.advance_crew(crew_index, fire, &true_hazards) {
+            if let Some(suppression) = self.advance_crew(crew_index, fire, occupants, &true_hazards)
+            {
                 suppressions.push(suppression);
             }
         }
@@ -255,6 +283,33 @@ impl Firefighting {
     /// Ends the interval once the crowd has moved.
     pub(crate) fn finish(&mut self, time_seconds: f64) {
         self.time_seconds = time_seconds;
+    }
+
+    /// Where everyone being carried is now, beside their firefighter, and
+    /// who was carried out this frame.
+    pub(crate) fn carries(&mut self) -> Vec<Carry> {
+        let mut carries = self
+            .delivered
+            .drain(..)
+            .map(|occupant_id| Carry {
+                occupant_id,
+                state: CarryState::Delivered,
+            })
+            .collect::<Vec<_>>();
+        for crew in &self.crews {
+            let Some(occupant_id) = &crew.plan.carrying else {
+                continue;
+            };
+            let leader = &self.agents[crew.members[0]];
+            carries.push(Carry {
+                occupant_id: occupant_id.clone(),
+                state: CarryState::Holding {
+                    position_m: leader.position_m,
+                    velocity_m_per_s: leader.velocity_m_per_s,
+                },
+            });
+        }
+        carries
     }
 
     pub(crate) fn set_crowd_config(&mut self, config: CrowdConfig) {
@@ -296,6 +351,7 @@ impl Firefighting {
         &mut self,
         crew_index: usize,
         fire: &[SurfaceFireNodeFrame],
+        occupants: &[Agent],
         true_hazards: &HazardMap,
     ) -> Option<Suppression> {
         let crew = &mut self.crews[crew_index];
@@ -316,6 +372,7 @@ impl Firefighting {
                 grid.cell(leader_cell)
                     .map_or(&[][..], |cell| &cell.room_ids),
                 fire,
+                &injured_in_view(grid, occupants),
                 self.config.heat_sense_radius_m,
             );
             remember(&mut crew.plan.memory, &observation, start_time);
@@ -340,6 +397,7 @@ impl Firefighting {
         let context = Context {
             time_seconds: start_time,
             arrival_time_seconds: crew.arrival_time_seconds,
+            leader_position,
             leader_cell,
             entry_cell: crew.entry_cell,
             grid,
@@ -353,7 +411,9 @@ impl Firefighting {
         let mut suppression = None;
         let mut target_fire = None;
         let mut nozzle_target = None;
-        let speed = if crew.plan.memory.known_fires.is_empty() {
+        let speed = if crew.plan.carrying.is_some() {
+            self.config.carry_speed_m_per_s
+        } else if crew.plan.memory.known_fires.is_empty() {
             self.config.scouting_speed_m_per_s
         } else {
             crew.walking_speed_m_per_s
@@ -388,8 +448,24 @@ impl Firefighting {
                         FirefighterPhase::Advancing
                     }
                     Purpose::Room => FirefighterPhase::Advancing,
+                    Purpose::Rescue => FirefighterPhase::Rescuing,
+                    Purpose::CarryOut => FirefighterPhase::Carrying,
                     Purpose::Exit => FirefighterPhase::Withdrawing,
                 }
+            }
+            Action::PickUp { occupant_id } => {
+                crew.plan.memory.known_injured.remove(&occupant_id);
+                crew.plan.carrying = Some(occupant_id);
+                FirefighterPhase::Carrying
+            }
+            Action::Deliver { occupant_id } => {
+                crew.plan
+                    .memory
+                    .rescued
+                    .insert(occupant_id.clone(), start_time);
+                crew.plan.carrying = None;
+                self.delivered.push(occupant_id);
+                FirefighterPhase::Carrying
             }
             Action::Exit => FirefighterPhase::Exited,
             Action::Stuck => FirefighterPhase::Withdrawing,
@@ -495,6 +571,8 @@ struct CrewPlan {
     room_target: Option<String>,
     /// Fire node the nozzle is on.
     spray_target: Option<String>,
+    /// Occupant being carried out.
+    carrying: Option<String>,
 }
 
 /// What the leader can perceive at one instant.
@@ -504,15 +582,53 @@ struct Observation {
     rooms: Vec<String>,
     /// Nodes visible in those rooms or felt within the heat-sense radius.
     nodes: Vec<SurfaceFireNodeFrame>,
+    /// Injured occupants visible in those rooms.
+    injured: Vec<(String, InjuredSighting)>,
+}
+
+/// Every occupant lying injured, with the rooms they're in.
+fn injured_in_view(grid: &SimulationGrid, occupants: &[Agent]) -> Vec<(String, InjuredSighting)> {
+    occupants
+        .iter()
+        .filter(|agent| {
+            agent.floor_id == grid.floor_id
+                && matches!(&agent.role, AgentRole::Occupant(state) if state.phase == OccupantPhase::Injured)
+        })
+        .map(|agent| {
+            let room_ids = grid
+                .world_to_cell(agent.position_m)
+                .and_then(|cell| grid.cell(cell))
+                .map(|cell| cell.room_ids.clone())
+                .unwrap_or_default();
+            (
+                agent.id.clone(),
+                InjuredSighting {
+                    position_m: agent.position_m,
+                    room_ids,
+                },
+            )
+        })
+        .collect()
 }
 
 fn observe(
     leader_position: Vec3,
     leader_rooms: &[String],
     fire: &[SurfaceFireNodeFrame],
+    injured: &[(String, InjuredSighting)],
     heat_sense_radius_m: f64,
 ) -> Observation {
     Observation {
+        injured: injured
+            .iter()
+            .filter(|(_, sighting)| {
+                sighting
+                    .room_ids
+                    .iter()
+                    .any(|room| leader_rooms.contains(room))
+            })
+            .cloned()
+            .collect(),
         rooms: leader_rooms.to_vec(),
         nodes: fire
             .iter()
@@ -539,6 +655,14 @@ fn remember(memory: &mut CrewMemory, observation: &Observation, time_seconds: f6
         memory
             .known_fires
             .retain(|_, node| node.room_id != *room_id);
+        memory
+            .known_injured
+            .retain(|_, sighting| !sighting.room_ids.contains(room_id));
+    }
+    for (occupant_id, sighting) in &observation.injured {
+        memory
+            .known_injured
+            .insert(occupant_id.clone(), sighting.clone());
     }
     for node in &observation.nodes {
         if node.state == CombustionState::Burning {
@@ -553,6 +677,7 @@ fn remember(memory: &mut CrewMemory, observation: &Observation, time_seconds: f6
 struct Context<'a> {
     time_seconds: f64,
     arrival_time_seconds: f64,
+    leader_position: Vec3,
     leader_cell: GridCoordinate,
     entry_cell: GridCoordinate,
     grid: &'a SimulationGrid,
@@ -574,6 +699,13 @@ enum Action {
         path: Vec<GridCoordinate>,
         purpose: Purpose,
     },
+    PickUp {
+        occupant_id: String,
+    },
+    /// Standing at an exit with someone: they're out.
+    Deliver {
+        occupant_id: String,
+    },
     Exit,
     /// Nothing left to do and no route out.
     Stuck,
@@ -583,16 +715,25 @@ enum Action {
 enum Purpose {
     Fire(String),
     Room,
+    Rescue,
+    CarryOut,
     Exit,
 }
 
 /// Chooses the leader's next action from the crew's memory: stage until
-/// arrival, then fight known fire, then enter the next room, then leave.
+/// arrival; finish carrying anyone out; fight known fire; pick up a known
+/// injured person; enter the next room; leave.
 fn decide(plan: &mut CrewPlan, context: &Context<'_>) -> Action {
     if context.time_seconds < context.arrival_time_seconds {
         return Action::Stage;
     }
+    if let Some(occupant_id) = plan.carrying.clone() {
+        return carry_out(occupant_id, context);
+    }
     if let Some(action) = fight_known_fire(plan, context) {
+        return action;
+    }
+    if let Some(action) = rescue_known_injured(plan, context) {
         return action;
     }
     if let Some(action) = next_room(plan, context) {
@@ -696,6 +837,84 @@ fn fight_known_fire(plan: &mut CrewPlan, context: &Context<'_>) -> Option<Action
         path,
         purpose: Purpose::Fire(node_id.to_owned()),
     })
+}
+
+/// Carries `occupant_id` to the nearest exit, or hands them over there.
+fn carry_out(occupant_id: String, context: &Context<'_>) -> Action {
+    if context.exits.contains(&context.leader_cell) {
+        return Action::Deliver { occupant_id };
+    }
+    find_path(
+        context.grid,
+        context.leader_cell,
+        context.exits,
+        context.hazards,
+        NavProfile::FIREFIGHTER,
+    )
+    .map_or(Action::Stuck, |path| Action::Move {
+        path,
+        purpose: Purpose::CarryOut,
+    })
+}
+
+/// Picks up the nearest known injured person when close enough, otherwise
+/// walks to them. Someone with no route to them is forgotten.
+fn rescue_known_injured(plan: &mut CrewPlan, context: &Context<'_>) -> Option<Action> {
+    loop {
+        let (occupant_id, position) = plan
+            .memory
+            .known_injured
+            .iter()
+            .min_by(|left, right| {
+                distance_2d(left.1.position_m, context.leader_position)
+                    .total_cmp(&distance_2d(right.1.position_m, context.leader_position))
+            })
+            .map(|(id, sighting)| (id.clone(), sighting.position_m))?;
+        if distance_2d(position, context.leader_position) <= PICKUP_DISTANCE_M {
+            return Some(Action::PickUp { occupant_id });
+        }
+        let beside = cells_within(context.grid, position, PICKUP_DISTANCE_M);
+        if let Some(path) = find_path(
+            context.grid,
+            context.leader_cell,
+            &beside,
+            context.hazards,
+            NavProfile::FIREFIGHTER,
+        ) {
+            return Some(Action::Move {
+                path,
+                purpose: Purpose::Rescue,
+            });
+        }
+        plan.memory.known_injured.remove(&occupant_id);
+    }
+}
+
+/// Cells a firefighter can stand on within `radius_m` of `center`.
+fn cells_within(grid: &SimulationGrid, center: Vec3, radius_m: f64) -> Vec<GridCoordinate> {
+    let Some(middle) = grid.world_to_cell(center) else {
+        return Vec::new();
+    };
+    let span = (radius_m / grid.cell_size_m).ceil() as i64;
+    let mut cells = Vec::new();
+    for row in -span..=span {
+        for column in -span..=span {
+            let (Ok(column), Ok(row)) = (
+                u32::try_from(i64::from(middle.column) + column),
+                u32::try_from(i64::from(middle.row) + row),
+            ) else {
+                continue;
+            };
+            let coordinate = GridCoordinate { column, row };
+            if let Some(cell) = grid.cell(coordinate)
+                && distance_2d(cell.center_m, center) <= radius_m
+                && grid.circle_is_walkable(cell.center_m, NavProfile::FIREFIGHTER.body_radius_m)
+            {
+                cells.push(coordinate);
+            }
+        }
+    }
+    cells
 }
 
 /// Walks into the next room: the first unvisited one on the route, else the
@@ -905,6 +1124,7 @@ fn validate_config(config: FirefightingConfig) -> Result<(), FirefightingError> 
         ("approach_fraction", config.approach_fraction),
         ("follow_min_m", config.follow_min_m),
         ("follow_max_m", config.follow_max_m),
+        ("carry_speed_m_per_s", config.carry_speed_m_per_s),
     ];
     for (field, value) in positive {
         if !value.is_finite() || value <= 0.0 {
@@ -1054,6 +1274,7 @@ mod tests {
         let context = Context {
             time_seconds,
             arrival_time_seconds: 5.0,
+            leader_position: leader,
             leader_cell: grid.world_to_cell(leader).expect("on grid"),
             entry_cell: firefighting.crews[0].entry_cell,
             grid,
@@ -1071,6 +1292,7 @@ mod tests {
             memory: CrewMemory::default(),
             room_target: None,
             spray_target: None,
+            carrying: None,
         }
     }
 

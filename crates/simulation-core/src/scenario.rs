@@ -51,7 +51,27 @@ pub struct OccupantSpawn {
     /// (seeking information, preparing). See [`AlarmConfig`](crate::AlarmConfig).
     #[serde(default)]
     pub pre_movement_delay_seconds: f64,
+    /// Hurt and unable to move; waits for a firefighter to carry them out.
+    #[serde(default)]
+    pub injured: bool,
 }
+
+/// Marks a repeatable random `fraction` of `occupants` injured (rounded to
+/// the nearest whole person) and the rest not.
+pub fn choose_injured(occupants: &mut [OccupantSpawn], fraction: f64, seed: u64) {
+    let count = (occupants.len() as f64 * fraction.clamp(0.0, 1.0)).round() as usize;
+    let mut order = (0..occupants.len()).collect::<Vec<_>>();
+    order.sort_by(|&left, &right| {
+        let roll = |index: usize| crate::crowd::unit(seed, INJURY_ROLL, index as u64, 0);
+        roll(left).total_cmp(&roll(right)).then(left.cmp(&right))
+    });
+    for (rank, index) in order.into_iter().enumerate() {
+        occupants[index].injured = rank < count;
+    }
+}
+
+/// Keeps injury rolls apart from other random draws.
+const INJURY_ROLL: u64 = 0x014A_0BED;
 
 /// One firefighter crew. Members are spawned as agents `"{id}/1"`,
 /// `"{id}/2"`, ... just inside the entry opening.
@@ -430,7 +450,12 @@ fn create_occupants(
             exposure: Exposure::NONE,
             movement: Movement::Stopped,
             role: AgentRole::Occupant(OccupantState {
-                phase: OccupantPhase::Unaware,
+                phase: if occupant.injured {
+                    OccupantPhase::Injured
+                } else {
+                    OccupantPhase::Unaware
+                },
+                injured: occupant.injured,
                 walking_speed_m_per_s: occupant.walking_speed_m_per_s,
                 pre_movement_delay_seconds: occupant.pre_movement_delay_seconds,
                 target_exit_id: None,

@@ -60,7 +60,10 @@ impl Agent {
             exposure: self.exposure,
             movement: self.movement,
             role: match &self.role {
-                AgentRole::Occupant(state) => AgentFrameRole::Occupant { phase: state.phase },
+                AgentRole::Occupant(state) => AgentFrameRole::Occupant {
+                    phase: state.phase,
+                    injured: state.injured,
+                },
                 AgentRole::Firefighter(state) => AgentFrameRole::Firefighter {
                     crew_id: state.crew_id.clone(),
                     phase: state.phase,
@@ -126,6 +129,9 @@ pub struct OccupantState {
     pub pre_movement_delay_seconds: f64,
     /// `OpeningConnection` ID of the exit the occupant is heading for.
     pub target_exit_id: Option<String>,
+    /// Hurt at the start of the run and unable to move; only a firefighter
+    /// can get them out. Stays true once rescued, for reporting.
+    pub injured: bool,
 }
 
 /// Occupant behavior phases (see `TECH_STACK.md`, "Occupants"). Avoid a
@@ -143,6 +149,10 @@ pub enum OccupantPhase {
     Exited,
     /// Exposure reached an incapacitating dose. Never labeled "dead".
     Incapacitated,
+    /// Hurt and unable to move, waiting for a firefighter.
+    Injured,
+    /// Being carried out by a firefighter.
+    Carried,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -167,6 +177,10 @@ pub enum FirefighterPhase {
     /// Walking into the next room on the route, or toward a known fire.
     Advancing,
     Suppressing,
+    /// Going to pick up an injured occupant.
+    Rescuing,
+    /// Carrying an injured occupant out.
+    Carrying,
     Withdrawing,
     Exited,
     Incapacitated,
@@ -197,6 +211,10 @@ pub struct AgentFrame {
 pub enum AgentFrameRole {
     Occupant {
         phase: OccupantPhase,
+        /// Started the run injured. An injured occupant who has exited was
+        /// carried out.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        injured: bool,
     },
     Firefighter {
         crew_id: String,

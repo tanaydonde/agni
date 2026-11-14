@@ -457,11 +457,19 @@ impl Crowd {
                 let (firefighter, collidable, fallen) = match &agent.role {
                     AgentRole::Occupant(state) => (
                         false,
+                        // Someone lying hurt is stepped over; someone being
+                        // carried moves with the firefighter.
                         !matches!(
                             state.phase,
-                            OccupantPhase::Exited | OccupantPhase::Incapacitated
+                            OccupantPhase::Exited
+                                | OccupantPhase::Incapacitated
+                                | OccupantPhase::Injured
+                                | OccupantPhase::Carried
                         ),
-                        state.phase == OccupantPhase::Incapacitated,
+                        matches!(
+                            state.phase,
+                            OccupantPhase::Incapacitated | OccupantPhase::Injured
+                        ),
                     ),
                     // A crew staging outside isn't in anyone's way yet.
                     AgentRole::Firefighter(state) => (
@@ -1262,6 +1270,20 @@ fn path_target(
         remaining -= distance;
         next += 1;
     }
+    // At the last cell, finish at its center rather than at its edge.
+    if next >= path.len()
+        && remaining > 0.0
+        && let Some(center) = path.last().and_then(|&cell| grid.cell_center(cell))
+    {
+        let distance = distance_2d(point, center);
+        let fraction = if distance > remaining {
+            remaining / distance
+        } else {
+            1.0
+        };
+        point.x += (center.x - point.x) * fraction;
+        point.y += (center.y - point.y) * fraction;
+    }
     (distance_2d(point, position) > GAP_EPSILON_M).then_some(point)
 }
 
@@ -1427,6 +1449,7 @@ mod tests {
             } else {
                 AgentRole::Occupant(OccupantState {
                     phase: OccupantPhase::MovingToExit,
+                    injured: false,
                     walking_speed_m_per_s: 1.2,
                     pre_movement_delay_seconds: 0.0,
                     target_exit_id: None,

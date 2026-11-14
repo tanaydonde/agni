@@ -465,7 +465,7 @@ fn two_room_scene() -> Scene {
 }
 
 fn phase(agent: &tflop_simulation_core::AgentFrame) -> OccupantPhase {
-    let AgentFrameRole::Occupant { phase } = agent.role else {
+    let AgentFrameRole::Occupant { phase, .. } = agent.role else {
         panic!("expected occupant")
     };
     phase
@@ -478,6 +478,7 @@ fn occupant(id: &str, x: f64, y: f64, delay: f64) -> OccupantSpawn {
         position_m: point(x, y),
         walking_speed_m_per_s: 1.0,
         pre_movement_delay_seconds: delay,
+        injured: false,
     }
 }
 

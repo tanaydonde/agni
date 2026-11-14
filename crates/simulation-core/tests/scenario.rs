@@ -314,6 +314,7 @@ fn occupant(id: &str, floor_id: &str, x: f64, y: f64) -> OccupantSpawn {
         position_m: position(x, y),
         walking_speed_m_per_s: DEFAULT_OCCUPANT_WALKING_SPEED_M_PER_S,
         pre_movement_delay_seconds: 0.0,
+        injured: false,
     }
 }
 
@@ -422,4 +423,36 @@ fn crews_accept_the_old_search_order_name_and_default_to_one_member() {
     .expect("crew parses");
     assert_eq!(crew.route, ["west", "east"]);
     assert_eq!(crew.member_count, 1);
+}
+
+#[test]
+fn choose_injured_is_repeatable_and_marks_the_requested_share() {
+    let mut people = (0..20)
+        .map(|index| occupant(&format!("occupant-{index}"), "floor-1", 1.0, 1.0))
+        .collect::<Vec<_>>();
+    tflop_simulation_core::choose_injured(&mut people, 0.25, 7);
+    let marked = people
+        .iter()
+        .map(|person| person.injured)
+        .collect::<Vec<_>>();
+    assert_eq!(marked.iter().filter(|&&injured| injured).count(), 5);
+
+    tflop_simulation_core::choose_injured(&mut people, 0.25, 7);
+    assert_eq!(
+        people
+            .iter()
+            .map(|person| person.injured)
+            .collect::<Vec<_>>(),
+        marked
+    );
+    tflop_simulation_core::choose_injured(&mut people, 0.25, 8);
+    assert_ne!(
+        people
+            .iter()
+            .map(|person| person.injured)
+            .collect::<Vec<_>>(),
+        marked
+    );
+    tflop_simulation_core::choose_injured(&mut people, 0.0, 7);
+    assert!(people.iter().all(|person| !person.injured));
 }

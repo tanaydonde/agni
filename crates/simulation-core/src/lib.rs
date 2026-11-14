@@ -23,7 +23,7 @@ pub use agent::{
 pub use crowd::{CROWD_GIVE_M, CrowdConfig, CrowdConfigError, SINGLE_FILE_MAX_WIDTH_M};
 pub use evacuation::{AlarmConfig, Evacuation, EvacuationError, reachable_exit_cells};
 pub use firefighting::{
-    CrewMemory, CrewReport, Firefighting, FirefightingConfig, FirefightingError,
+    CrewMemory, CrewReport, Firefighting, FirefightingConfig, FirefightingError, InjuredSighting,
 };
 pub use grid::{
     GridBounds, GridBuildError, GridCell, GridCellKind, GridCoordinate, GridSummary, SimulationGrid,
@@ -37,7 +37,7 @@ pub use results::{
 pub use scenario::{
     CrewSpawn, DEFAULT_FIREFIGHTER_WALKING_SPEED_M_PER_S, DEFAULT_OCCUPANT_WALKING_SPEED_M_PER_S,
     MAX_CREW_MEMBERS, OccupantSpawn, SCENARIO_SCHEMA_VERSION, Scenario, ScenarioValidationError,
-    ScenarioValidationErrors, exterior_exits,
+    ScenarioValidationErrors, choose_injured, exterior_exits,
 };
 pub use surface_fire::{
     CombustionState, DEFAULT_NOZZLE_COOLING_KW, DEFAULT_NOZZLE_HALF_ANGLE_DEGREES,
