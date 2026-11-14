@@ -1,0 +1,163 @@
+use serde::{Deserialize, Serialize};
+
+pub(crate) const MODEL_QUERY: &str = r#"
+query ImportModel($id: ID!) {
+  model(id: $id) {
+    id
+    name
+    floors { id label }
+    rooms {
+      id
+      label
+      floor { id }
+      classifications { label confidence }
+      dimensions(units: metric) { areaFloor width depth height }
+      dimensionEstimates(units: metric) { area width depth height lowerElevation }
+      boundary {
+        edges {
+          id
+          type
+          thickness
+          centerLineBias
+          vertices { id position { x y } }
+          openings { id label type width height lowerElevation relativeCenter }
+        }
+      }
+    }
+  }
+}
+"#;
+
+#[derive(Debug, Serialize)]
+pub(crate) struct GraphQlRequest<'a> {
+    pub query: &'a str,
+    pub variables: Variables<'a>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct Variables<'a> {
+    pub id: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct GraphQlResponse {
+    pub data: Option<GraphQlData>,
+    #[serde(default)]
+    pub errors: Vec<GraphQlError>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct GraphQlError {
+    pub message: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct GraphQlData {
+    pub model: Option<Model>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct Model {
+    pub id: String,
+    pub name: Option<String>,
+    #[serde(default)]
+    pub floors: Vec<ModelFloor>,
+    #[serde(default)]
+    pub rooms: Vec<ModelRoom>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ModelFloor {
+    pub id: String,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ModelRoom {
+    pub id: String,
+    pub label: Option<String>,
+    pub floor: Option<IdReference>,
+    #[serde(default)]
+    pub classifications: Vec<Classification>,
+    pub dimensions: Option<LegacyDimensions>,
+    #[serde(rename = "dimensionEstimates")]
+    pub dimension_estimates: Option<DimensionEstimates>,
+    pub boundary: Option<BoundedRegion>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct IdReference {
+    pub id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct Classification {
+    pub label: String,
+    pub confidence: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct LegacyDimensions {
+    #[serde(rename = "areaFloor")]
+    pub area_floor: Option<f64>,
+    pub width: Option<f64>,
+    pub depth: Option<f64>,
+    pub height: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct DimensionEstimates {
+    pub area: Option<f64>,
+    pub width: Option<f64>,
+    pub depth: Option<f64>,
+    pub height: Option<f64>,
+    #[serde(rename = "lowerElevation")]
+    pub lower_elevation: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct BoundedRegion {
+    #[serde(default)]
+    pub edges: Vec<Edge>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct Edge {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub thickness: Option<f64>,
+    #[serde(rename = "centerLineBias")]
+    pub center_line_bias: Option<f64>,
+    #[serde(default)]
+    pub vertices: Vec<Vertex>,
+    #[serde(default)]
+    pub openings: Vec<ModelOpening>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct Vertex {
+    #[allow(dead_code)]
+    pub id: String,
+    pub position: Point2,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct Point2 {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ModelOpening {
+    pub id: String,
+    pub label: Option<String>,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub width: f64,
+    pub height: Option<f64>,
+    #[serde(rename = "lowerElevation")]
+    pub lower_elevation: Option<f64>,
+    #[serde(rename = "relativeCenter")]
+    pub relative_center: f64,
+}

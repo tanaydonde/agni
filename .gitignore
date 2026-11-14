@@ -2,3 +2,16 @@
 .env.*
 !.env.example
 __pycache__/
+
+# Rust build output
+/target/
+
+# Downloaded and generated Matterport data
+/data/assets/
+/data/prepared-scenes/*.json
+/data/prepared-scenes/*.zip
+/data/prepared-scenes/*.obj
+/data/prepared-scenes/*.mtl
+/data/prepared-scenes/*.jpg
+/data/prepared-scenes/*.png
+/data/prepared-scenes/*.xyz
