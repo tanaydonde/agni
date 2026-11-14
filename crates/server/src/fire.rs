@@ -1,10 +1,6 @@
-//! `POST /api/fire/simulate`: ignites one furniture object and runs the
-//! surface-fire simulation to completion on a snapshot of the world's scene.
-//!
-//! The whole timeline comes back in one response, in the `SimulationResults`
-//! shape the renderer reads (`docs/FIRE_FRONTEND.md`). Only `surface_fire` is
-//! filled for now; CFAST rooms, fires, and openings stay empty until the
-//! Rust-to-CFAST adapter exists.
+//! Fire simulation endpoints. `/api/fire/simulate` preserves the original
+//! Rust-only surface simulation; `/api/fire/simulate/hybrid` feeds that
+//! timeline into CFAST and returns the merged renderer contract.
 
 use axum::{
     Json,
@@ -14,12 +10,16 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tflop_cfast::{
+    CfastOpeningState, CfastRunner, CfastScenario, SurfaceFireAdapterConfig,
+    adapt_surface_fire_for_cfast, merge_cfast_with_surface_fire, prepare_cfast_scene,
+};
 use tflop_simulation_core::{
     CombustionState, FireMaterialCatalog, SIMULATION_RESULTS_SCHEMA_VERSION, SimulationEngine,
     SimulationFrame, SimulationResults, SurfaceFireConfig, SurfaceFireError, SurfaceFireFrame,
     SurfaceFireWorld,
 };
-use tflop_world_core::Scene;
+use tflop_world_core::{Scene, resolve_opening_connections};
 
 use crate::{SharedWorld, decode, lock};
 
@@ -27,6 +27,7 @@ const DEFAULT_DURATION_SECONDS: f64 = 180.0;
 const MAX_DURATION_SECONDS: f64 = 600.0;
 const DEFAULT_STEP_SECONDS: f64 = 1.0;
 const MIN_STEP_SECONDS: f64 = 0.1;
+const CFAST_OUTPUT_INTERVAL_SECONDS: f64 = 5.0;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct SimulateFireRequest {
@@ -59,6 +60,46 @@ pub(crate) async fn simulate(
     let snapshot = lock(&world).get_scene();
     let result =
         tokio::task::spawn_blocking(move || run(snapshot.scene, snapshot.revision, &request)).await;
+    match result {
+        Ok(Ok(response)) => Json(response).into_response(),
+        Ok(Err((status, body))) => (status, Json(body)).into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "code": "internal", "message": error.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+/// Runs spatial surface fire, derives room-level CFAST fires, executes CFAST,
+/// and merges the room conditions back onto every spatial frame.
+pub(crate) async fn simulate_hybrid(
+    State(world): State<SharedWorld>,
+    body: Result<Json<SimulateFireRequest>, JsonRejection>,
+) -> Response {
+    let request = match decode(body) {
+        Ok(request) => request,
+        Err(rejection) => return rejection.into_response(),
+    };
+    let cfast_path = match std::env::var("CFAST_BIN") {
+        Ok(path) if !path.trim().is_empty() => path,
+        _ => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "code": "cfast_not_configured",
+                    "message": "set CFAST_BIN to the CFAST 7.7.7 executable path"
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let snapshot = lock(&world).get_scene();
+    let result = tokio::task::spawn_blocking(move || {
+        run_hybrid(snapshot.scene, snapshot.revision, &request, &cfast_path)
+    })
+    .await;
     match result {
         Ok(Ok(response)) => Json(response).into_response(),
         Ok(Err((status, body))) => (status, Json(body)).into_response(),
@@ -123,7 +164,10 @@ fn run(
     })?;
 
     let mut frames = vec![first];
-    while frames.last().is_some_and(|frame| frame.time_seconds < duration) {
+    while frames
+        .last()
+        .is_some_and(|frame| frame.time_seconds < duration)
+    {
         let frame = fire.step(step).map_err(|error| simulation_failed(&error))?;
         let active = frame.active_nodes.iter().any(|node| {
             matches!(
@@ -151,6 +195,136 @@ fn run(
             frames: frames.into_iter().map(simulation_frame).collect(),
         },
     })
+}
+
+fn run_hybrid(
+    source_scene: Scene,
+    revision: u64,
+    request: &SimulateFireRequest,
+    cfast_path: &str,
+) -> Result<SimulateFireResponse, Failure> {
+    let object_id = request.object_id.as_str();
+    require_object(&source_scene, object_id)?;
+
+    let prepared = prepare_cfast_scene(&source_scene)
+        .map_err(|error| simulation_failure("cfast_preparation_failed", error.to_string()))?;
+    let mut scene = prepared.scene;
+    let duration = clamp(
+        request.duration_seconds,
+        DEFAULT_DURATION_SECONDS,
+        MIN_STEP_SECONDS,
+        MAX_DURATION_SECONDS,
+    );
+    let step = clamp(
+        request.step_seconds,
+        DEFAULT_STEP_SECONDS,
+        MIN_STEP_SECONDS,
+        duration,
+    );
+
+    let (mut fire, excluded_object_ids) = build_fire_world(&mut scene)?;
+    if excluded_object_ids.iter().any(|id| id == object_id) {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({
+                "code": "object_outside_rooms",
+                "object_id": object_id,
+                "message": "the object doesn't stand inside a CFAST-compatible room"
+            }),
+        ));
+    }
+    let surface_frames = run_surface_timeline(&mut fire, object_id, duration, step)?;
+    let cfast_timeline =
+        adapt_surface_fire_for_cfast(&surface_frames, SurfaceFireAdapterConfig::default())
+            .map_err(|error| simulation_failure("cfast_adapter_failed", error.to_string()))?;
+    let openings = resolve_opening_connections(&scene)
+        .map_err(|error| simulation_failure("cfast_preparation_failed", error.to_string()))?;
+    let ignition_room_id = cfast_timeline
+        .room_fires
+        .first()
+        .map(|fire| fire.room_id.clone())
+        .ok_or_else(|| simulation_failure("cfast_adapter_failed", "no room fire was produced"))?;
+    let scenario = CfastScenario {
+        id: format!("hybrid:{object_id}"),
+        title: format!("Hybrid simulation igniting {object_id}"),
+        room_id: ignition_room_id,
+        exterior_opening_id: "unused-in-all-room-run".to_owned(),
+        // CFAST emits rows on [0, duration), so run one output interval beyond
+        // the surface endpoint to make interpolation at that endpoint valid.
+        duration_seconds: cfast_timeline.duration_seconds + CFAST_OUTPUT_INTERVAL_SECONDS,
+        output_interval_seconds: CFAST_OUTPUT_INTERVAL_SECONDS,
+        interior_temperature_c: 20.0,
+        exterior_temperature_c: 20.0,
+        relative_humidity_percent: 50.0,
+        opening_states: openings
+            .iter()
+            .map(|opening| CfastOpeningState {
+                opening_id: opening.id.clone(),
+                open_fraction: 1.0,
+            })
+            .collect(),
+        fires: cfast_timeline.room_fires,
+    };
+    let runner = CfastRunner::new(cfast_path).map_err(|error| cfast_failure(error.to_string()))?;
+    let cfast_results = runner
+        .run_all_rooms(&scene, &scenario)
+        .map_err(|error| cfast_failure(error.to_string()))?;
+    let results = merge_cfast_with_surface_fire(&scene, &cfast_results, &surface_frames)
+        .map_err(|error| simulation_failure("cfast_merge_failed", error.to_string()))?;
+
+    Ok(SimulateFireResponse {
+        revision,
+        excluded_object_ids,
+        results,
+    })
+}
+
+fn require_object(scene: &Scene, object_id: &str) -> Result<(), Failure> {
+    if scene
+        .floors
+        .iter()
+        .any(|floor| floor.objects.iter().any(|object| object.id == object_id))
+    {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            json!({ "code": "object_not_found", "object_id": object_id }),
+        ))
+    }
+}
+
+fn run_surface_timeline(
+    fire: &mut SurfaceFireWorld,
+    object_id: &str,
+    duration: f64,
+    step: f64,
+) -> Result<Vec<SurfaceFireFrame>, Failure> {
+    let first = fire.ignite_object(object_id).map_err(|error| match error {
+        SurfaceFireError::NodeNotFound { .. } => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({ "code": "object_not_combustible", "object_id": object_id }),
+        ),
+        error => simulation_failed(&error),
+    })?;
+    let mut frames = vec![first];
+    while frames
+        .last()
+        .is_some_and(|frame| frame.time_seconds < duration)
+    {
+        let frame = fire.step(step).map_err(|error| simulation_failed(&error))?;
+        let active = frame.active_nodes.iter().any(|node| {
+            matches!(
+                node.state,
+                CombustionState::Heating | CombustionState::Burning
+            )
+        });
+        frames.push(frame);
+        if !active {
+            break;
+        }
+    }
+    Ok(frames)
 }
 
 /// Builds the fire world, dropping any object the simulation can't place in a
@@ -190,6 +364,20 @@ fn simulation_failed(error: &SurfaceFireError) -> Failure {
     (
         StatusCode::UNPROCESSABLE_ENTITY,
         json!({ "code": "simulation_failed", "message": error.to_string() }),
+    )
+}
+
+fn simulation_failure(code: &'static str, message: impl Into<String>) -> Failure {
+    (
+        StatusCode::UNPROCESSABLE_ENTITY,
+        json!({ "code": code, "message": message.into() }),
+    )
+}
+
+fn cfast_failure(message: impl Into<String>) -> Failure {
+    (
+        StatusCode::BAD_GATEWAY,
+        json!({ "code": "cfast_failed", "message": message.into() }),
     )
 }
 

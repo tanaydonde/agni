@@ -1561,6 +1561,7 @@ dependencies = [
  "http-body-util",
  "serde",
  "serde_json",
+ "tflop-cfast",
  "tflop-furniture-detect",
  "tflop-simulation-core",
  "tflop-world-core",
