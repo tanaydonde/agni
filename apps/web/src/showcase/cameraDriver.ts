@@ -1,14 +1,21 @@
 import { DIRECTION, type Direction, MODE, type MpSdk, SWEEP_TRANSITION } from './sdk'
 
 /**
- * Keyboard camera control for the Showcase view. Swappable: today's driver
- * hops between scans; a free-flying one can replace it if Showcase lets us
- * drive its camera directly.
+ * Camera control for the Showcase view. Two drivers: one flies freely (see
+ * flyDriver.ts) and this file's hops between scans, the fallback when
+ * Showcase won't let us drive its camera.
  */
 export interface CameraDriver {
   /** Returns true when the key is one the driver handles (so the caller can preventDefault). */
   keyDown(code: string): boolean
   keyUp(code: string): void
+  /** Lets go of every held key, e.g. when focus leaves the view. */
+  releaseAll(): void
+  /**
+   * Turns the camera by a pointer movement in pixels. Absent when Showcase's
+   * own drag-to-look is in charge.
+   */
+  look?(dx: number, dy: number): void
   /** Back to where the tour started. */
   home(): void
   dispose(): void
@@ -66,6 +73,9 @@ export function createHopDriver(sdk: HopSdk, startSweep: string | null): CameraD
     keyUp(code) {
       const direction = HOP_KEYS[code]
       if (direction) release(direction)
+    },
+    releaseAll() {
+      held.length = 0
     },
     home() {
       held.length = 0

@@ -80,7 +80,8 @@ export interface ComponentContext {
  * factories. Showcase fills in `context` and `outputs` before `onInit`.
  */
 export interface SceneComponent<Inputs extends object = Record<string, unknown>> {
-  inputs: Inputs
+  /** Leave out when unused: an empty `inputs: {}` makes Bundle 26.5.4's addComponent throw. */
+  inputs?: Inputs
   outputs?: { objectRoot?: THREE.Object3D | null }
   context?: ComponentContext
   onInit?(): void
@@ -118,6 +119,15 @@ export interface MpSdk {
   Scene: {
     register(name: string, factory: () => SceneComponent<never>): Promise<{ dispose(): void } | null>
     createObjects(count: number): Promise<SceneObject[]>
+  }
+  /**
+   * Hidden, experimental helpers (used by @matterport/r3f). Turning both off
+   * stops Showcase's own drag-to-look, arrow keys and click-to-walk, so we
+   * can drive the camera ourselves.
+   */
+  R3F?: {
+    controlsToggle(enabled: boolean): Promise<void>
+    navigationToggle(enabled: boolean): Promise<void>
   }
   disconnect(): void
 }
@@ -190,4 +200,26 @@ export function readMap<T>(map: ObservableMap<T>): Promise<Record<string, T>> {
       },
     })
   })
+}
+
+/**
+ * Showcase controls we don't want, hidden with CSS: Showcase only has URL
+ * parameters for some of them (`vr=0`; `mls=1` drops share too but keeps the
+ * logo). Aria-labels are Showcase's English strings; the logo's class is
+ * hashed per build except for its `logo--footer` prefix.
+ */
+const HIDDEN_SHOWCASE_CONTROLS = [
+  'button[aria-label="Search"]',
+  'button[aria-label="Share this Space"]',
+  'button.view-in-vr',
+  'button[aria-label="View Fullscreen"]',
+  '[class*="logo--footer"]', // the Matterport logo, linked or not
+]
+
+/** Hides HIDDEN_SHOWCASE_CONTROLS in the (same-origin) Showcase page. */
+export function hideShowcaseControls(page: Document): void {
+  const style = page.createElement('style')
+  style.dataset.tflop = 'hidden-controls'
+  style.textContent = `${HIDDEN_SHOWCASE_CONTROLS.join(',\n')} { display: none !important; }`
+  page.head.append(style)
 }

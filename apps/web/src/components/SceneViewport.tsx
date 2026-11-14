@@ -12,6 +12,7 @@ import { TransformGizmo } from '../scene/TransformGizmo'
 import type { Floor, Scene } from '../scene/types'
 import { ShowcaseViewport } from '../showcase/ShowcaseViewport'
 import { ControlsHint, type Controls } from './ControlsHint'
+import { FlyIndicator } from './FlyIndicator'
 
 interface SceneViewportProps {
   /** Scene the dev setup expects; only used in setup instructions. */
@@ -135,15 +136,7 @@ function SceneCanvas({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; me
         <SelectionController element={focusTarget} floor={floor} />
         <PlacementController scene={scene} floor={floor} />
       </Canvas>
-      {active && (
-        <>
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-0 rounded-lg ring-2 ring-inset ring-accent"
-          />
-          <Crosshair />
-        </>
-      )}
+      {active && <FlyIndicator />}
       <PlacementStatus />
       <ControlsHint
         title={active ? 'Flying' : 'Editing'}
@@ -183,16 +176,6 @@ function PlacementStatus() {
     >
       {text}
     </div>
-  )
-}
-
-/** Marks the middle of the view in fly mode, which pinch and orbit aim at. */
-function Crosshair() {
-  return (
-    <div
-      aria-hidden
-      className="pointer-events-none absolute top-1/2 left-1/2 size-1.5 -translate-1/2 rounded-full bg-white ring-1 ring-ink/60"
-    />
   )
 }
 
