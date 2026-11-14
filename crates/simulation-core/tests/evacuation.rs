@@ -1,6 +1,6 @@
 use tflop_simulation_core::{
-    AgentFrameRole, CombustionState, Evacuation, OccupantPhase, OccupantSpawn, SimulationConfig,
-    SurfaceFireNodeFrame, SurfaceFireNodeSource,
+    AgentFrameRole, CROWD_GIVE_M, CombustionState, Evacuation, OccupantPhase, OccupantSpawn,
+    SimulationConfig, SurfaceFireNodeFrame, SurfaceFireNodeSource,
 };
 use tflop_world_core::{
     BoundaryEdge, BoundaryKind, Dimensions3, Floor, Opening, OpeningKind, Room,
@@ -60,7 +60,10 @@ fn converging_occupants_never_overlap() {
         }
         let dx = agents[0].position_m.x - agents[1].position_m.x;
         let dy = agents[0].position_m.y - agents[1].position_m.y;
-        assert!(dx.hypot(dy) >= agents[0].radius_m + agents[1].radius_m);
+        // People converging in an open room may press together a little.
+        assert!(
+            dx.hypot(dy) >= agents[0].radius_m + agents[1].radius_m - 2.0 * CROWD_GIVE_M - 1.0e-9
+        );
     }
 }
 

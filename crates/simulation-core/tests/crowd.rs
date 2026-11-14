@@ -2,9 +2,10 @@
 //! doors and hallways, and squeeze past each other.
 
 use tflop_simulation_core::{
-    AgentFrame, AgentFrameRole, CrewSpawn, CrowdConfig, Evacuation, FireMaterialCatalog,
-    FirefighterPhase, Firefighting, FirefightingConfig, Movement, OccupantPhase, OccupantSpawn,
-    Rehearsal, RehearsalFrame, SimulationConfig, SurfaceFireConfig, SurfaceFireWorld,
+    AgentFrame, AgentFrameRole, CROWD_GIVE_M, CrewSpawn, CrowdConfig, Evacuation,
+    FireMaterialCatalog, FirefighterPhase, Firefighting, FirefightingConfig, Movement,
+    OccupantPhase, OccupantSpawn, Rehearsal, RehearsalFrame, SimulationConfig, SurfaceFireConfig,
+    SurfaceFireWorld,
 };
 use tflop_world_core::{
     BoundaryEdge, BoundaryKind, Floor, Opening, OpeningKind, Room, SCENE_SCHEMA_VERSION, Scene,
@@ -15,7 +16,7 @@ const STEP_SECONDS: f64 = 0.5;
 const HALL_WIDTH_M: f64 = 1.2;
 
 #[test]
-fn bodies_never_overlap_unless_squeezing_past() {
+fn bodies_never_press_into_each_other_unless_squeezing_past() {
     let frames = run(&occupants(30), None, 240.0);
     for frame in &frames {
         let inside = inside(frame);
@@ -24,9 +25,10 @@ fn bodies_never_overlap_unless_squeezing_past() {
                 if squeezing(left) || squeezing(right) {
                     continue;
                 }
+                // Pressed together in an open crowd, people give a little.
                 let gap = distance(left.position_m, right.position_m);
                 assert!(
-                    gap >= left.radius_m + right.radius_m - 1.0e-6,
+                    gap >= left.radius_m + right.radius_m - 2.0 * CROWD_GIVE_M - 1.0e-6,
                     "{} and {} overlap by {:.3} m at t={}",
                     left.id,
                     right.id,
@@ -148,6 +150,33 @@ fn a_crew_staging_at_the_exit_does_not_block_it() {
         AgentFrameRole::Firefighter { phase, .. } => *phase == FirefighterPhase::Staging,
         AgentFrameRole::Occupant { .. } => true,
     }));
+}
+
+#[test]
+fn a_packed_office_and_a_crew_never_gridlock() {
+    let scene = scene_fixture();
+    for seed in 0..4 {
+        let config = SimulationConfig {
+            random_seed: seed,
+            ..SimulationConfig::default()
+        };
+        let evacuation =
+            Evacuation::new(&scene, &occupants(45), config).expect("evacuation builds");
+        let crew = Firefighting::new(&scene, &[crew(5.0)], config, FirefightingConfig::default())
+            .expect("crew is valid");
+        let mut rehearsal =
+            Rehearsal::new(fire_world(&scene), Some(evacuation)).with_firefighting(crew);
+        let frames = rehearsal
+            .run_until(600.0, STEP_SECONDS)
+            .expect("run succeeds");
+        let last = frames.last().expect("frames");
+        assert!(
+            rehearsal.is_settled(),
+            "seed {seed}: {} still inside at t={}",
+            inside(last).len(),
+            last.fire.time_seconds
+        );
+    }
 }
 
 #[test]

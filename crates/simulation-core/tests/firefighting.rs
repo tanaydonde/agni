@@ -1,10 +1,10 @@
 use std::collections::BTreeSet;
 
 use tflop_simulation_core::{
-    AgentFrame, AgentFrameRole, CombustionState, CrewReport, CrewSpawn, FIREFIGHTER_RADIUS_M,
-    FireMaterialCatalog, FirefighterPhase, Firefighting, FirefightingConfig, FirefightingError,
-    Movement, OCCUPANT_RADIUS_M, Rehearsal, RehearsalFrame, Simulation, SimulationConfig,
-    SimulationGrid, SurfaceFireConfig, SurfaceFireNodeFrame, SurfaceFireWorld,
+    AgentFrame, AgentFrameRole, CROWD_GIVE_M, CombustionState, CrewReport, CrewSpawn,
+    FIREFIGHTER_RADIUS_M, FireMaterialCatalog, FirefighterPhase, Firefighting, FirefightingConfig,
+    FirefightingError, Movement, OCCUPANT_RADIUS_M, Rehearsal, RehearsalFrame, Simulation,
+    SimulationConfig, SimulationGrid, SurfaceFireConfig, SurfaceFireNodeFrame, SurfaceFireWorld,
     reachable_exit_cells,
 };
 use tflop_world_core::{
@@ -330,10 +330,11 @@ fn the_crew_stays_together_without_overlapping() {
         }
         let follower = firefighter(frame, FOLLOWER);
         let gap = distance(leader.position_m, follower.position_m);
-        // Crewmates may squeeze past each other in a doorway.
+        // Crewmates may squeeze past each other in a doorway, and press
+        // together a little in a room.
         let squeezing = [leader.movement, follower.movement].contains(&Movement::Squeezing);
         assert!(
-            squeezing || gap >= 2.0 * FIREFIGHTER_RADIUS_M,
+            squeezing || gap >= 2.0 * FIREFIGHTER_RADIUS_M - 2.0 * CROWD_GIVE_M - 1.0e-9,
             "overlap {gap:.2} m at t={}",
             frame.fire.time_seconds
         );

@@ -20,7 +20,7 @@ pub use agent::{
     Agent, AgentFrame, AgentFrameRole, AgentRole, Exposure, FIREFIGHTER_RADIUS_M, FirefighterPhase,
     FirefighterState, Movement, OCCUPANT_RADIUS_M, OccupantPhase, OccupantState,
 };
-pub use crowd::{CrowdConfig, CrowdConfigError, SINGLE_FILE_MAX_WIDTH_M};
+pub use crowd::{CROWD_GIVE_M, CrowdConfig, CrowdConfigError, SINGLE_FILE_MAX_WIDTH_M};
 pub use evacuation::{Evacuation, EvacuationError, reachable_exit_cells};
 pub use firefighting::{
     CrewMemory, CrewReport, Firefighting, FirefightingConfig, FirefightingError,

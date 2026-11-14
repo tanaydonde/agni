@@ -20,7 +20,8 @@ use tflop_world_core::Vec3;
 use thiserror::Error;
 
 use crate::{
-    Agent, AgentRole, FirefighterPhase, GridCoordinate, Movement, OccupantPhase, SimulationGrid,
+    Agent, AgentRole, FirefighterPhase, GridCoordinate, Movement, OCCUPANT_RADIUS_M, OccupantPhase,
+    SimulationGrid,
     exit_field::ExitField,
     nav::{Hazard, HazardMap, distance_2d},
 };
@@ -30,9 +31,12 @@ pub const SINGLE_FILE_MAX_WIDTH_M: f64 = 1.8;
 /// How far past a door's own cells its single-file rule reaches, so people
 /// line up before stepping into the doorway.
 const DOOR_APPROACH_M: f64 = 0.5;
-/// Spatial hash bucket. Larger than any distance at which two bodies can
-/// interact, including along a passage.
-const BUCKET_SIZE_M: f64 = 2.5;
+/// Spatial hash bucket.
+const BUCKET_SIZE_M: f64 = 1.0;
+/// Farthest apart two bodies' centers can be and still touch, with margin.
+const CONTACT_REACH_M: f64 = 1.0;
+/// Farthest apart two bodies in one passage can be and still touch along it.
+const PASSAGE_REACH_M: f64 = SINGLE_FILE_MAX_WIDTH_M + 0.7;
 /// A body that covers less than this share of its desired move is blocked.
 const BLOCKED_FRACTION: f64 = 0.3;
 /// Moving less than this from where a body last made progress counts as
@@ -44,8 +48,18 @@ const COUNTERFLOW_DOT: f64 = -0.3;
 const COUNTERFLOW_RADIUS_M: f64 = 1.5;
 const COUNTERFLOW_MIN_PEOPLE: usize = 2;
 /// A squeeze that hasn't got the pair past each other by then ends as soon
-/// as they are clear of each other, even if neither got past.
+/// as they are clear of each other, even if neither got past, or once both
+/// have been stuck for [`STALL_RELEASE_SECONDS`].
 const PERMIT_TIMEOUT_SECONDS: f64 = 8.0;
+const STALL_RELEASE_SECONDS: f64 = 2.0;
+/// How far two bodies in an open crowd may press into each other. Without
+/// some give, people converging on a door wedge into an arch nobody can
+/// break.
+pub const CROWD_GIVE_M: f64 = 0.08;
+/// Farthest a body is shoved in one sub-step, and the clearance a shove
+/// leaves.
+const MAX_PUSH_M: f64 = 0.2;
+const PUSH_MARGIN_M: f64 = 0.005;
 /// Sidesteps cover this share of a full step.
 const SIDESTEP_FRACTION: f64 = 0.8;
 const SIDESTEP_DEGREES: [f64; 4] = [35.0, -35.0, 70.0, -70.0];
@@ -72,8 +86,10 @@ pub struct CrowdConfig {
     /// An occupant blocked this long in an open room tries wider sidesteps,
     /// giving way.
     pub room_yield_after_seconds: f64,
-    /// Bodies that have both made no progress for this long squeeze past each
-    /// other, so a jam can never last forever.
+    /// Bodies that block each other in a circle (A waits on B, who waits on
+    /// C, who waits on A) and have made no progress for this long squeeze
+    /// past, so a jam can never last forever. A queue that is only waiting
+    /// for its front to move is not a deadlock.
     pub deadlock_after_seconds: f64,
     pub occupant_squeeze_speed_factor: f64,
     /// Turnout gear and hose make squeezing past people slower.
@@ -242,12 +258,26 @@ impl PassageMap {
             })
             .collect::<Vec<_>>();
 
+        // A doorway is single file only where a body fits through it. The
+        // strips along its jambs are not: nobody standing there is in line.
+        let fits = grid
+            .cells()
+            .iter()
+            .map(|cell| grid.circle_is_walkable(cell.center_m, OCCUPANT_RADIUS_M))
+            .collect::<Vec<_>>();
         let reach = (DOOR_APPROACH_M / grid.cell_size_m).ceil() as i64;
-        let doors = grid
+        let door_cells = grid
             .cells()
             .iter()
             .enumerate()
             .filter(|(_, cell)| cell.is_walkable() && cell.opening_id.is_some())
+            .collect::<Vec<_>>();
+        for &(cell_index, _) in &door_cells {
+            axes[cell_index] = None;
+        }
+        let doors = door_cells
+            .into_iter()
+            .filter(|&(cell_index, _)| fits[cell_index])
             .map(|(cell_index, cell)| (cell.coordinate, axis_of(cell_index)))
             .collect::<Vec<_>>();
         for &(door, axis) in &doors {
@@ -260,7 +290,7 @@ impl PassageMap {
                     continue;
                 }
                 let cell = index(column as usize, row as usize);
-                if walkable[cell] && axes[cell].is_none() {
+                if fits[cell] && axes[cell].is_none() {
                     axes[cell] = Some(axis);
                 }
             }
@@ -346,6 +376,9 @@ struct BodyState {
     /// A firefighter giving way stands still until then.
     hold_until: f64,
     path_progress: usize,
+    /// How far it still has to go, for deciding who pushes whom. Lower is
+    /// closer.
+    remaining: u64,
 }
 
 /// Two bodies allowed to pass through each other while they squeeze past.
@@ -357,6 +390,9 @@ struct Permit {
     /// once the other body is behind the mover along it, and clear of it.
     direction: (f64, f64),
     started_at: f64,
+    /// Wedged and given up: the pair still overlap but may now only move
+    /// apart, and the squeeze ends once they are clear.
+    separating: bool,
 }
 
 /// One body for the length of a step.
@@ -533,7 +569,11 @@ impl Crowd {
             .collect::<Vec<_>>();
         let buckets = Buckets::new(bodies, positions, &self.states);
 
-        let order = shuffled(bodies.len(), mix(self.seed ^ mix(self.substeps)));
+        // The front of the crowd moves first, so space it leaves is there
+        // for the people behind. Ties (and everyone, on the first step) go
+        // in a repeatable shuffled order.
+        let mut order = shuffled(bodies.len(), mix(self.seed ^ mix(self.substeps)));
+        order.sort_by_key(|&index| (!bodies[index].firefighter, self.states[index].remaining));
         for index in order {
             self.move_body(
                 index,
@@ -547,7 +587,7 @@ impl Crowd {
                 &mut axes,
             );
         }
-        self.start_contests(bodies);
+        self.start_contests(bodies, &axes);
         self.end_permits(groups, bodies, positions, &axes);
         self.time_seconds += seconds;
     }
@@ -606,6 +646,16 @@ impl Crowd {
             ),
             Goal::Field(field) => field_target(grid, field, position, step_m),
         };
+        self.states[index].remaining = match &intent.goal {
+            Goal::Hold => u64::MAX,
+            Goal::Path(path) => {
+                (path.len() - self.states[index].path_progress.min(path.len())) as u64
+            }
+            Goal::Field(field) => grid
+                .world_to_cell(position)
+                .and_then(|cell| field.cost(cell))
+                .unwrap_or(u64::MAX),
+        };
         let Some(target) = target else {
             // Already where it wants to be: standing, not queuing.
             let state = &mut self.states[index];
@@ -651,8 +701,10 @@ impl Crowd {
                 }
             };
 
-        // Step around whoever is in the way, outside single-file passages.
-        if moved < BLOCKED_FRACTION * length && axes[index].is_none() {
+        // Step around whoever is in the way. In a single-file passage bodies
+        // are measured apart along it, so a sidestep there only lines a body
+        // up with the doorway; it can never get it past anyone.
+        if moved < BLOCKED_FRACTION * length {
             let blocker_on_left = blocker.is_some_and(|other| {
                 let to_other = (
                     positions[other].x - position.x,
@@ -690,6 +742,20 @@ impl Crowd {
                     break;
                 }
             }
+        }
+
+        // Still stuck: shove a lower-priority body that isn't in a
+        // single-file line aside, just enough to take the step, if it has
+        // room to give. Nobody in a line is shoved; there they squeeze past.
+        if moved < BLOCKED_FRACTION * length
+            && let Some(other) = blocker
+            && axes[other].is_none()
+            && self.outranks(index, other, context.bodies)
+            && self.push(index, other, shift(1.0), context, positions, axes)
+        {
+            destination = shift(1.0);
+            moved = length;
+            blocker = None;
         }
 
         positions[index] = destination;
@@ -752,17 +818,27 @@ impl Crowd {
             .passages
             .get(body.grid)
             .and_then(|passages| passages.axis_at(grid, candidate));
+        let reach = if candidate_axis.is_some() {
+            PASSAGE_REACH_M
+        } else {
+            CONTACT_REACH_M
+        };
         let mut worst: Option<(f64, usize)> = None;
-        for other in context.buckets.near(body.floor, candidate) {
+        for other in context.buckets.near(body.floor, candidate, reach) {
             let other_body = context.bodies[other];
-            if other == index
-                || !other_body.collidable
-                || self.states[other].arrived
+            if other == index || !other_body.collidable || self.states[other].arrived {
+                continue;
+            }
+            let needed = body.radius_m + other_body.radius_m;
+            // Cheap rejection before measuring along passages.
+            let apart = distance_2d(candidate, positions[other]);
+            let same_passage = candidate_axis.is_some() && candidate_axis == axes[other];
+            if (apart >= needed - GAP_EPSILON_M && !same_passage)
+                || apart > PASSAGE_REACH_M
                 || self.permitted(index, other)
             {
                 continue;
             }
-            let needed = body.radius_m + other_body.radius_m;
             let new_gap = gap(
                 grid,
                 candidate,
@@ -770,10 +846,25 @@ impl Crowd {
                 positions[other],
                 axes[other],
             );
-            if new_gap >= needed - GAP_EPSILON_M {
+            // People pressed together in an open crowd give a little; in a
+            // single-file passage they keep their spacing. Whoever goes first
+            // (someone already in line, a firefighter, or whoever is closer
+            // to where they're going) may press harder, so the front of a
+            // crowd edges into a doorway instead of wedging in an arch.
+            let give = if same_passage {
+                0.0
+            } else if (axes[index].is_some() && axes[other].is_none())
+                || self.outranks(index, other, context.bodies)
+            {
+                2.0 * CROWD_GIVE_M
+            } else {
+                CROWD_GIVE_M
+            };
+            if new_gap >= needed - give - GAP_EPSILON_M {
                 continue;
             }
-            // Bodies already too close may still move apart.
+            // Bodies already too close (separating after a squeeze) may
+            // still move apart, never closer.
             let old_gap = gap(
                 grid,
                 positions[index],
@@ -805,7 +896,10 @@ impl Crowd {
         let mut stepping_over = false;
         let mut oncoming = 0;
         let direction = self.states[index].direction;
-        for other in context.buckets.near(body.floor, position) {
+        for other in context
+            .buckets
+            .near(body.floor, position, COUNTERFLOW_RADIUS_M)
+        {
             if other == index {
                 continue;
             }
@@ -835,7 +929,7 @@ impl Crowd {
     }
 
     /// Grants squeezes to bodies that have been blocked long enough.
-    fn start_contests(&mut self, bodies: &[Body]) {
+    fn start_contests(&mut self, bodies: &[Body], axes: &[Option<Axis>]) {
         for index in 0..bodies.len() {
             let Some(other) = self.states[index].blocker else {
                 continue;
@@ -843,12 +937,20 @@ impl Crowd {
             if !self.states[index].mobile || self.permitted(index, other) {
                 continue;
             }
+            // In an open crowd, occupants squeeze past one person at a time:
+            // pressing past several at once would pile them up. In a passage
+            // people squeeze past a whole line, one after another, and a
+            // firefighter forces through as many people as are in the way.
+            let in_passage = axes[index].is_some() || axes[other].is_some();
+            let mixed = bodies[index].firefighter != bodies[other].firefighter;
+            if !in_passage && !mixed && (self.in_permit(index) || self.in_permit(other)) {
+                continue;
+            }
             let mine = &self.states[index];
             let theirs = &self.states[other];
             let head_on = theirs.blocker == Some(index)
                 || (theirs.mobile
                     && matches!((mine.direction, theirs.direction), (Some(a), Some(b)) if dot(a, b) < HEAD_ON_DOT));
-            let mixed = bodies[index].firefighter != bodies[other].firefighter;
             let crewmates =
                 bodies[index].crew.is_some() && bodies[index].crew == bodies[other].crew;
             let contest = if mixed {
@@ -856,13 +958,14 @@ impl Crowd {
             } else if crewmates {
                 mine.blocked_seconds >= self.config.queued_after_seconds
             } else {
-                // Squeeze past someone coming the other way, or standing
-                // still in the way; queue behind someone walking ahead.
+                // Squeeze past someone coming the other way (or pressing
+                // against this body), or standing still in the way; queue
+                // behind someone walking ahead.
                 (head_on || !theirs.mobile)
                     && mine.blocked_seconds >= self.config.head_on_squeeze_after_seconds
             };
             let deadlock = mine.stalled_seconds >= self.config.deadlock_after_seconds
-                && (!theirs.mobile || theirs.stalled_seconds >= self.config.deadlock_after_seconds);
+                && self.blocked_in_a_circle(index);
             if !contest && !deadlock {
                 continue;
             }
@@ -884,6 +987,7 @@ impl Crowd {
                 other,
                 direction,
                 started_at: self.time_seconds,
+                separating: false,
             });
             for body in [index, other] {
                 self.states[body].blocked_seconds = 0.0;
@@ -906,7 +1010,7 @@ impl Crowd {
     ) {
         let now = self.time_seconds;
         let states = &self.states;
-        self.permits.retain(|permit| {
+        self.permits.retain_mut(|permit| {
             let (mover, other) = (permit.mover, permit.other);
             if states[mover].arrived || states[other].arrived {
                 return false;
@@ -920,22 +1024,104 @@ impl Crowd {
                 positions[other],
                 axes[other],
             ) >= body.radius_m + bodies[other].radius_m;
+            let expired = now - permit.started_at > PERMIT_TIMEOUT_SECONDS;
             if !clear {
+                // A pair wedged in place gives up; they then only ever move
+                // apart from each other.
+                let wedged = states[mover].stalled_seconds >= STALL_RELEASE_SECONDS
+                    && states[other].stalled_seconds >= STALL_RELEASE_SECONDS;
+                permit.separating |= expired && wedged;
                 return true;
+            }
+            if permit.separating {
+                return false;
             }
             let offset = (
                 positions[other].x - positions[mover].x,
                 positions[other].y - positions[mover].y,
             );
             let passed = dot(offset, permit.direction) < 0.0;
-            !(passed || now - permit.started_at > PERMIT_TIMEOUT_SECONDS)
+            !(passed || expired)
         });
     }
 
+    /// Who goes first when two bodies are in each other's way: firefighters
+    /// before occupants, then whoever is closer to where they're going.
+    fn outranks(&self, index: usize, other: usize, bodies: &[Body]) -> bool {
+        match (bodies[index].firefighter, bodies[other].firefighter) {
+            (true, false) => true,
+            (false, true) => false,
+            _ => (self.states[index].remaining, index) < (self.states[other].remaining, other),
+        }
+    }
+
+    /// Moves body `other` straight away from where `index` wants to stand,
+    /// far enough to make room, if `other` can stand there. Returns whether
+    /// it did and `index` can now take its step.
+    fn push(
+        &self,
+        index: usize,
+        other: usize,
+        destination: Vec3,
+        context: &MoveContext<'_, '_>,
+        positions: &mut [Vec3],
+        axes: &mut [Option<Axis>],
+    ) -> bool {
+        let needed = context.bodies[index].radius_m + context.bodies[other].radius_m;
+        let offset = (
+            positions[other].x - destination.x,
+            positions[other].y - destination.y,
+        );
+        let apart = offset.0.hypot(offset.1);
+        let shove = needed - CROWD_GIVE_M - apart + PUSH_MARGIN_M;
+        if apart <= GAP_EPSILON_M || shove <= 0.0 || shove > MAX_PUSH_M {
+            return false;
+        }
+        let original = positions[other];
+        let pushed = Vec3 {
+            x: original.x + offset.0 / apart * shove,
+            y: original.y + offset.1 / apart * shove,
+            z: original.z,
+        };
+        if self.check(other, pushed, context, positions, axes).is_err() {
+            return false;
+        }
+        positions[other] = pushed;
+        if self
+            .check(index, destination, context, positions, axes)
+            .is_ok()
+        {
+            axes[other] = axis_for(context.groups, &context.bodies[other], pushed);
+            true
+        } else {
+            positions[other] = original;
+            false
+        }
+    }
+
+    /// Whether following who blocks whom from `index` comes back around.
+    fn blocked_in_a_circle(&self, index: usize) -> bool {
+        let mut seen = vec![index];
+        let mut current = index;
+        while let Some(next) = self.states[current].blocker {
+            if next == index {
+                return true;
+            }
+            if seen.contains(&next) || seen.len() > 64 {
+                return false;
+            }
+            seen.push(next);
+            current = next;
+        }
+        false
+    }
+
+    /// Whether two bodies may pass through each other right now.
     fn permitted(&self, left: usize, right: usize) -> bool {
         self.permits.iter().any(|permit| {
-            (permit.mover == left && permit.other == right)
-                || (permit.mover == right && permit.other == left)
+            !permit.separating
+                && ((permit.mover == left && permit.other == right)
+                    || (permit.mover == right && permit.other == left))
         })
     }
 
@@ -971,10 +1157,13 @@ impl Buckets {
         Self { cells }
     }
 
-    fn near(&self, floor: usize, position: Vec3) -> impl Iterator<Item = usize> + '_ {
+    /// Bodies in the buckets within `reach_m` of `position`, and maybe a
+    /// few farther away.
+    fn near(&self, floor: usize, position: Vec3, reach_m: f64) -> impl Iterator<Item = usize> + '_ {
         let (x, y) = bucket(position);
-        (-1..=1).flat_map(move |dy| {
-            (-1..=1).flat_map(move |dx| {
+        let span = (reach_m / BUCKET_SIZE_M).ceil() as i64;
+        (-span..=span).flat_map(move |dy| {
+            (-span..=span).flat_map(move |dx| {
                 self.cells
                     .get(&(floor, x + dx, y + dy))
                     .into_iter()
