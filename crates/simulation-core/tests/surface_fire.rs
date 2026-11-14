@@ -1,6 +1,7 @@
 use tflop_simulation_core::{
-    CombustionState, FireMaterialCatalog, FireMaterialProfile, FurnitureFireMaterial, Suppression,
-    SurfaceFireConfig, SurfaceFireError, SurfaceFireNodeSource, SurfaceFireWorld,
+    CombustionState, DEFAULT_NOZZLE_COOLING_KW, DEFAULT_NOZZLE_HALF_ANGLE_DEGREES,
+    DEFAULT_NOZZLE_REACH_M, FireMaterialCatalog, FireMaterialProfile, FurnitureFireMaterial,
+    Suppression, SurfaceFireConfig, SurfaceFireError, SurfaceFireNodeSource, SurfaceFireWorld,
 };
 use tflop_world_core::{
     BoundaryEdge, BoundaryKind, Dimensions3, Floor, FurnitureAsset, FurnitureObject, Mobility,
@@ -391,10 +392,11 @@ fn knockdown_takes_longer_than_one_step_when_cooling_barely_beats_the_fire() {
         .expect("chair ignites")
         .active_nodes[0]
         .heat_release_rate_kw;
-    // The default knockdown needs three seconds' worth of the fire's output.
+    // Knockdown needs the configured seconds' worth of the fire's output.
+    let seconds = SurfaceFireConfig::default().suppression_knockdown_seconds;
     let barely_enough = nozzle("room-1", 1.5, 1.5, 1.0, hrr_kw * 1.01);
 
-    for _ in 0..2 {
+    for _ in 0..(seconds as usize - 1) {
         let outcome = world.suppress(&barely_enough, 1.0).expect("applies");
         assert!(outcome.extinguished_node_ids.is_empty());
     }
@@ -520,12 +522,124 @@ fn rejects_invalid_suppression_without_changing_the_fire() {
     );
 }
 
+#[test]
+fn an_aimed_stream_wets_only_what_it_points_at() {
+    let scene = scene_with_chairs(&[("left", 1.0, 2.0), ("right", 3.0, 2.0)]);
+    let mut world =
+        SurfaceFireWorld::from_scene(&scene, &fast_catalog(false), SurfaceFireConfig::default())
+            .expect("surface world should build");
+    world.ignite_object("left").expect("left ignites");
+    world.ignite_object("right").expect("right ignites");
+
+    // From the middle, pointing right.
+    let aimed = Suppression {
+        direction: Some((1.0, 0.0)),
+        ..nozzle("room-1", 2.0, 2.0, 3.0, 1.0e9)
+    };
+    let outcome = world.suppress(&aimed, 1.0).expect("applies");
+
+    assert_eq!(outcome.burning_reached, 1);
+    assert_eq!(outcome.extinguished_node_ids, ["object:right"]);
+    assert_eq!(
+        world.node("object:left").expect("left").state,
+        CombustionState::Burning
+    );
+}
+
+#[test]
+fn an_aimed_stream_wets_whatever_is_right_at_the_nozzle() {
+    let scene = scene_with_chairs(&[("chair-1", 1.5, 2.0)]);
+    let mut world =
+        SurfaceFireWorld::from_scene(&scene, &fast_catalog(false), SurfaceFireConfig::default())
+            .expect("surface world should build");
+    world.ignite_object("chair-1").expect("chair ignites");
+    let behind = Suppression {
+        direction: Some((1.0, 0.0)),
+        ..nozzle("room-1", 1.8, 2.0, 3.0, 1.0e9)
+    };
+    let outcome = world.suppress(&behind, 1.0).expect("applies");
+    assert_eq!(
+        outcome.burning_reached, 1,
+        "0.3 m behind the nozzle still gets wet"
+    );
+}
+
+#[test]
+fn a_burning_sofa_takes_tens_of_seconds_to_knock_down() {
+    let mut scene = scene_with_chairs(&[("sofa-1", 2.0, 2.0)]);
+    scene.assets[0].category = "sofa".to_owned();
+    scene.assets[0].dimensions_m = Dimensions3 {
+        width_m: 2.0,
+        depth_m: 0.9,
+        height_m: 0.8,
+    };
+    let mut world = SurfaceFireWorld::from_scene(
+        &scene,
+        &FireMaterialCatalog::default(),
+        SurfaceFireConfig::default(),
+    )
+    .expect("surface world should build");
+    world.ignite_object("sofa-1").expect("sofa ignites");
+    // Let it grow until it's fully involved.
+    let mut peak_kw = 0.0;
+    for _ in 0..600 {
+        let frame = world.step(1.0).expect("steps");
+        let total = frame
+            .active_nodes
+            .iter()
+            .map(|node| node.heat_release_rate_kw)
+            .sum::<f64>();
+        if total < peak_kw * 0.98 {
+            break;
+        }
+        peak_kw = f64::max(peak_kw, total);
+    }
+
+    // Aim at the nearest burning cell each second, as a firefighter does.
+    let nozzle_at = point(0.5, 2.0);
+    let mut seconds = 0;
+    while let Some(target) = world
+        .snapshot()
+        .active_nodes
+        .iter()
+        .filter(|node| node.state == CombustionState::Burning)
+        .map(|node| node.position_m)
+        .min_by(|left, right| {
+            let distance = |p: &Vec3| (p.x - nozzle_at.x).hypot(p.y - nozzle_at.y);
+            distance(left).total_cmp(&distance(right))
+        })
+    {
+        let offset = (target.x - nozzle_at.x, target.y - nozzle_at.y);
+        let length = offset.0.hypot(offset.1).max(1.0e-9);
+        let hose = Suppression {
+            direction: Some((offset.0 / length, offset.1 / length)),
+            ..nozzle(
+                "room-1",
+                nozzle_at.x,
+                nozzle_at.y,
+                DEFAULT_NOZZLE_REACH_M,
+                DEFAULT_NOZZLE_COOLING_KW,
+            )
+        };
+        world.suppress(&hose, 1.0).expect("applies");
+        world.step(1.0).expect("steps");
+        seconds += 1;
+        assert!(seconds < 120, "a {peak_kw:.0} kW sofa never went out");
+    }
+    assert!(
+        (10..=45).contains(&seconds),
+        "a {peak_kw:.0} kW sofa took {seconds} s to knock down"
+    );
+}
+
 fn nozzle(room_id: &str, x: f64, y: f64, reach_m: f64, cooling_kw: f64) -> Suppression {
     Suppression {
         room_id: room_id.to_owned(),
         position_m: point(x, y),
         reach_m,
         cooling_kw,
+        direction: None,
+        half_angle_degrees: DEFAULT_NOZZLE_HALF_ANGLE_DEGREES,
     }
 }
 

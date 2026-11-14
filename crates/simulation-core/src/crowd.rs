@@ -1422,6 +1422,7 @@ mod tests {
                     entry_opening_id: "exit".to_owned(),
                     arrival_time_seconds: 0.0,
                     target_fire_node_id: None,
+                    nozzle_target_m: None,
                 })
             } else {
                 AgentRole::Occupant(OccupantState {

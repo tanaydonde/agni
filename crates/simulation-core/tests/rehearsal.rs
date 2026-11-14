@@ -1,8 +1,9 @@
 use tflop_simulation_core::{
     AgentFrameRole, AlarmConfig, CombustionState, DEFAULT_NOZZLE_COOLING_KW,
-    DEFAULT_NOZZLE_REACH_M, Evacuation, FireMaterialCatalog, FireMaterialProfile,
-    FurnitureFireMaterial, OccupantPhase, OccupantSpawn, Rehearsal, RehearsalError, RehearsalFrame,
-    SimulationConfig, Suppression, SurfaceFireConfig, SurfaceFireError, SurfaceFireWorld,
+    DEFAULT_NOZZLE_HALF_ANGLE_DEGREES, DEFAULT_NOZZLE_REACH_M, Evacuation, FireMaterialCatalog,
+    FireMaterialProfile, FurnitureFireMaterial, OccupantPhase, OccupantSpawn, Rehearsal,
+    RehearsalError, RehearsalFrame, SimulationConfig, Suppression, SurfaceFireConfig,
+    SurfaceFireError, SurfaceFireWorld,
 };
 use tflop_world_core::{
     BoundaryEdge, BoundaryKind, Dimensions3, Floor, FurnitureAsset, FurnitureObject, Mobility,
@@ -199,6 +200,8 @@ fn room_nozzle() -> Suppression {
         position_m: point(3.0, 2.0),
         reach_m: DEFAULT_NOZZLE_REACH_M,
         cooling_kw: DEFAULT_NOZZLE_COOLING_KW,
+        direction: None,
+        half_angle_degrees: DEFAULT_NOZZLE_HALF_ANGLE_DEGREES,
     }
 }
 

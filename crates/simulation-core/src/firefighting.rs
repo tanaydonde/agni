@@ -21,8 +21,9 @@ use thiserror::Error;
 
 use crate::{
     Agent, AgentFrame, AgentRole, CombustionState, CrewSpawn, DEFAULT_NOZZLE_COOLING_KW,
-    DEFAULT_NOZZLE_REACH_M, FirefighterPhase, GridCoordinate, ScenarioValidationErrors, Simulation,
-    SimulationConfig, SimulationError, SimulationGrid, Suppression, SurfaceFireNodeFrame,
+    DEFAULT_NOZZLE_HALF_ANGLE_DEGREES, DEFAULT_NOZZLE_REACH_M, FirefighterPhase, GridCoordinate,
+    ScenarioValidationErrors, Simulation, SimulationConfig, SimulationError, SimulationGrid,
+    Suppression, SurfaceFireNodeFrame,
     crowd::{Crowd, CrowdConfig, CrowdGroup, Goal, Intent, PassageMap, SINGLE_FILE_MAX_WIDTH_M},
     exterior_exits,
     nav::{
@@ -44,6 +45,8 @@ pub struct FirefightingConfig {
     pub heat_sense_radius_m: f64,
     pub nozzle_reach_m: f64,
     pub nozzle_cooling_kw: f64,
+    /// The stream wets burning cells within this angle of where it's aimed.
+    pub nozzle_half_angle_degrees: f64,
     /// Crews close to within this fraction of nozzle reach before spraying.
     pub approach_fraction: f64,
     /// Followers keep between these distances from the leader.
@@ -58,6 +61,7 @@ impl Default for FirefightingConfig {
             heat_sense_radius_m: 2.0,
             nozzle_reach_m: DEFAULT_NOZZLE_REACH_M,
             nozzle_cooling_kw: DEFAULT_NOZZLE_COOLING_KW,
+            nozzle_half_angle_degrees: DEFAULT_NOZZLE_HALF_ANGLE_DEGREES,
             approach_fraction: 0.8,
             follow_min_m: 0.7,
             follow_max_m: 1.5,
@@ -152,6 +156,7 @@ impl Firefighting {
                     route: spawn.route.clone(),
                     memory: CrewMemory::default(),
                     room_target: None,
+                    spray_target: None,
                 },
                 phase: FirefighterPhase::Staging,
             });
@@ -347,6 +352,7 @@ impl Firefighting {
 
         let mut suppression = None;
         let mut target_fire = None;
+        let mut nozzle_target = None;
         let speed = if crew.plan.memory.known_fires.is_empty() {
             self.config.scouting_speed_m_per_s
         } else {
@@ -355,13 +361,20 @@ impl Firefighting {
         crew.phase = match action {
             Action::Stage => FirefighterPhase::Staging,
             Action::Spray { node_id, room_id } => {
+                // Aim at the fire as last seen.
+                let aim = crew.plan.memory.known_fires[&node_id].position_m;
+                let offset = (aim.x - leader_position.x, aim.y - leader_position.y);
+                let length = offset.0.hypot(offset.1);
                 suppression = Some(Suppression {
                     room_id,
                     position_m: leader_position,
                     reach_m: self.config.nozzle_reach_m,
                     cooling_kw: self.config.nozzle_cooling_kw,
+                    direction: (length > 1.0e-6).then(|| (offset.0 / length, offset.1 / length)),
+                    half_angle_degrees: self.config.nozzle_half_angle_degrees,
                 });
                 target_fire = Some(node_id);
+                nozzle_target = Some(aim);
                 FirefighterPhase::Suppressing
             }
             Action::Move { path, purpose } => {
@@ -392,6 +405,11 @@ impl Firefighting {
             if let AgentRole::Firefighter(state) = &mut self.agents[member].role {
                 state.phase = phase;
                 state.target_fire_node_id.clone_from(&target_fire);
+                state.nozzle_target_m = if member == leader_index {
+                    nozzle_target
+                } else {
+                    None
+                };
             }
         }
         suppression
@@ -475,6 +493,8 @@ struct CrewPlan {
     memory: CrewMemory,
     /// Room currently being walked to.
     room_target: Option<String>,
+    /// Fire node the nozzle is on.
+    spray_target: Option<String>,
 }
 
 /// What the leader can perceive at one instant.
@@ -605,8 +625,9 @@ fn decide(plan: &mut CrewPlan, context: &Context<'_>) -> Action {
 }
 
 /// Sprays when standing within reach of a known fire, otherwise walks to the
-/// nearest cell that is.
-fn fight_known_fire(plan: &CrewPlan, context: &Context<'_>) -> Option<Action> {
+/// nearest cell that is. The nozzle stays on one fire until it is out, then
+/// turns to the nearest other one in reach.
+fn fight_known_fire(plan: &mut CrewPlan, context: &Context<'_>) -> Option<Action> {
     let reach = context.config.nozzle_reach_m * context.config.approach_fraction;
     let floor_id = context.grid.floor_id.as_str();
     // Approach cell -> the fire it serves (lowest node ID wins).
@@ -629,11 +650,35 @@ fn fight_known_fire(plan: &CrewPlan, context: &Context<'_>) -> Option<Action> {
             }
         }
     }
-    if let Some((node_id, room_id)) = approach.get(&context.leader_cell) {
-        return Some(Action::Spray {
-            node_id: (*node_id).to_owned(),
-            room_id: (*room_id).to_owned(),
-        });
+    if approach.contains_key(&context.leader_cell) {
+        let leader = context.grid.cell_center(context.leader_cell)?;
+        let leader_rooms = context
+            .grid
+            .cell(context.leader_cell)
+            .map_or(&[][..], |cell| cell.room_ids.as_slice());
+        let in_reach = plan
+            .memory
+            .known_fires
+            .iter()
+            .filter(|(_, node)| {
+                leader_rooms.contains(&node.room_id)
+                    && distance_2d(leader, node.position_m) <= reach
+            })
+            .collect::<Vec<_>>();
+        let target = in_reach
+            .iter()
+            .find(|(node_id, _)| plan.spray_target.as_deref() == Some(node_id.as_str()))
+            .or_else(|| {
+                in_reach.iter().min_by(|left, right| {
+                    distance_2d(leader, left.1.position_m)
+                        .total_cmp(&distance_2d(leader, right.1.position_m))
+                })
+            })
+            .map(|(node_id, node)| ((*node_id).clone(), node.room_id.clone()));
+        if let Some((node_id, room_id)) = target {
+            plan.spray_target = Some(node_id.clone());
+            return Some(Action::Spray { node_id, room_id });
+        }
     }
     if approach.is_empty() {
         return None;
@@ -853,6 +898,10 @@ fn validate_config(config: FirefightingConfig) -> Result<(), FirefightingError> 
         ("heat_sense_radius_m", config.heat_sense_radius_m),
         ("nozzle_reach_m", config.nozzle_reach_m),
         ("nozzle_cooling_kw", config.nozzle_cooling_kw),
+        (
+            "nozzle_half_angle_degrees",
+            config.nozzle_half_angle_degrees,
+        ),
         ("approach_fraction", config.approach_fraction),
         ("follow_min_m", config.follow_min_m),
         ("follow_max_m", config.follow_max_m),
@@ -1021,6 +1070,7 @@ mod tests {
             route: Vec::new(),
             memory: CrewMemory::default(),
             room_target: None,
+            spray_target: None,
         }
     }
 

@@ -40,11 +40,11 @@ pub use scenario::{
     ScenarioValidationErrors, exterior_exits,
 };
 pub use surface_fire::{
-    CombustionState, DEFAULT_NOZZLE_COOLING_KW, DEFAULT_NOZZLE_REACH_M, FURNITURE_FIRE_CELL_SIZE_M,
-    FireMaterialCatalog, FireMaterialProfile, FurnitureFireCell, FurnitureFireMaterial,
-    RoomHeatRelease, SURFACE_FIRE_SCHEMA_VERSION, Suppression, SuppressionOutcome,
-    SurfaceFireConfig, SurfaceFireError, SurfaceFireFrame, SurfaceFireNode, SurfaceFireNodeFrame,
-    SurfaceFireNodeSource, SurfaceFireWorld,
+    CombustionState, DEFAULT_NOZZLE_COOLING_KW, DEFAULT_NOZZLE_HALF_ANGLE_DEGREES,
+    DEFAULT_NOZZLE_REACH_M, FURNITURE_FIRE_CELL_SIZE_M, FireMaterialCatalog, FireMaterialProfile,
+    FurnitureFireCell, FurnitureFireMaterial, RoomHeatRelease, SURFACE_FIRE_SCHEMA_VERSION,
+    Suppression, SuppressionOutcome, SurfaceFireConfig, SurfaceFireError, SurfaceFireFrame,
+    SurfaceFireNode, SurfaceFireNodeFrame, SurfaceFireNodeSource, SurfaceFireWorld,
 };
 
 /// Inputs that remain fixed for one simulation run.

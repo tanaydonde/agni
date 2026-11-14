@@ -14,10 +14,13 @@ pub const FURNITURE_FIRE_CELL_SIZE_M: f64 = 0.25;
 const MAX_FURNITURE_FIRE_CELLS_PER_OBJECT: usize = 100_000;
 /// Horizontal distance a hose stream reaches inside a room.
 pub const DEFAULT_NOZZLE_REACH_M: f64 = 5.0;
-/// Effective cooling of one handline. Large next to a single room fire, so
-/// knockdown is quick once the fire is in reach: reaching it is what takes
-/// time.
-pub const DEFAULT_NOZZLE_COOLING_KW: f64 = 2_000.0;
+/// Effective cooling of one handline: a 1.75-inch line flows about 9.5 kg/s,
+/// of which a fraction actually absorbs heat from the fire.
+pub const DEFAULT_NOZZLE_COOLING_KW: f64 = 1_000.0;
+/// Half the spread of a nozzle's stream: a 30 degree cone.
+pub const DEFAULT_NOZZLE_HALF_ANGLE_DEGREES: f64 = 15.0;
+/// Burning cells this close to the nozzle are wetted whichever way it points.
+const NOZZLE_SPLASH_RADIUS_M: f64 = 0.5;
 
 /// Approximate combustion properties used by the fast Rust surface model.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -138,13 +141,14 @@ pub struct SurfaceFireConfig {
     pub furniture_radiation_range_m: f64,
     /// A burning node goes out once the suppression cooling it has received
     /// adds up to its current heat release over this many seconds, so larger
-    /// fires take longer to knock down.
+    /// fires take longer to knock down. With the default nozzle, a burning
+    /// sofa takes about 20 seconds.
     #[serde(default = "default_knockdown_seconds")]
     pub suppression_knockdown_seconds: f64,
 }
 
 const fn default_knockdown_seconds() -> f64 {
-    3.0
+    30.0
 }
 
 impl Default for SurfaceFireConfig {
@@ -260,6 +264,17 @@ pub struct Suppression {
     /// Horizontal distance from `position_m` that the stream reaches.
     pub reach_m: f64,
     pub cooling_kw: f64,
+    /// Unit vector the nozzle points along. `None` wets everything in reach,
+    /// all around.
+    #[serde(default)]
+    pub direction: Option<(f64, f64)>,
+    /// Half the spread of the stream around `direction`.
+    #[serde(default = "default_half_angle")]
+    pub half_angle_degrees: f64,
+}
+
+const fn default_half_angle() -> f64 {
+    DEFAULT_NOZZLE_HALF_ANGLE_DEGREES
 }
 
 impl Suppression {
@@ -272,6 +287,15 @@ impl Suppression {
             Some("reach_m")
         } else if !self.cooling_kw.is_finite() || self.cooling_kw < 0.0 {
             Some("cooling_kw")
+        } else if self.direction.is_some_and(|(x, y)| {
+            !x.is_finite() || !y.is_finite() || ((x * x + y * y).sqrt() - 1.0).abs() > 1.0e-6
+        }) {
+            Some("direction")
+        } else if !self.half_angle_degrees.is_finite()
+            || self.half_angle_degrees <= 0.0
+            || self.half_angle_degrees > 180.0
+        {
+            Some("half_angle_degrees")
         } else {
             None
         };
@@ -570,11 +594,21 @@ impl SurfaceFireWorld {
         }
         suppression.validate()?;
 
+        let cos_half_angle = suppression.half_angle_degrees.to_radians().cos();
         let in_reach = |node: &SurfaceFireNode| {
-            node.room_id == suppression.room_id
-                && (node.position_m.x - suppression.position_m.x)
-                    .hypot(node.position_m.y - suppression.position_m.y)
-                    <= suppression.reach_m
+            let offset = (
+                node.position_m.x - suppression.position_m.x,
+                node.position_m.y - suppression.position_m.y,
+            );
+            let distance = offset.0.hypot(offset.1);
+            let in_stream = match suppression.direction {
+                None => true,
+                Some((x, y)) => {
+                    distance <= NOZZLE_SPLASH_RADIUS_M
+                        || (offset.0 * x + offset.1 * y) / distance >= cos_half_angle
+                }
+            };
+            node.room_id == suppression.room_id && distance <= suppression.reach_m && in_stream
         };
         let burning = self
             .nodes

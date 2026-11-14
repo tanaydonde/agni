@@ -206,6 +206,22 @@ fn the_crew_finds_the_fire_and_puts_it_out() {
             .iter()
             .any(|frame| phase(firefighter(frame, LEADER)) == FirefighterPhase::Suppressing)
     );
+    // The nozzle is aimed while spraying, and only then.
+    for frame in &frames {
+        let leader = firefighter(frame, LEADER);
+        let AgentFrameRole::Firefighter {
+            nozzle_target_m, ..
+        } = &leader.role
+        else {
+            unreachable!("the leader is a firefighter");
+        };
+        assert_eq!(
+            nozzle_target_m.is_some(),
+            phase(leader) == FirefighterPhase::Suppressing,
+            "t={}",
+            frame.fire.time_seconds
+        );
+    }
 
     let (_, unfought) = run(&scene, Some("chair-east"), None, last.fire.time_seconds);
     let unfought_last = unfought.last().expect("frames");

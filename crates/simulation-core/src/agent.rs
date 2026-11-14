@@ -64,6 +64,7 @@ impl Agent {
                 AgentRole::Firefighter(state) => AgentFrameRole::Firefighter {
                     crew_id: state.crew_id.clone(),
                     phase: state.phase,
+                    nozzle_target_m: state.nozzle_target_m,
                 },
             },
         }
@@ -154,6 +155,8 @@ pub struct FirefighterState {
     pub arrival_time_seconds: f64,
     /// Surface fire node the firefighter is advancing on or suppressing.
     pub target_fire_node_id: Option<String>,
+    /// Where the nozzle is pointed while spraying.
+    pub nozzle_target_m: Option<Vec3>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -198,6 +201,9 @@ pub enum AgentFrameRole {
     Firefighter {
         crew_id: String,
         phase: FirefighterPhase,
+        /// Where the stream is aimed, while spraying.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        nozzle_target_m: Option<Vec3>,
     },
 }
 

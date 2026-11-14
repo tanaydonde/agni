@@ -341,6 +341,7 @@ fn create_crews(
                     entry_opening_id: entry.id.clone(),
                     arrival_time_seconds: crew.arrival_time_seconds,
                     target_fire_node_id: None,
+                    nozzle_target_m: None,
                 }),
             });
         }
