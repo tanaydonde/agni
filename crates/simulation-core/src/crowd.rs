@@ -56,6 +56,13 @@ const STALL_RELEASE_SECONDS: f64 = 2.0;
 /// some give, people converging on a door wedge into an arch nobody can
 /// break.
 pub const CROWD_GIVE_M: f64 = 0.08;
+/// A body that hasn't moved [`STALL_DISTANCE_M`] in this long passes through
+/// other bodies (walls and fire still stop it) until it has moved
+/// `BREAK_FREE_DISTANCE_M`, or for at most `BREAK_FREE_MAX_SECONDS`. The
+/// rules above resolve ordinary jams; this guarantees none lasts forever.
+const BREAK_FREE_AFTER_SECONDS: f64 = 10.0;
+const BREAK_FREE_DISTANCE_M: f64 = 1.0;
+const BREAK_FREE_MAX_SECONDS: f64 = 6.0;
 /// Farthest a body is shoved in one sub-step, and the clearance a shove
 /// leaves.
 const MAX_PUSH_M: f64 = 0.2;
@@ -379,6 +386,10 @@ struct BodyState {
     /// How far it still has to go, for deciding who pushes whom. Lower is
     /// closer.
     remaining: u64,
+    /// Last resort for a body that has made no progress for a long time:
+    /// it passes through other bodies until it has got clear, starting here
+    /// and then.
+    breaking_free: Option<(Vec3, f64)>,
 }
 
 /// Two bodies allowed to pass through each other while they squeeze past.
@@ -553,7 +564,7 @@ impl Crowd {
             Movement::Stopped
         } else if body.firefighter && self.time_seconds < state.hold_until {
             Movement::Queued
-        } else if self.in_permit(index) {
+        } else if self.in_permit(index) || state.breaking_free.is_some() {
             Movement::Squeezing
         } else if state.blocked_seconds >= self.config.queued_after_seconds {
             Movement::Queued
@@ -639,6 +650,13 @@ impl Crowd {
         if body.firefighter && self.time_seconds < self.states[index].hold_until {
             self.states[index].blocker = None;
             return;
+        }
+
+        // However a jam came about, nobody stays stuck in it for good.
+        if self.states[index].breaking_free.is_none()
+            && self.states[index].stalled_seconds >= BREAK_FREE_AFTER_SECONDS
+        {
+            self.states[index].breaking_free = Some((position, self.time_seconds));
         }
 
         let factor = self.speed_factor(index, context, positions);
@@ -785,6 +803,14 @@ impl Crowd {
                 state.stalled_seconds = 0.0;
             }
         }
+        if let Some((from, since)) = state.breaking_free
+            && (distance_2d(from, destination) >= BREAK_FREE_DISTANCE_M
+                || self.time_seconds - since >= BREAK_FREE_MAX_SECONDS)
+        {
+            state.breaking_free = None;
+            state.stalled_seconds = 0.0;
+            state.stall_anchor = Some(destination);
+        }
         if let Goal::Field(field) = &intent.goal
             && grid
                 .world_to_cell(destination)
@@ -822,6 +848,9 @@ impl Crowd {
             return Err(None);
         }
 
+        if self.states[index].breaking_free.is_some() {
+            return Ok(());
+        }
         let candidate_axis = group
             .passages
             .get(body.grid)
