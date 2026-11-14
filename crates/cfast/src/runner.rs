@@ -17,6 +17,20 @@ use crate::{
 pub const CFAST_SUPPORTED_VERSION: &str = "7.7.7";
 const PROJECT_NAME: &str = "scenario";
 
+/// Path to the CFAST executable that `build.rs` compiled from the vendored
+/// sources, or `None` when no Fortran compiler was available at build time.
+pub const BUNDLED_CFAST_BIN: Option<&str> = option_env!("TFLOP_CFAST_BUNDLED_BIN");
+
+/// Picks the CFAST executable: a non-empty `CFAST_BIN` environment variable
+/// wins, otherwise the bundled build is used.
+#[must_use]
+pub fn resolve_cfast_bin() -> Option<PathBuf> {
+    match std::env::var("CFAST_BIN") {
+        Ok(path) if !path.trim().is_empty() => Some(PathBuf::from(path.trim())),
+        _ => BUNDLED_CFAST_BIN.map(PathBuf::from),
+    }
+}
+
 /// Synchronous adapter around the external CFAST command-line solver.
 #[derive(Debug, Clone)]
 pub struct CfastRunner {

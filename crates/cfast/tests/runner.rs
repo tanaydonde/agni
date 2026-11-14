@@ -1,19 +1,28 @@
 use tflop_cfast::{
     CfastFire, CfastFuel, CfastOpeningState, CfastRoomFire, CfastRunner, CfastScenario,
-    HeatReleasePoint,
+    HeatReleasePoint, resolve_cfast_bin,
 };
 use tflop_world_core::{
     BoundaryEdge, BoundaryKind, Floor, Opening, OpeningKind, Room, RoomDimensions,
     SCENE_SCHEMA_VERSION, Scene, SceneSource, Vec3,
 };
 
-/// Run manually with:
-/// `CFAST_BIN=/path/to/cfast7 cargo test -p tflop-cfast --test runner -- --ignored`
+/// Uses `CFAST_BIN` or the solver `build.rs` compiled from the vendored
+/// sources. Skips (passes) only when neither exists, i.e. gfortran was
+/// missing at build time.
+fn cfast_runner() -> Option<CfastRunner> {
+    let Some(executable) = resolve_cfast_bin() else {
+        eprintln!("skipping: CFAST was not built (install gfortran) and CFAST_BIN is unset");
+        return None;
+    };
+    Some(CfastRunner::new(executable).expect("CFAST executable should resolve"))
+}
+
 #[test]
-#[ignore = "requires an external CFAST 7.7.7 executable"]
 fn runs_the_real_solver_and_parses_its_results() {
-    let executable = std::env::var("CFAST_BIN").expect("CFAST_BIN must point to CFAST 7.7.7");
-    let runner = CfastRunner::new(executable).expect("CFAST executable should resolve");
+    let Some(runner) = cfast_runner() else {
+        return;
+    };
 
     let results = runner
         .run_single_room(&scene_fixture(), &scenario_fixture())
@@ -33,10 +42,10 @@ fn runs_the_real_solver_and_parses_its_results() {
 }
 
 #[test]
-#[ignore = "requires an external CFAST 7.7.7 executable"]
 fn runs_and_parses_multiple_compartments() {
-    let executable = std::env::var("CFAST_BIN").expect("CFAST_BIN must point to CFAST 7.7.7");
-    let runner = CfastRunner::new(executable).expect("CFAST executable should resolve");
+    let Some(runner) = cfast_runner() else {
+        return;
+    };
 
     let results = runner
         .run_all_rooms(&two_room_scene(), &scenario_fixture())
@@ -51,10 +60,10 @@ fn runs_and_parses_multiple_compartments() {
 }
 
 #[test]
-#[ignore = "requires an external CFAST 7.7.7 executable"]
 fn runs_and_parses_simultaneous_fires_in_multiple_rooms() {
-    let executable = std::env::var("CFAST_BIN").expect("CFAST_BIN must point to CFAST 7.7.7");
-    let runner = CfastRunner::new(executable).expect("CFAST executable should resolve");
+    let Some(runner) = cfast_runner() else {
+        return;
+    };
     let mut scenario = scenario_fixture();
     let mut second_curve = scenario.fires[0].fire.heat_release_curve.clone();
     for point in &mut second_curve {
@@ -84,10 +93,10 @@ fn runs_and_parses_simultaneous_fires_in_multiple_rooms() {
 }
 
 #[test]
-#[ignore = "requires an external CFAST 7.7.7 executable"]
 fn spreads_fire_conditions_through_an_open_interior_door() {
-    let executable = std::env::var("CFAST_BIN").expect("CFAST_BIN must point to CFAST 7.7.7");
-    let runner = CfastRunner::new(executable).expect("CFAST executable should resolve");
+    let Some(runner) = cfast_runner() else {
+        return;
+    };
     let mut scenario = scenario_fixture();
     scenario.opening_states.push(CfastOpeningState {
         opening_id: "Interior Door".to_owned(),
