@@ -4,6 +4,7 @@ mod agent_api;
 mod catalog;
 mod model;
 mod placement;
+mod topology;
 mod validation;
 
 pub use agent_api::{
@@ -19,4 +20,5 @@ pub use model::{
     SCENE_SCHEMA_VERSION, Scene, SceneSource, Transform3, Vec3,
 };
 pub use placement::PlacementRules;
+pub use topology::{OpeningConnection, OpeningTopologyError, resolve_opening_connections};
 pub use validation::{SceneValidationError, SceneValidationErrors};

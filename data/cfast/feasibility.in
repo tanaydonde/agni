@@ -1,0 +1,30 @@
+&HEAD VERSION = 7700, TITLE = 'tflop CFAST feasibility scenario' /
+
+!! Run for two minutes and write spreadsheet output every second.
+&TIME SIMULATION = 120 PRINT = 10 SMOKEVIEW = 0 SPREADSHEET = 1 /
+&INIT PRESSURE = 101325 RELATIVE_HUMIDITY = 50 INTERIOR_TEMPERATURE = 20 EXTERIOR_TEMPERATURE = 20 /
+
+!! One rectangular room approximating a future world-core compartment.
+&COMP ID = 'Demo Room'
+      DEPTH = 4 HEIGHT = 3 WIDTH = 5
+      CEILING_MATL_ID = 'OFF' WALL_MATL_ID = 'OFF' FLOOR_MATL_ID = 'OFF'
+      ORIGIN = 0, 0, 0 GRID = 20, 16, 12 /
+
+!! A 1 m wide, 2 m high exterior door centered on the front wall.
+&VENT TYPE = 'WALL' ID = 'Exterior Door' COMP_IDS = 'Demo Room', 'OUTSIDE'
+      BOTTOM = 0 HEIGHT = 2 WIDTH = 1 FACE = 'FRONT' OFFSET = 2 /
+
+!! A prescribed fire at the room center.
+&FIRE ID = 'Demo Fire' COMP_ID = 'Demo Room' FIRE_ID = 'Demo Fire Properties'
+      LOCATION = 2.5, 2 /
+&CHEM ID = 'Demo Fire Properties'
+      CARBON = 6 HYDROGEN = 10 OXYGEN = 5 NITROGEN = 0 CHLORINE = 0
+      HEAT_OF_COMBUSTION = 18000 RADIATIVE_FRACTION = 0.35 /
+&TABL ID = 'Demo Fire Properties'
+      LABELS = 'TIME', 'HRR', 'HEIGHT', 'AREA', 'CO_YIELD', 'SOOT_YIELD', 'HCN_YIELD', 'HCL_YIELD', 'TRACE_YIELD' /
+&TABL ID = 'Demo Fire Properties', DATA = 0,   0,   0, 0.3, 0.006, 0.015, 0, 0, 0 /
+&TABL ID = 'Demo Fire Properties', DATA = 30,  75,  0, 0.3, 0.006, 0.015, 0, 0, 0 /
+&TABL ID = 'Demo Fire Properties', DATA = 60,  300, 0, 0.3, 0.006, 0.015, 0, 0, 0 /
+&TABL ID = 'Demo Fire Properties', DATA = 120, 300, 0, 0.3, 0.006, 0.015, 0, 0, 0 /
+
+&TAIL /

@@ -16,6 +16,9 @@ __pycache__/
 /data/prepared-scenes/*.png
 /data/prepared-scenes/*.xyz
 
+# Generated CFAST output (inputs and documentation stay tracked)
+/data/cfast/output/
+
 # Node / web build output
 node_modules/
 dist/
