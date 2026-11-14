@@ -8,8 +8,8 @@ import {
 
 export const DEFAULT_OCCUPANT_COUNT = 10
 
-/** Two firefighters who arrive 30 s after ignition at the first exterior exit. */
-export const DEFAULT_CREW: CrewSpawn = { id: 'engine-1', member_count: 2, arrival_time_seconds: 30 }
+/** One firefighter who arrives 30 s after ignition at the first exterior exit. */
+export const DEFAULT_CREW: CrewSpawn = { id: 'engine-1', member_count: 1, arrival_time_seconds: 30 }
 
 /**
  * Generates a validated occupant layout, ignites `objectId`, and runs the
