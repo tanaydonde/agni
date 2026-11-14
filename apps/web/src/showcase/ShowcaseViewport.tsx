@@ -2,11 +2,14 @@ import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } 
 import { ControlsHint, type Controls } from '../components/ControlsHint'
 import { FlyIndicator } from '../components/FlyIndicator'
 import { wheelPixels } from '../scene/cameraMath'
+import type { ModelPlacement } from '../scene/modelChoice'
 import type { Floor, Scene } from '../scene/types'
 import { type CameraDriver, createHopDriver } from './cameraDriver'
-import { activateDefurnishedView } from './defurnish'
+import { activateDefurnishedView, showSpaceVersion, type SpaceVersion } from './defurnish'
 import { createFlyDriver } from './flyDriver'
 import { furnitureItems, mountFurniture, type ShowcaseFurniture } from './furniture'
+import { mountEnvironment } from './environment'
+import { mountModels, type ShowcaseModels } from './models'
 import { connectShowcase, hideShowcaseControls, type MpSdk, showcaseUrl, untilPlaying } from './sdk'
 
 /** After this long without the space playing, say so (it may still finish). */
@@ -48,12 +51,22 @@ type Status =
 interface ShowcaseViewportProps {
   scene: Scene
   floor: Floor
+  /**
+   * Models standing in for scanned furniture; empty to hide them. Scanned
+   * furniture without a model of its kind isn't drawn here (the editor shows
+   * every detected box).
+   */
+  models: ModelPlacement[]
+  /** Show the space as scanned, or with its furniture removed. */
+  version: SpaceVersion
 }
 
 /**
- * Matterport's own player (Showcase) showing the space's defurnished view:
- * the empty rooms with their photo textures. Our placed furniture is drawn
- * into it read-only.
+ * Matterport's own player (Showcase) showing the space with its photo
+ * textures, either defurnished (the empty rooms) or furnished as scanned.
+ * Switching keeps the camera where it is, for comparing the two. Our placed
+ * furniture and the furniture detected in the scan are drawn into it
+ * read-only: scanned furniture as models of its kind, where one exists.
  *
  * WASD flies freely by driving Showcase's camera directly. Showcase's own
  * mouse handling is off then, so a transparent layer over it takes the
@@ -61,14 +74,18 @@ interface ShowcaseViewportProps {
  * with a crosshair, Esc lets it go. If this Showcase won't hand over its
  * camera, WASD hops between scans and Showcase keeps its own mouse controls.
  */
-export function ShowcaseViewport({ scene, floor }: ShowcaseViewportProps) {
+export function ShowcaseViewport({ scene, floor, models, version }: ShowcaseViewportProps) {
   const container = useRef<HTMLDivElement>(null)
   const inputLayer = useRef<HTMLDivElement>(null)
   const [status, setStatus] = useState<Status>({ kind: 'loading', slow: false })
   const [flying, setFlying] = useState(false)
   const furniture = useRef<ShowcaseFurniture | null>(null)
+  const sdkRef = useRef<MpSdk | null>(null)
+  const latestVersion = useRef(version)
   const items = useMemo(() => furnitureItems(floor, scene.assets), [floor, scene.assets])
   const latestItems = useRef(items)
+  const furnitureModels = useRef<ShowcaseModels | null>(null)
+  const latestModels = useRef(models)
   const freeFlight = status.kind === 'ready' && Boolean(status.driver.look)
 
   // Keep Showcase's furniture in step with world edits.
@@ -78,12 +95,30 @@ export function ShowcaseViewport({ scene, floor }: ShowcaseViewportProps) {
   }, [items])
 
   useEffect(() => {
+    latestModels.current = models
+    furnitureModels.current?.update(models)
+  }, [models])
+
+  // Swap furnished/defurnished in place once the player is up; the initial
+  // version is applied when it loads (below).
+  const ready = status.kind === 'ready'
+  useEffect(() => {
+    latestVersion.current = version
+    const sdk = sdkRef.current
+    if (!ready || !sdk) return
+    showSpaceVersion(sdk, version).catch((error: unknown) =>
+      setStatus({ kind: 'error', message: error instanceof Error ? error.message : String(error) }),
+    )
+  }, [ready, version])
+
+  useEffect(() => {
     const host = container.current
     if (!host || !__MATTERPORT_SDK_KEY__) return
     const abort = new AbortController()
     const { signal } = abort
     let driver: CameraDriver | null = null
     let detachKeys = () => {}
+    let environment: { dispose(): void } | null = null
     setStatus({ kind: 'loading', slow: false })
     const slowTimer = setTimeout(
       () => setStatus((current) => (current.kind === 'loading' ? { kind: 'loading', slow: true } : current)),
@@ -105,7 +140,13 @@ export function ShowcaseViewport({ scene, floor }: ShowcaseViewportProps) {
       await untilPlaying(sdk, signal)
       const startSweep = await activateDefurnishedView(sdk)
       signal.throwIfAborted()
+      if (latestVersion.current !== 'defurnished') await showSpaceVersion(sdk, latestVersion.current)
+      signal.throwIfAborted()
+      sdkRef.current = sdk
       furniture.current = await mountFurniture(sdk, latestItems.current)
+      furnitureModels.current = mountModels(sdk, latestModels.current)
+      environment = await mountEnvironment(sdk)
+      signal.throwIfAborted()
       signal.throwIfAborted()
       driver = await createDriver(sdk, startSweep)
       if (signal.aborted) return driver.dispose()
@@ -132,6 +173,10 @@ export function ShowcaseViewport({ scene, floor }: ShowcaseViewportProps) {
       driver?.dispose()
       furniture.current?.dispose()
       furniture.current = null
+      furnitureModels.current?.dispose()
+      furnitureModels.current = null
+      environment?.dispose()
+      sdkRef.current = null
       iframe.remove()
     }
   }, [scene.id])

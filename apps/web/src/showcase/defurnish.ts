@@ -1,9 +1,11 @@
 import {
+  BASE_VIEW_TYPES,
   DEFURNISH_VIEW_TYPE,
   MODE,
   type MpSdk,
   type Observable,
   readMap,
+  type ShowcaseView,
   SWEEP_TRANSITION,
   type SweepData,
 } from './sdk'
@@ -13,6 +15,30 @@ export class NoDefurnishedViewError extends Error {
     super('This space has no defurnished view, so Matterport has no empty-room textures for it.')
     this.name = 'NoDefurnishedViewError'
   }
+}
+
+/** Which copy of the space Showcase shows. */
+export type SpaceVersion = 'furnished' | 'defurnished'
+
+/** The Showcase view for a version, or undefined if the space has none. */
+export function viewFor<View extends Pick<ShowcaseView, 'type'>>(views: View[], version: SpaceVersion): View | undefined {
+  if (version === 'defurnished') return views.find((view) => view.type === DEFURNISH_VIEW_TYPE)
+  // Prefer the plain base view over a layered one.
+  for (const type of BASE_VIEW_TYPES) {
+    const view = views.find((candidate) => candidate.type === type)
+    if (view) return view
+  }
+  return undefined
+}
+
+/**
+ * Switches Showcase between the furnished and defurnished copies of the space
+ * without moving the camera, so the two can be compared from one spot.
+ */
+export async function showSpaceVersion(sdk: MpSdk, version: SpaceVersion): Promise<void> {
+  const view = viewFor(Object.values(await readMap(sdk.View.views)), version)
+  if (!view) throw new Error(`This space has no ${version} view.`)
+  if (!view.active) await view.setActive(false)
 }
 
 const STEP_INSIDE_ATTEMPTS = 5
@@ -26,7 +52,7 @@ const RETRY_MS = 500
  */
 export async function activateDefurnishedView(sdk: MpSdk): Promise<string | null> {
   const views = Object.values(await readMap(sdk.View.views))
-  const defurnished = views.find((view) => view.type === DEFURNISH_VIEW_TYPE)
+  const defurnished = viewFor(views, 'defurnished')
   if (!defurnished) throw new NoDefurnishedViewError()
   if (!defurnished.active) await defurnished.setActive(true)
 

@@ -54,6 +54,8 @@ export const SWEEP_TRANSITION = {
 
 /** `View.ViewType.DEFURNISH`: the copy of the space with furniture removed. */
 export const DEFURNISH_VIEW_TYPE = 'viewtype.defurnish'
+/** `View.ViewType.BASE` / `LAYERED_BASE`: the space as scanned, furniture and all. */
+export const BASE_VIEW_TYPES = ['viewtype.base', 'viewtype.layeredbase']
 
 export interface ShowcaseView {
   readonly id: string
@@ -73,6 +75,8 @@ export interface SweepData {
 export interface ComponentContext {
   three: typeof THREE
   camera: THREE.Camera
+  renderer: THREE.WebGLRenderer
+  scene: THREE.Scene
 }
 
 /**
@@ -90,8 +94,16 @@ export interface SceneComponent<Inputs extends object = Record<string, unknown>>
   onDestroy?(): void
 }
 
+/** Showcase's three.js vector and quaternion on a node, set in place. */
+interface Settable3 {
+  set(x: number, y: number, z: number): unknown
+}
+
 export interface SceneNode {
   addComponent<Inputs extends object>(name: string, inputs?: Partial<Inputs>): { inputs: Inputs }
+  readonly position: Settable3
+  readonly quaternion: { set(x: number, y: number, z: number, w: number): unknown }
+  readonly scale: Settable3
 }
 
 export interface SceneObject {

@@ -4,8 +4,11 @@ import { useEditorStore } from './editorStore'
 import { applyEditLocally } from './placement'
 import { describeWorldError } from './worldErrors'
 import {
+  DETECTION_SCHEMA_VERSION,
   SCENE_SCHEMA_VERSION,
   type ApplyEditsRequest,
+  type Detection,
+  type FurnitureModel,
   type CheckEditsRequest,
   type CheckEditsResponse,
   type EditCommand,
@@ -142,6 +145,48 @@ export function useWorldEdit(): (edit: EditCommand) => void {
     },
     [mutate, queryClient],
   )
+}
+
+/**
+ * Furniture detected in the scan, or null if `detect-furniture` hasn't been
+ * run for this scene.
+ */
+export function useDetectedFurniture(sceneId: string) {
+  return useQuery({
+    queryKey: ['detected-furniture', sceneId],
+    queryFn: async (): Promise<Detection | null> => {
+      const response = await fetch(`/api/scenes/${encodeURIComponent(sceneId)}/detected.json`)
+      if (response.status === 404) return null
+      if (!response.ok) throw new Error(`Loading detected furniture failed (${response.status})`)
+      const detection = (await response.json()) as Detection
+      if (detection.schema_version !== DETECTION_SCHEMA_VERSION) {
+        throw new Error(
+          `Detected furniture uses schema v${detection.schema_version}; this app reads v${DETECTION_SCHEMA_VERSION}`,
+        )
+      }
+      return detection
+    },
+    staleTime: Infinity,
+    enabled: sceneId !== '',
+  })
+}
+
+/**
+ * The normalized furniture models (`pnpm --filter web normalize-furniture`),
+ * or none if they haven't been prepared. The model files aren't in Git.
+ */
+export function useFurnitureModels() {
+  return useQuery({
+    queryKey: ['furniture-models'],
+    queryFn: async (): Promise<FurnitureModel[]> => {
+      const response = await fetch('/models/furniture/index.json')
+      // Vite answers a missing file with its HTML page, not a 404.
+      if (!response.ok || !response.headers.get('content-type')?.includes('json')) return []
+      const index = (await response.json()) as { models: FurnitureModel[] }
+      return index.models
+    },
+    staleTime: Infinity,
+  })
 }
 
 export function sceneMeshUrl(sceneId: string): string {

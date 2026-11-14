@@ -160,3 +160,47 @@ export interface CheckEditsResponse {
   valid: boolean
   error: WorldApiErrorBody | null
 }
+
+// Furniture detected in the scan (crates/furniture-detect), written by
+// `cargo run -p detect-furniture` beside the scene.
+
+export const DETECTION_SCHEMA_VERSION = 3
+
+/** What a detected box probably is, from its size and room type. */
+export type FurnitureLabel = 'bed' | 'sofa' | 'chair' | 'table' | 'desk' | 'storage' | 'counter' | 'unknown'
+
+export interface Detection {
+  schema_version: number
+  scene_id: string
+  objects: DetectedObject[]
+}
+
+/** One piece of scanned furniture as an upright, measured box. */
+export interface DetectedObject {
+  id: string
+  floor_id: string
+  room_id: string | null
+  room_type: string | null
+  label: FurnitureLabel
+  /** Catalog asset closest in size, drawn in place of the real furniture. */
+  asset_id: string | null
+  /** Bottom centre, on the floor. */
+  position_m: Vec3
+  yaw_degrees: number
+  /** Measured size; width is the long side. */
+  size_m: Dimensions3
+  footprint_area_m2: number
+}
+
+/**
+ * A normalized furniture model (assets/furniture/models.json, written to
+ * public/models/furniture/index.json by `pnpm normalize-furniture`): glTF
+ * Y-up metres, long side along X, front facing +Z, standing on the origin.
+ */
+export interface FurnitureModel {
+  id: string
+  url: string
+  label: FurnitureLabel
+  /** Width along the model's X, depth along Z, height along Y. */
+  size_m: Dimensions3
+}

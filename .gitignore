@@ -19,3 +19,9 @@ __pycache__/
 # Node / web build output
 node_modules/
 dist/
+
+# Furniture models: downloaded sources and normalized output stay local
+# (licenses such as Sketchfab Standard don't allow redistributing the files).
+# assets/furniture/models.json and CREDITS.md are tracked.
+/assets/furniture/source/
+/apps/web/public/models/furniture/

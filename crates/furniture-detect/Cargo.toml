@@ -1,0 +1,15 @@
+[package]
+name = "tflop-furniture-detect"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+tflop-world-core = { path = "../world-core" }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

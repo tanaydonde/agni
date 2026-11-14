@@ -1,117 +1,212 @@
-Demo big picture
-1. Load the default, unfurnished room.
-2. Ask chatbot to generate an arbitrary room for a restaurant for 20 ppl
-3. Run simulation to see how it fairs against fires (ideally it should fail/be super ass)
-4. We optimize with "optimize" button and run simulation again, then compare results.
+# Product Requirements: Fire Preplan and Scenario Rehearsal
 
-COSTAR STUFF FOR LATER, but keep here for now. 
+## Summary
 
-CoStar search and property selection
-1. Ingest the supplied JSONL data and documented join keys.
-2. Search commercial lease listings using available fields:
-   - Houston or Los Angeles.
-   - Location or submarket.
-   - Property type and marketed use.
-   - Available area.
-   - Asking rent and lease terms, where supplied.
-3. Normalize asking terms before comparing costs. Show when expenses or other components are unknown.
-4. Join listings and properties to Matterport scan entries.
-5. Confirm that the scan represents the relevant suite or space; a property-level match alone is insufficient.
-6. Use property data to narrow candidates, then use geometry to test the requested layout.
-CoStar determines which real spaces are candidates. Matterport determines how the requested arrangement fits inside them. If the selected space cannot meet the requirements, the agent can propose changing the brief or inspecting another candidate.
+tflop helps a fire officer prepare for a commercial building **before** an
+emergency. For one property it combines three data sources into a visual
+building brief:
 
-Tenant history can provide context, but must not be treated as confirmed current occupancy or occupant counts.
+| Source | What it contributes |
+| --- | --- |
+| CoStar | Property identity, address, building type and use, size, floors, year built, and other available building metadata. |
+| Vexcel | Aerial and oblique imagery for exterior site context: building footprint, street frontage, apparatus approach, and candidate exterior entrances. |
+| Matterport | Indoor scan geometry for the scanned portion of the building: rooms, walls, openings, and interior obstacles. |
 
-THIS IS WHERE WE START
-3D engine and editor
-1. Load one supported Matterport space.
-   - Use available room boundaries, openings, and/or mesh assets.
-   - Prepare the room shell ahead of the demo.
-   - Automatic furniture decomposition is not a confirmed Matterport capability and is outside the initial MVP.
-2. Navigate the environment.
-   - Orbit, pan, and zoom.
-   - Switch between perspective and top-down views.
-3. Support approximately five furniture types (we can add more later).
-   - Desk.
-   - Chair.
-   - Meeting table.
-   - Sofa.
-   - Storage cabinet.
-4. Edit individual objects.
-   - Make sure when we display objects that it is the right size (matterport gives sizes)
-   - Select, move, rotate, add, and remove furniture.
-   - Use transform controls, with floor-constrained movement by default.
-5. Maintain structured scene state.
-   - Store object IDs, assets, dimensions, positions, rotations, and fixed/movable status.
-   - Manual edits and agent tools update the same state.
-6. Support layout versions.
-   - Preserve the baseline.
-   - Create independent alternatives.
-   - Switch between versions, undo changes, reset, and save.
-Simulation
-At a high level, the simulation should take in a 3D layout and a fire starting point and simulate N people walking through.
-We time how long it takes everyone to evacuate or return how many people died due to the fire.
-In the future, we can add more emergency types other than fires. 
-Logically speaking, the simulation is an API call that other things can make. The rendering of the simulation is a separate matter
-that we can figure out later. So, all the pedestrians moving and fire spreading will happen regardless of it being displayed on the
-engine frontend. 
-1. Build walkable geometry.
-   - Derive the floor area from the prepared scene.
-   - Treat walls, fixed obstacles, and furniture footprints as non-walkable.
-   - Define confirmed exit destinations. (i think matterport defines where the doors are)
-2. Model pedestrian movement.
-   - Occupants navigate around obstacles and interact through the chosen pedestrian model.
-   - Model preference for familiar exits explicitly rather than adding arbitrary “irrational” movement.
-   - Pedestrians should collide with each other (they can't walk through each other), and also shouldn't be able to walk through furniture
-   - Within the simulation, they can be little oval blobs like Primer the youtuber. 
-3. Test multiple scenarios.
-   - Different occupant starting positions.
-   - Different fire start locations
-Deep Agent
-At a high level, the deep agent will have two "modes":
-    - The vibe-designing mode. The user can type english prompts, such as "design me a spatious interior for a small restaurant", and the 
-      agent will use whatever tools it has available provided by the engine to generate/add chairs
-    - Optimize mode. The user presses a button and provided a little bit of English context. The agent will create multiple layouts and use the
-      simulation API to test these layouts to see how good they do in emergencies. The agent will return the best one. It needs some extra context as well because if, for example, it's a restaurant, it should place tables in a certain way. e.g. the layout of a resutaurant vs a office space is vastly different. 
+An agent reads the joined record and proposes access points, known interior
+routes, and potential obstacles. Every fact carries its source, capture date,
+and verification status. Anything the data cannot establish is marked
+**needs crew verification** rather than guessed.
 
-1. Interpret the user’s requirements.
-   - Location and rental budget.
-   - Intended use and number of occupants.
-   - Required furniture and functional areas.
-   - Fixed objects and user preferences.
-2. Generate constrained layouts.
-   - Start with a few coherent arrangement patterns.
-   - Preserve required furniture and seating.
-   - Maintain configured clearances and avoid overlaps.
-   - Keep related objects aligned and sensibly grouped.
-3. Use structured tools.
-   Tool	Purpose
-   get_scene()	Inspect geometry, furniture, and scene version
-   create_variant()	Create an independent layout
-   apply_edits()	Add, move, rotate, or remove objects
-   validate_layout()	Check functional and geometric constraints
-   simulate_egress()	Run the selected scenario set
-   compare_variants()	Compare results and identify tradeoffs
-    Note that these tools are not final/exact. We may change the names or something.
-4. Iterate using simulation feedback.
-   - Identify bottlenecks.
-   - Propose targeted edits.
-   - Revalidate and rerun.
-   - Stop after a configured iteration or time budget.
-5. Preserve the original objective.
-   - Do not improve evacuation time by removing required seats or abandoning the requested use.
-   - Report unmet requirements explicitly.
-   - Describe the result as the best-performing tested layout, not a globally optimal or certified safe layout.
-Minimum UI
-- Search screen: User brief, filters, listing results, and scan availability. (this is the COSTAR stuff, so it's TODO)
-- Chat panel: Initial requirements and follow-up edits.
-- Controls: Generate, run simulation, compare versions, reset, and save.
-- Results panel: Functional requirements, simulation metrics, assumptions, and unresolved issues.
-MVP boundaries
+A simulation then lets crews rehearse hypothetical fires in different
+locations. Occupants and firefighter crews act in the known geometry, and
+scenario comparisons reveal bottlenecks, inaccessible areas, and assumptions
+that materially change the plan.
+
+The product supports **preparation and training only**. Live tactical
+decisions still depend on conditions observed at the incident and on the
+department's procedures. The product never issues an attack order, picks a
+single "optimal" entry point, or predicts casualties.
+
+Background research and the reasoning behind these boundaries are in
+`docs/FIRE_PREPLAN_RESEARCH.md`.
+
+## User
+
+The primary user is a **fire officer** (a company officer or preincident
+planning officer) preparing for a specific commercial building. They know
+fireground operations and department procedure; they do not have time to
+assemble scan, imagery, and property data by hand. Secondary users are crews
+running a training exercise from the officer's plan.
+
+## Demo big picture
+
+1. Select one commercial building with verified Matterport scan coverage.
+2. Show the building brief: aerial/site view, property facts, and the bounded
+   scanned interior. Unscanned areas are visibly marked as unknown.
+3. The agent proposes access points, interior routes, and obstacles, and lists
+   what still needs verification. The officer confirms, corrects, or rejects
+   each item.
+4. Run a hypothetical fire scenario: occupants evacuate and a crew performs an
+   assigned search.
+5. Change one thing (a different fire origin, or a blocked route) and rerun.
+6. Compare the two scenarios side by side: route availability, bottlenecks,
+   search coverage, timing ranges, and the assumptions each result depends on.
+
+## 1. Property selection and data join
+
+1. Ingest the supplied CoStar JSONL data using its documented join keys.
+2. Search properties by location, property type, use, and size.
+3. Join the property to its Vexcel imagery and Matterport scan entries.
+4. Record what the scan covers. A scan of one suite or floor must never be
+   presented as the whole building; a property-level match alone is
+   insufficient.
+5. Show which source supplied each fact and when it was captured.
+
+Tenant history and listing data can provide context, but must not be treated
+as confirmed current occupancy, occupant counts, or contents.
+
+## 2. Building brief
+
+The brief is a short, reviewable preplan card plus a 3D/2D view.
+
+1. **Site view** from Vexcel imagery: footprint, adjacent streets, and
+   candidate exterior entrances and apparatus approach.
+2. **Interior view** from Matterport: the scanned floor(s), rooms, openings,
+   and obstacles, with the scan boundary drawn clearly.
+3. **Property facts** from CoStar: address, use, size, floors, construction
+   year, and any available construction or protection fields.
+4. **Agent findings**: candidate access points, known interior routes, and
+   potential obstacles, each with a confidence note and source.
+5. **Verification list**: facts the crew must check on a walkthrough. By
+   default this includes unscanned areas, door operability and locking, exit
+   discharge to the exterior, hydrants and water supply, standpipes and FDC,
+   sprinkler and alarm systems, hazardous contents, and occupancy.
+
+Every item has one of three statuses: `unverified` (agent-proposed),
+`confirmed` (by a named officer, with date), or `rejected`. Only confirmed
+exits and routes are treated as usable in simulations unless a scenario
+explicitly assumes otherwise, and that assumption is shown in the results.
+
+## 3. 3D view and scene editing
+
+1. Load one supported Matterport space: room boundaries, openings, and the
+   defurnished/textured mesh where available.
+2. Navigate with orbit, pan, zoom, and fly controls; switch between
+   perspective and top-down views.
+3. Represent interior obstacles (furniture, storage, fixed equipment) as
+   footprints that block movement. The existing furniture editor is reused to
+   add, move, or remove obstacles so the officer can correct the model to match
+   what a walkthrough found.
+4. Mark exits, access points, and blocked routes directly in the view.
+5. Keep structured scene state: geometry, obstacles, exits, verification
+   status, and revision. Manual edits and agent tools update the same state.
+
+## 4. Scenario rehearsal simulation
+
+At a high level the simulation takes the building geometry, a hypothetical fire
+origin, an occupant setup, and crew assignments, and steps them forward in
+time. It is an API the agent and UI call; rendering is separate, and the
+simulation runs whether or not it is displayed.
+
+### Walkable geometry
+
+- Derive walkable floor area from the prepared scene.
+- Walls, fixed obstacles, and obstacle footprints are not walkable.
+- Only confirmed exits are destinations unless a scenario assumes otherwise.
+
+### Hazard
+
+- A fire scenario places a hypothetical origin and grows a hazard zone over a
+  scripted timeline that blocks or penalizes routes through it.
+- Hazard zones are explicitly hypothetical. The product makes no fire-spread,
+  smoke, tenability, or casualty predictions.
+
+### Occupants
+
+Occupants use behavior parameters and states, not personality stereotypes or
+"panic":
+
+- **States:** unaware → perceives cue → seeks information → prepares or helps
+  → moves to a chosen exit → reroutes or exits.
+- **Respond at different times:** sampled pre-movement delay and cue strength.
+- **Favor familiar exits:** preference for the main entrance or the way they
+  came in, rather than the nearest exit.
+- **Move in groups:** groups travel together and wait for members.
+- **Help others:** some occupants assist slower or mobility-impaired people.
+- **Reroute:** when a route becomes blocked by hazard or congestion.
+- Occupants collide with each other and with obstacles.
+
+### Firefighter crews
+
+Crews are modeled as task-driven teams, not shortest-path agents:
+
+- A scenario begins with arrival; the crew enters through an assigned access
+  point.
+- Each crew has an assigned task (e.g. primary search of an area), stays
+  together, and follows known routes.
+- Crews report findings and **reassess** when conditions change: a route
+  becomes unavailable, the hazard reaches their area, or the task completes.
+- Task timing uses parameter ranges (ideally from the department's own drill
+  data), not single values.
+
+### Scenarios and comparison
+
+- Vary fire origin, occupant starting positions and parameters, blocked or
+  unavailable routes, and crew assignments.
+- Use a fixed random seed per comparison and run several samples per scenario
+  to show ranges rather than single numbers.
+- Report: time-to-exit ranges, exit usage and bottlenecks, areas crews could
+  not reach or search, task timing ranges, and occupants still inside at the
+  scenario cutoff (never labeled as deaths).
+- Highlight **sensitive assumptions**: inputs whose change materially alters
+  the outcome, such as an unverified door or an assumed occupant count.
+
+## 5. Preplan agent
+
+The agent works over structured tools only; see `PREPLAN_AGENT.md`.
+
+1. **Brief mode:** inspect the joined property record and scene, propose
+   access points, routes, obstacles, and the verification list, and draft the
+   preplan card.
+2. **Rehearsal mode:** given the officer's goal (e.g. "what if the fire starts
+   in the storage room?"), set up a small number of scenarios, run them,
+   compare results, and explain bottlenecks, inaccessible areas, and which
+   assumptions drove the difference.
+3. When the officer corrects a fact (confirms an exit, blocks a route, adds an
+   obstacle), the agent updates the brief and can rerun the same scenarios to
+   show what changed.
+
+The agent never presents a scenario result as a prediction of a real fire,
+never ranks tactics for a live incident, and never marks an item confirmed on
+its own.
+
+## Minimum UI
+
+- **Property screen:** search, select a building, and show source coverage.
+- **Brief panel:** preplan card, agent findings, and the verification list
+  with confirm/reject controls.
+- **3D/2D view:** site context, scanned interior, exits, routes, obstacles,
+  and the simulation playback.
+- **Chat panel:** questions to the agent and scenario requests.
+- **Scenario controls:** fire origin, occupant setup, crew assignments,
+  blocked routes, run, and compare.
+- **Results panel:** metrics with ranges, bottlenecks, unreachable areas,
+  assumptions, and open verification items.
+
+## MVP boundaries
+
+- One commercial building with verified scan coverage for the primary demo.
 - One floor per simulated space.
-- A small curated set of real listings with verified scan matches.
-- One prepared space for the primary demo.
-- Five furniture types
-- One pedestrian simulation engine.
-- No structural remodeling, validated fire-spread modeling, fatality predictions
-Success means a user can find a real candidate property, generate a functional arrangement, watch a fair comparison, understand the tradeoffs, and save their preferred version.
+- Hypothetical hazard zones only; no validated fire or smoke modeling.
+- One pedestrian/crew simulation engine.
+- No live-incident mode, tactic ranking, casualty or tenability predictions,
+  or code-compliance claims.
+- Unscanned areas, unverified exits, and missing protection-system data are
+  shown as unknowns, not filled in.
+
+## Success
+
+A fire officer can select a real building, see what the data does and does not
+cover, confirm or correct the agent's proposed access points and routes, run
+two hypothetical fire scenarios, and understand from the comparison which
+bottlenecks, inaccessible areas, and assumptions matter most for their plan.

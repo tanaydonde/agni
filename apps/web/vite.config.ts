@@ -113,29 +113,39 @@ function showcaseBundle(): Plugin {
   }
 }
 
+/** Prepared files served per scene: route file name → suffix on disk. */
+const PREPARED_FILES: Record<string, { suffix: string; contentType: string }> = {
+  'mesh.obj': { suffix: '.obj', contentType: 'model/obj' },
+  'detected.json': { suffix: '.detected.json', contentType: 'application/json' },
+}
+
 /**
- * Dev-only route for the defurnished mesh that `cargo run -p import-scene`
- * writes. The scene itself comes from the Rust world server (`/api/world`).
- *   GET /api/scenes/:id/mesh.obj  → data/prepared-scenes/:id.obj
+ * Dev-only routes for files written beside the scene: the defurnished mesh
+ * from `cargo run -p import-scene` and the detected furniture from
+ * `cargo run -p detect-furniture`. The scene itself comes from the Rust world
+ * server (`/api/world`).
+ *   GET /api/scenes/:id/mesh.obj       → data/prepared-scenes/:id.obj
+ *   GET /api/scenes/:id/detected.json  → data/prepared-scenes/:id.detected.json
  */
-function preparedMeshes(): Plugin {
+function preparedFiles(): Plugin {
   return {
-    name: 'prepared-meshes',
+    name: 'prepared-files',
     configureServer(server) {
       server.middlewares.use('/api/scenes', async (req, res, next) => {
-        const route = /^\/([A-Za-z0-9_-]+)\/mesh\.obj$/.exec((req.url ?? '').split('?')[0])
-        if (!route || (req.method !== 'GET' && req.method !== 'HEAD')) return next()
+        const route = /^\/([A-Za-z0-9_-]+)\/([a-z.]+)$/.exec((req.url ?? '').split('?')[0])
+        const prepared = route && Object.hasOwn(PREPARED_FILES, route[2]) ? PREPARED_FILES[route[2]] : undefined
+        if (!route || !prepared || (req.method !== 'GET' && req.method !== 'HEAD')) return next()
 
-        const file = `${PREPARED_SCENES_DIR}${route[1]}.obj`
+        const file = `${PREPARED_SCENES_DIR}${route[1]}${prepared.suffix}`
         const info = await stat(file).catch(() => null)
         if (!info?.isFile()) {
           res.statusCode = 404
           res.setHeader('Content-Type', 'application/json')
-          res.end(JSON.stringify({ error: `No prepared mesh for ${route[1]}` }))
+          res.end(JSON.stringify({ error: `No prepared ${route[2]} for ${route[1]}` }))
           return
         }
 
-        res.setHeader('Content-Type', 'model/obj')
+        res.setHeader('Content-Type', prepared.contentType)
         res.setHeader('Content-Length', info.size)
         if (req.method === 'HEAD') return res.end()
         createReadStream(file).pipe(res)
@@ -154,7 +164,7 @@ export default defineConfig(({ mode }) => {
   const worldServer = `http://${process.env.TFLOP_SERVER_ADDR ?? env.TFLOP_SERVER_ADDR ?? '127.0.0.1:3000'}`
 
   return {
-    plugins: [react(), tailwindcss(), preparedMeshes(), showcaseBundle()],
+    plugins: [react(), tailwindcss(), preparedFiles(), showcaseBundle()],
     define: {
       __SCENE_ID__: JSON.stringify(sceneId),
       __MATTERPORT_SDK_KEY__: JSON.stringify(sdkKey),

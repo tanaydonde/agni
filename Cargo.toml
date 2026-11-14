@@ -1,6 +1,8 @@
 [workspace]
 members = [
+    "apps/detect-furniture",
     "apps/import-scene",
+    "crates/furniture-detect",
     "crates/matterport",
     "crates/server",
     "crates/world-core",
@@ -22,4 +24,5 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread"] }
+zip = { version = "9.5.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
