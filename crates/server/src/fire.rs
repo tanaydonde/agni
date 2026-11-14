@@ -358,6 +358,7 @@ fn simulation_frame(frame: SurfaceFireFrame) -> SimulationFrame {
         fires: Vec::new(),
         openings: Vec::new(),
         surface_fire: frame.active_nodes,
+        agents: Vec::new(),
     }
 }
 

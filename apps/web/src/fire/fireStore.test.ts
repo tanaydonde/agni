@@ -16,6 +16,7 @@ const run: SimulateFireResponse = {
       rooms: [],
       fires: [],
       openings: [],
+      agents: [],
     })),
   },
 }

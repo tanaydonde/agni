@@ -119,6 +119,7 @@ fn cfast_frame(
             opening_fraction: 1.0,
         }],
         surface_fire: vec![],
+        agents: vec![],
     }
 }
 

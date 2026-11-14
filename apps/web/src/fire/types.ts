@@ -1,5 +1,6 @@
 // TypeScript mirror of the fire simulation results (crates/simulation-core
-// `SimulationResults` and `SurfaceFireNodeFrame`); see docs/FIRE_FRONTEND.md.
+// `SimulationResults`, `SurfaceFireNodeFrame`, and `AgentFrame`); see
+// docs/FIRE_FRONTEND.md.
 
 import type { Dimensions3, Vec3 } from '../scene/types'
 
@@ -19,6 +20,8 @@ export interface SimulationFrame {
   rooms: RoomConditions[]
   fires: FireConditions[]
   openings: OpeningConditions[]
+  /** Occupants and firefighters. Empty for fire-only runs. */
+  agents: AgentFrame[]
 }
 
 export type CombustionState = 'unignited' | 'heating' | 'burning' | 'burned_out'
@@ -54,6 +57,45 @@ export interface SurfaceFireNode {
   heat_release_rate_kw: number
   /** Between 0 and 1. */
   fuel_remaining_fraction: number
+}
+
+export type OccupantPhase =
+  | 'unaware'
+  | 'preparing'
+  | 'moving_to_exit'
+  | 'rerouting'
+  | 'exited'
+  | 'incapacitated'
+
+export type FirefighterPhase =
+  | 'staging'
+  | 'advancing'
+  | 'searching'
+  | 'suppressing'
+  | 'withdrawing'
+  | 'exited'
+  | 'incapacitated'
+
+export type AgentRole =
+  | { type: 'occupant'; phase: OccupantPhase }
+  | { type: 'firefighter'; crew_id: string; phase: FirefighterPhase }
+
+/** Fractional effective doses; reaching 1 in either means incapacitated. */
+export interface Exposure {
+  heat: number
+  toxic_gas: number
+}
+
+export interface AgentFrame {
+  /** Stable across every frame; use as the React key. Firefighters are `{crew_id}/{n}`. */
+  id: string
+  floor_id: string
+  /** Canonical Z-up metres; `z` is the floor surface. */
+  position_m: Vec3
+  velocity_m_per_s: Vec3
+  radius_m: number
+  exposure: Exposure
+  role: AgentRole
 }
 
 export interface RoomConditions {

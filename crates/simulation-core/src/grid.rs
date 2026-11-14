@@ -201,6 +201,23 @@ pub struct GridCell {
     pub object_id: Option<String>,
 }
 
+impl GridCell {
+    /// Whether a person can stand in or walk through this cell: open floor,
+    /// or a door or passage. Windows and unclassified openings are not
+    /// walkable.
+    #[must_use]
+    pub fn is_walkable(&self) -> bool {
+        match self.kind {
+            GridCellKind::Floor => true,
+            GridCellKind::Opening => matches!(
+                self.opening_kind,
+                Some(OpeningKind::Door | OpeningKind::Passage)
+            ),
+            GridCellKind::Outside | GridCellKind::Wall | GridCellKind::Furniture => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GridCellKind {

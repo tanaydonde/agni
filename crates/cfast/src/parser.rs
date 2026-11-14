@@ -261,6 +261,7 @@ fn parse_compartments(
                     .collect::<Result<Vec<_>, CfastParseError>>()?,
                 openings: Vec::new(),
                 surface_fire: Vec::new(),
+                agents: Vec::new(),
             })
         })
         .collect()
