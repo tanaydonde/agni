@@ -74,10 +74,18 @@ Successful mutations return:
 snapshot. Angles in the agent-facing API use degrees around the canonical Z
 axis; Rust will convert them to normalized quaternions internally.
 
-Edits currently validate IDs, asset and floor references, transforms, mobility,
-and revisions. `validate_layout` runs the full structural scene validator.
-Room containment, furniture overlap, wall collision, and door-clearance checks
-are not implemented yet.
+Edits validate IDs, asset and floor references, transforms, mobility, revisions,
+room containment, furniture overlap, wall collision, and door/passage clearance.
+Each mutation validates only the proposed object against its floor geometry and
+the other objects on that floor. Invalid edits leave the object and world
+revision unchanged. `validate_layout` runs both structural and placement checks
+across the complete scene.
+
+Furniture may touch but not overlap other furniture. It must remain upright and
+may only rotate around the canonical Z axis. The default door/passage clearance
+extends 0.75 m from each side of its wall and 0.15 m past each side of the
+opening; Rust callers may override these values with `PlacementRules` and
+`World::with_placement_rules`.
 
 ## Error codes
 
@@ -89,6 +97,12 @@ Errors are serialized with a `code` field. Current codes are:
 - `object_not_found`
 - `duplicate_object_id`
 - `object_fixed`
+- `object_outside_rooms`
+- `object_outside_room`
+- `furniture_overlap`
+- `wall_collision`
+- `opening_clearance_blocked`
+- `unsupported_furniture_rotation`
 - `invalid_request`
 - `batch_edit_failed`
 
