@@ -13,6 +13,7 @@ use serde_json::json;
 use tflop_cfast::{
     CfastOpeningState, CfastRunner, CfastScenario, SurfaceFireAdapterConfig,
     adapt_surface_fire_for_cfast, merge_cfast_with_surface_fire, prepare_cfast_scene,
+    resolve_cfast_bin,
 };
 use tflop_simulation_core::{
     CombustionState, FireMaterialCatalog, SIMULATION_RESULTS_SCHEMA_VERSION, SimulationEngine,
@@ -81,18 +82,18 @@ pub(crate) async fn simulate_hybrid(
         Ok(request) => request,
         Err(rejection) => return rejection.into_response(),
     };
-    let cfast_path = match std::env::var("CFAST_BIN") {
-        Ok(path) if !path.trim().is_empty() => path,
-        _ => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({
-                    "code": "cfast_not_configured",
-                    "message": "set CFAST_BIN to the CFAST 7.7.7 executable path"
-                })),
-            )
-                .into_response();
-        }
+    let Some(cfast_path) = resolve_cfast_bin() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "code": "cfast_not_configured",
+                "message": "CFAST wasn't built because gfortran was missing when the server \
+                            was compiled. Install it (macOS: `brew install gcc`, Debian/Ubuntu: \
+                            `sudo apt install gfortran`), then `touch crates/cfast/build.rs` and \
+                            restart the server, or set CFAST_BIN to a CFAST 7.7.7 executable"
+            })),
+        )
+            .into_response();
     };
 
     let snapshot = lock(&world).get_scene();
@@ -201,7 +202,7 @@ fn run_hybrid(
     source_scene: Scene,
     revision: u64,
     request: &SimulateFireRequest,
-    cfast_path: &str,
+    cfast_path: &std::path::Path,
 ) -> Result<SimulateFireResponse, Failure> {
     let object_id = request.object_id.as_str();
     require_object(&source_scene, object_id)?;

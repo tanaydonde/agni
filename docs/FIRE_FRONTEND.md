@@ -14,8 +14,9 @@ POST /api/fire/simulate/hybrid
 
 It ignites the object, runs the surface fire on a snapshot of the current scene,
 feeds the resulting room heat-release curves through CFAST, and returns the
-merged timeline. The server must have `CFAST_BIN` set to a CFAST 7.7.7
-executable. Objects that don't stand inside a room are left out of the run and
+merged timeline. The server uses the CFAST 7.7.7 solver that `cargo build`
+compiles from `crates/cfast/vendor/` (this needs `gfortran`), or the
+executable in `CFAST_BIN` if that is set. Objects that don't stand inside a room are left out of the run and
 listed in `excluded_object_ids`. Errors: 404 `object_not_found`, 422
 `object_outside_rooms`, `object_not_combustible`, or `simulation_failed`; 503
 `cfast_not_configured`; and 502 `cfast_failed`. The web app's placeholder

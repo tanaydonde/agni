@@ -15,7 +15,9 @@ pub use prepare::{
     CfastPreparationError, CfastPreparationReport, CfastPreparationWarning, HeightInferenceSource,
     OpeningExclusionReason, PreparedCfastScene, RoomExclusionReason, prepare_cfast_scene,
 };
-pub use runner::{CFAST_SUPPORTED_VERSION, CfastRunError, CfastRunner};
+pub use runner::{
+    BUNDLED_CFAST_BIN, CFAST_SUPPORTED_VERSION, CfastRunError, CfastRunner, resolve_cfast_bin,
+};
 pub use scenario::{
     CfastFire, CfastFuel, CfastOpeningState, CfastRoomFire, CfastScenario, HeatReleasePoint,
 };

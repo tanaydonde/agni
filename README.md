@@ -50,9 +50,15 @@ cargo test --workspace
 
 The Rust world server owns the scene; the web app reads and edits it through
 `/api/world/*`, which Vite proxies to `TFLOP_SERVER_ADDR` (default
-`127.0.0.1:3000`). Set `CFAST_BIN` in `.env` to the CFAST 7.7.7 executable so
-the web app's fire action can run the hybrid Rust + CFAST simulation. Import
-the scene first (below), then in two terminals:
+`127.0.0.1:3000`). The fire action runs the hybrid Rust + CFAST simulation.
+CFAST 7.7.7's Fortran source is vendored in `crates/cfast/vendor/` and
+compiled automatically by `cargo build`. The only prerequisite is
+`gfortran` (macOS: `brew install gcc`; Debian/Ubuntu: `sudo apt install
+gfortran`). If it's missing, the build prints a warning and the fire action
+reports `cfast_not_configured`. Install it, then run `touch
+crates/cfast/build.rs` and restart the server. To use a different CFAST
+executable, set `CFAST_BIN` in `.env`. Import the scene first (below), then
+in two terminals:
 
 ```bash
 cargo run -p tflop-server -- --scene data/prepared-scenes/<model-id>.json

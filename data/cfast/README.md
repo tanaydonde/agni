@@ -5,14 +5,11 @@ one 5 m × 4 m × 3 m compartment, one exterior door, and one prescribed fire
 that grows to 300 kW. It proves the external solver and output format before we
 automate `world-core` conversion.
 
-CFAST is an external NIST command-line program; its binary is intentionally not
-committed. Generated result files belong under `data/cfast/output/`, which is
-ignored by Git.
-
-The scenario was verified against the official `CFAST-7.7.7` tag at commit
-`b43e74e0f43c704582c5782f5446597ce729a07f`. On Apple Silicon it builds from
-source with the repository's `Build/CFAST/gnu_osx/make_cfast.sh` script and
-Homebrew `gfortran`.
+CFAST is a NIST command-line program. Its Fortran source (tag `CFAST-7.7.7`,
+commit `b43e74e0f43c704582c5782f5446597ce729a07f`) is vendored in
+`crates/cfast/vendor/cfast-7.7.7/`, and `crates/cfast/build.rs` compiles it
+with `gfortran` during `cargo build`. No binary is committed. Generated result
+files belong under `data/cfast/output/`, which is ignored by Git.
 
 Run a built solver against a staged copy of the input:
 
@@ -20,7 +17,7 @@ Run a built solver against a staged copy of the input:
 mkdir -p data/cfast/output
 cp data/cfast/feasibility.in data/cfast/output/feasibility.in
 cd data/cfast/output
-/path/to/cfast7_osx feasibility.in
+"$(find ../../../target/debug/build -path '*tflop-cfast*/out/cfast7' | head -1)" feasibility.in
 ```
 
 CFAST 7.7.7 writes these spreadsheet outputs:
