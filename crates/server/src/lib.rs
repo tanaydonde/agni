@@ -16,7 +16,7 @@ use axum::{
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
 use tflop_world_core::{
-    AddObjectRequest, ApplyEditsRequest, MoveObjectRequest, RemoveObjectRequest,
+    AddObjectRequest, ApplyEditsRequest, CheckEditsRequest, MoveObjectRequest, RemoveObjectRequest,
     RotateObjectRequest, Scene, SetObjectTransformRequest, World, WorldApiResult,
     default_furniture_catalog,
 };
@@ -55,6 +55,7 @@ pub fn load_scene(json: &str) -> Result<Scene, String> {
 /// | `/api/world/assets` | GET | `list_assets` |
 /// | `/api/world/{add,move,rotate,remove}_object`, `set_object_transform` | POST | matching method |
 /// | `/api/world/apply_edits` | POST | `apply_edits` |
+/// | `/api/world/check_edits` | POST | `check_edits` (dry run; always 200 with `{valid, error}`) |
 /// | `/api/world/validate_layout` | POST | `validate_layout` |
 ///
 /// Requests are serialized through a mutex, so edits apply one at a time.
@@ -73,6 +74,7 @@ pub fn router(world: World) -> Router {
         )
         .route("/api/world/remove_object", post(remove_object))
         .route("/api/world/apply_edits", post(apply_edits))
+        .route("/api/world/check_edits", post(check_edits))
         .route("/api/world/validate_layout", post(validate_layout))
         .with_state(state)
 }
@@ -87,6 +89,16 @@ async fn list_assets(State(world): State<SharedWorld>) -> Response {
 
 async fn validate_layout(State(world): State<SharedWorld>) -> Response {
     respond(lock(&world).validate_layout())
+}
+
+async fn check_edits(
+    State(world): State<SharedWorld>,
+    body: Result<Json<CheckEditsRequest>, JsonRejection>,
+) -> Response {
+    match decode(body) {
+        Ok(request) => Json(lock(&world).check_edits(request)).into_response(),
+        Err(rejection) => rejection.into_response(),
+    }
 }
 
 /// Generates a POST handler that decodes `$request` and calls `World::$method`.

@@ -11,6 +11,7 @@ const DEFAULT_COLOR = '#b0b8c4'
 
 export const SELECTED_COLOR = '#635bff' // --color-accent
 export const EDGE_COLOR = '#4f566b' // --color-ink-secondary
+export const INVALID_COLOR = '#df1b41' // --color-danger
 
 export function categoryColor(category: string): string {
   return CATEGORY_COLORS[category] ?? DEFAULT_COLOR

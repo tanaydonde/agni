@@ -150,3 +150,13 @@ export interface WorldApiErrorBody {
   code: string
   [detail: string]: unknown
 }
+
+export interface CheckEditsRequest {
+  edits: EditCommand[]
+}
+
+/** Dry-run result: `error` is what `apply_edits` would have returned. */
+export interface CheckEditsResponse {
+  valid: boolean
+  error: WorldApiErrorBody | null
+}

@@ -14,6 +14,7 @@ JSON fields.
 | `set_object_transform` | Working | `World::set_object_transform(...)` |
 | `remove_object` | Working | `World::remove_object(...)` |
 | `apply_edits` | Working | `World::apply_edits(...)` |
+| `check_edits` | Working | `World::check_edits(...)` |
 | `validate_layout` | Working | `World::validate_layout()` |
 
 ## Example requests
@@ -90,6 +91,12 @@ reports objects that are off the floor or tilted. The default door/passage
 clearance extends 0.75 m from each side of its wall and 0.15 m past each side
 of the opening; Rust callers may override these values with `PlacementRules`
 and `World::with_placement_rules`.
+
+`check_edits` takes `{ "edits": [...] }` (no revision) and dry-runs the batch
+exactly like `apply_edits` without changing anything. It returns
+`{ "valid": true, "error": null }` or `{ "valid": false, "error": { ... } }`,
+where `error` is what `apply_edits` would have returned. Use it to test a
+placement before committing it.
 
 ## Error codes
 

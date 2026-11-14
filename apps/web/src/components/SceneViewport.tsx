@@ -1,7 +1,8 @@
 import { Canvas } from '@react-three/fiber'
-import { useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { WorldServerUnavailableError, sceneMeshUrl, useSceneMeshAvailable, useWorld } from '../scene/api'
 import { CameraController } from '../scene/CameraController'
+import { useEditorStore } from '../scene/editorStore'
 import { Furniture } from '../scene/Furniture'
 import { buildFloorGeometry } from '../scene/geometry'
 import { PlacementController } from '../scene/PlacementController'
@@ -89,7 +90,41 @@ function SceneCanvas({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; me
           <Crosshair />
         </>
       )}
+      <PlacementStatus />
       <ControlsHint active={active} />
+    </div>
+  )
+}
+
+const NOTICE_MS = 3500
+
+/**
+ * Says why the furniture being dragged can't go where it is (live, from the
+ * world's dry run), or why the last edit was rejected (briefly).
+ */
+function PlacementStatus() {
+  const liveIssue = useEditorStore((state) =>
+    (state.drag || state.placing) && state.liveCheck && !state.liveCheck.valid
+      ? (state.liveCheck.message ?? "Can't go here")
+      : null,
+  )
+  const notice = useEditorStore((state) => state.notice)
+  const dismissNotice = useEditorStore((state) => state.dismissNotice)
+
+  useEffect(() => {
+    if (!notice) return
+    const timer = setTimeout(() => dismissNotice(notice.id), NOTICE_MS)
+    return () => clearTimeout(timer)
+  }, [notice, dismissNotice])
+
+  const text = liveIssue ?? notice?.text
+  if (!text) return null
+  return (
+    <div
+      role="status"
+      className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 rounded-md border border-danger/30 bg-white px-3 py-1.5 text-xs font-medium text-danger shadow-[0_4px_12px_rgba(26,31,54,0.08)]"
+    >
+      {text}
     </div>
   )
 }

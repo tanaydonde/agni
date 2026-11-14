@@ -1,9 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback } from 'react'
+import { useEditorStore } from './editorStore'
 import { applyEditLocally } from './placement'
+import { describeWorldError } from './worldErrors'
 import {
   SCENE_SCHEMA_VERSION,
   type ApplyEditsRequest,
+  type CheckEditsRequest,
+  type CheckEditsResponse,
   type EditCommand,
   type EditResponse,
   type GetSceneResponse,
@@ -71,6 +75,18 @@ async function postEdit(request: ApplyEditsRequest): Promise<EditResponse> {
   return body as EditResponse
 }
 
+/** Dry-runs one edit: would the world accept it right now? Changes nothing. */
+export async function checkEdit(edit: EditCommand): Promise<CheckEditsResponse> {
+  const request: CheckEditsRequest = { edits: [edit] }
+  const response = await fetch('/api/world/check_edits', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  })
+  if (!response.ok) throw new Error(`Checking the edit failed (${response.status})`)
+  return (await response.json()) as CheckEditsResponse
+}
+
 /**
  * Returns a function that sends one edit to the world. The cached scene is
  * patched synchronously, so furniture released from a drag doesn't jump back
@@ -95,9 +111,17 @@ export function useWorldEdit(): (edit: EditCommand) => void {
       )
     },
     onError: (error) => {
-      // Includes stale_revision (someone else, e.g. the agent, edited first):
-      // the refetch below drops the optimistic change.
-      console.error('World edit failed', error instanceof WorldApiError ? error.body : error)
+      // Placement rules, or stale_revision (someone else, e.g. the agent,
+      // edited first): the refetch below drops the optimistic change.
+      useEditorStore
+        .getState()
+        .showNotice(
+          error instanceof WorldApiError
+            ? describeWorldError(error.body)
+            : error instanceof WorldServerUnavailableError
+              ? "Couldn't reach the world server"
+              : 'The edit failed',
+        )
     },
     onSettled: () => {
       // Refetch once the last queued edit finishes, so later optimistic edits

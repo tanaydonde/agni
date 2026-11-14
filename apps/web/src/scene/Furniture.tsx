@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from 'react'
 import * as THREE from 'three'
 import { useEditorStore } from './editorStore'
-import { categoryColor, EDGE_COLOR, SELECTED_COLOR } from './furnitureStyle'
+import { categoryColor, EDGE_COLOR, INVALID_COLOR, SELECTED_COLOR } from './furnitureStyle'
 import { FURNITURE_GROUP, Z_UP_TO_Y_UP, zRotation } from './placement'
 import type { Floor, FurnitureAsset, Quaternion, Vec3 } from './types'
 
@@ -24,6 +24,8 @@ export function Furniture({ floor, assets }: FurnitureProps) {
   const drag = useEditorStore((state) => state.drag)
   const preview = useEditorStore((state) => state.preview)
   const placing = useEditorStore((state) => state.placing)
+  // The world's verdict on the current drag or palette placement.
+  const invalid = useEditorStore((state) => state.liveCheck?.valid === false)
   const assetsById = useMemo(() => new Map(assets.map((asset) => [asset.id, asset])), [assets])
   const ghostAsset = placing ? assetsById.get(placing.assetId) : undefined
 
@@ -42,11 +44,19 @@ export function Furniture({ floor, assets }: FurnitureProps) {
             rotation={dragged ? zRotation(dragged.yaw) : object.transform.rotation}
             scale={object.transform.scale}
             selected={object.id === selectedId}
+            invalid={invalid && Boolean(dragged)}
           />
         )
       })}
       {ghostAsset && placing?.position && (
-        <FurnitureBox asset={ghostAsset} position={placing.position} rotation={IDENTITY} scale={UNIT_SCALE} ghost />
+        <FurnitureBox
+          asset={ghostAsset}
+          position={placing.position}
+          rotation={IDENTITY}
+          scale={UNIT_SCALE}
+          ghost
+          invalid={invalid}
+        />
       )}
     </group>
   )
@@ -61,9 +71,20 @@ interface FurnitureBoxProps {
   scale: Vec3
   selected?: boolean
   ghost?: boolean
+  /** The world would reject this placement. */
+  invalid?: boolean
 }
 
-function FurnitureBox({ objectId, asset, position, rotation, scale, selected = false, ghost = false }: FurnitureBoxProps) {
+function FurnitureBox({
+  objectId,
+  asset,
+  position,
+  rotation,
+  scale,
+  selected = false,
+  ghost = false,
+  invalid = false,
+}: FurnitureBoxProps) {
   const { width_m: width, depth_m: depth, height_m: height } = asset.dimensions_m
   // Shift the box up so its bottom face sits at the origin, i.e. on the floor.
   const box = useMemo(
@@ -87,15 +108,15 @@ function FurnitureBox({ objectId, asset, position, rotation, scale, selected = f
     >
       <mesh geometry={box} userData={objectId ? { objectId } : {}} raycast={ghost ? noRaycast : undefined}>
         <meshStandardMaterial
-          color={categoryColor(asset.category)}
-          transparent={ghost}
-          opacity={ghost ? 0.55 : 1}
-          emissive={selected ? SELECTED_COLOR : '#000000'}
-          emissiveIntensity={selected ? 0.35 : 0}
+          color={invalid ? INVALID_COLOR : categoryColor(asset.category)}
+          transparent={ghost || invalid}
+          opacity={ghost || invalid ? 0.6 : 1}
+          emissive={invalid ? INVALID_COLOR : selected ? SELECTED_COLOR : '#000000'}
+          emissiveIntensity={invalid ? 0.4 : selected ? 0.35 : 0}
         />
       </mesh>
       <lineSegments geometry={edges} raycast={noRaycast}>
-        <lineBasicMaterial color={selected ? SELECTED_COLOR : EDGE_COLOR} />
+        <lineBasicMaterial color={invalid ? INVALID_COLOR : selected ? SELECTED_COLOR : EDGE_COLOR} />
       </lineSegments>
     </group>
   )

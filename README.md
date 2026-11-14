@@ -53,6 +53,11 @@ The view has two modes. The cursor is only captured while flying.
   Shift for speed, Space + move to pan, ⌥ + move to orbit. Nothing can be
   selected or edited while flying.
 
+While you drag, the world dry-runs the placement (`POST /api/world/check_edits`)
+against its rules: inside a room, clear of walls and other furniture, and out
+of door clearances. Furniture turns red with the reason where it can't go, and
+releasing there puts it back.
+
 Furniture always stands on the floor: the world snaps every object's
 `z` to its floor's elevation and rejects tilted rotations.
 

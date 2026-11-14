@@ -1,8 +1,9 @@
 use tflop_world_core::{
-    AddObjectRequest, ApplyEditsRequest, BoundaryEdge, BoundaryKind, Dimensions3, EditCommand,
-    Floor, FurnitureAsset, FurnitureObject, Mobility, MoveObjectRequest, Opening, OpeningKind,
-    Quaternion, RemoveObjectRequest, Room, RotateObjectRequest, SCENE_SCHEMA_VERSION, Scene,
-    SceneSource, SetObjectTransformRequest, Transform3, Vec3, World, WorldApiError,
+    AddObjectRequest, ApplyEditsRequest, BoundaryEdge, BoundaryKind, CheckEditsRequest,
+    Dimensions3, EditCommand, Floor, FurnitureAsset, FurnitureObject, Mobility, MoveObjectRequest,
+    Opening, OpeningKind, Quaternion, RemoveObjectRequest, Room, RotateObjectRequest,
+    SCENE_SCHEMA_VERSION, Scene, SceneSource, SetObjectTransformRequest, Transform3, Vec3, World,
+    WorldApiError,
 };
 
 #[test]
@@ -409,6 +410,39 @@ fn validate_layout_reports_floating_objects() {
             .iter()
             .any(|issue| issue.path.ends_with("transform.position_m.z"))
     );
+}
+
+#[test]
+fn check_edits_reports_without_changing_the_world() {
+    let mut world = test_world();
+    world
+        .add_object(add_request(0, "chair-1", Mobility::Movable))
+        .expect("chair fits");
+    let before = world.get_scene();
+
+    let ok = world.check_edits(CheckEditsRequest {
+        edits: vec![EditCommand::MoveObject {
+            object_id: "chair-1".to_owned(),
+            position_m: position(6.0, 6.0),
+        }],
+    });
+    assert!(ok.valid);
+    assert_eq!(ok.error, None);
+
+    let blocked = world.check_edits(CheckEditsRequest {
+        edits: vec![EditCommand::MoveObject {
+            object_id: "chair-1".to_owned(),
+            position_m: position(5.0, 0.6),
+        }],
+    });
+    assert!(!blocked.valid);
+    assert!(matches!(
+        blocked.error,
+        Some(WorldApiError::BatchEditFailed { edit_index: 0, ref reason })
+            if matches!(**reason, WorldApiError::OpeningClearanceBlocked { .. })
+    ));
+
+    assert_eq!(world.get_scene(), before);
 }
 
 const FLOOR_Z: f64 = -0.03;

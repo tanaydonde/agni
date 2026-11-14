@@ -113,9 +113,39 @@ impl World {
             });
         }
 
+        let (mut staged, changed_object_ids) = self.stage_edits(request.edits)?;
+        staged.revision = self.revision + 1;
+        *self = staged;
+
+        Ok(EditResponse {
+            revision: self.revision,
+            changed_object_ids,
+        })
+    }
+
+    /// Dry-runs a batch exactly as `apply_edits` would, without changing the
+    /// world or needing a revision. Editors call this while the user drags, to
+    /// show whether the current placement would be accepted.
+    #[must_use]
+    pub fn check_edits(&self, request: CheckEditsRequest) -> CheckEditsResponse {
+        match self.stage_edits(request.edits) {
+            Ok(_) => CheckEditsResponse {
+                valid: true,
+                error: None,
+            },
+            Err(error) => CheckEditsResponse {
+                valid: false,
+                error: Some(error),
+            },
+        }
+    }
+
+    /// Applies `edits` to a copy of the world. Fails with the first edit's
+    /// error, wrapped in `BatchEditFailed`.
+    fn stage_edits(&self, edits: Vec<EditCommand>) -> WorldApiResult<(Self, Vec<String>)> {
         let mut staged = self.clone();
         let mut changed_object_ids = Vec::new();
-        for (edit_index, edit) in request.edits.into_iter().enumerate() {
+        for (edit_index, edit) in edits.into_iter().enumerate() {
             match staged.apply_edit_unversioned(edit) {
                 Ok(object_id) => changed_object_ids.push(object_id),
                 Err(reason) => {
@@ -126,15 +156,8 @@ impl World {
                 }
             }
         }
-
         deduplicate(&mut changed_object_ids);
-        staged.revision = self.revision + 1;
-        *self = staged;
-
-        Ok(EditResponse {
-            revision: self.revision,
-            changed_object_ids,
-        })
+        Ok((staged, changed_object_ids))
     }
 
     pub fn validate_layout(&self) -> WorldApiResult<ValidateLayoutResponse> {
@@ -461,6 +484,20 @@ pub enum EditCommand {
     RemoveObject {
         object_id: String,
     },
+}
+
+/// A batch to dry-run with `World::check_edits`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CheckEditsRequest {
+    pub edits: Vec<EditCommand>,
+}
+
+/// Whether a batch would be accepted, and if not, the error `apply_edits`
+/// would return.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckEditsResponse {
+    pub valid: bool,
+    pub error: Option<WorldApiError>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -22,6 +22,15 @@ export interface DragPreview {
   yaw: number
 }
 
+/** Server verdict on the latest dry-run of the placement being dragged. */
+export interface LiveCheck {
+  /** Identifies the checked edit; see `editKey`. */
+  key: string
+  valid: boolean
+  /** Why it's invalid, for display. */
+  message: string | null
+}
+
 interface EditorState {
   selectedObjectId: string | null
   /** Asset being dragged in from the palette, and where it would land. */
@@ -30,6 +39,10 @@ interface EditorState {
   preview: DragPreview | null
   /** Gizmo handle under the cursor, for highlighting. */
   hoveredHandle: GizmoHandle | null
+  /** Validity of the current drag or palette placement; null when unknown. */
+  liveCheck: LiveCheck | null
+  /** A brief message, e.g. why the world rejected the last edit. */
+  notice: { id: number; text: string } | null
 
   select: (objectId: string | null) => void
   startPlacing: (assetId: string) => void
@@ -39,7 +52,12 @@ interface EditorState {
   updateDrag: (preview: DragPreview) => void
   endDrag: () => void
   setHoveredHandle: (handle: GizmoHandle | null) => void
+  setLiveCheck: (check: LiveCheck | null) => void
+  showNotice: (text: string) => void
+  dismissNotice: (id: number) => void
 }
+
+let nextNoticeId = 1
 
 export const useEditorStore = create<EditorState>()((set) => ({
   selectedObjectId: null,
@@ -47,15 +65,22 @@ export const useEditorStore = create<EditorState>()((set) => ({
   drag: null,
   preview: null,
   hoveredHandle: null,
+  liveCheck: null,
+  notice: null,
 
   select: (selectedObjectId) => set({ selectedObjectId }),
-  startPlacing: (assetId) => set({ placing: { assetId, position: null } }),
+  // A new drag starts fresh: drop any leftover verdict or notice.
+  startPlacing: (assetId) => set({ placing: { assetId, position: null }, liveCheck: null, notice: null }),
   setPlacingPosition: (position) =>
     set((state) => (state.placing ? { placing: { ...state.placing, position } } : {})),
-  stopPlacing: () => set({ placing: null }),
-  startDrag: (drag) => set({ drag, preview: { position: drag.start, yaw: drag.startYaw } }),
+  stopPlacing: () => set({ placing: null, liveCheck: null }),
+  startDrag: (drag) =>
+    set({ drag, preview: { position: drag.start, yaw: drag.startYaw }, liveCheck: null, notice: null }),
   updateDrag: (preview) => set({ preview }),
-  endDrag: () => set({ drag: null, preview: null }),
+  endDrag: () => set({ drag: null, preview: null, liveCheck: null }),
   setHoveredHandle: (hoveredHandle) =>
     set((state) => (state.hoveredHandle === hoveredHandle ? {} : { hoveredHandle })),
+  setLiveCheck: (liveCheck) => set({ liveCheck }),
+  showNotice: (text) => set({ notice: { id: nextNoticeId++, text } }),
+  dismissNotice: (id) => set((state) => (state.notice?.id === id ? { notice: null } : {})),
 }))

@@ -128,6 +128,28 @@ async fn stale_revision_returns_409_and_unknown_object_404() {
     assert_eq!(body["code"], "object_not_found");
 }
 
+#[tokio::test]
+async fn check_edits_dry_runs_without_bumping_the_revision() {
+    let app = app();
+    let (status, body) = call(
+        app.clone(),
+        "POST",
+        "/api/world/check_edits",
+        Some(
+            json!({ "edits": [{ "type": "move_object", "object_id": "missing",
+                                  "position_m": { "x": 1.0, "y": 1.0, "z": 0.0 } }] }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["valid"], false);
+    assert_eq!(body["error"]["code"], "batch_edit_failed");
+    assert_eq!(body["error"]["reason"]["code"], "object_not_found");
+
+    let (_, body) = call(app, "GET", "/api/world/scene", None).await;
+    assert_eq!(body["revision"], 0);
+}
+
 #[test]
 fn scenes_without_assets_get_the_default_catalog() {
     let mut scene: Value = serde_json::from_str(DEMO_SCENE_JSON).expect("demo JSON parses");

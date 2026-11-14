@@ -1,8 +1,9 @@
 import { useThree } from '@react-three/fiber'
 import { useEffect, useRef, type RefObject } from 'react'
 import * as THREE from 'three'
-import { useWorldEdit } from './api'
-import { useEditorStore } from './editorStore'
+import { checkEdit, useWorldEdit } from './api'
+import { useEditorStore, type DragPreview, type GizmoDrag } from './editorStore'
+import { createLiveChecker, editKey } from './liveCheck'
 import {
   FURNITURE_GROUP,
   GIZMO_GROUP,
@@ -14,10 +15,23 @@ import {
   yawDegrees,
   type GizmoHandle,
 } from './placement'
-import type { Floor } from './types'
+import type { EditCommand, Floor } from './types'
+import { describeWorldError } from './worldErrors'
 
 /** Shift while turning snaps the heading to multiples of this. */
 const ROTATION_SNAP_DEGREES = 15
+
+/** The edit that would commit `preview`, or null if nothing changed. */
+function dragEdit(drag: GizmoDrag, preview: DragPreview): EditCommand | null {
+  if (drag.handle === 'rotate') {
+    return preview.yaw === drag.startYaw
+      ? null
+      : { type: 'rotate_object', object_id: drag.objectId, rotation_z_degrees: preview.yaw }
+  }
+  return preview.position.x === drag.start.x && preview.position.y === drag.start.y
+    ? null
+    : { type: 'move_object', object_id: drag.objectId, position_m: preview.position }
+}
 
 interface SelectionControllerProps {
   /** The element wrapping the canvas; it also holds the pointer lock in fly mode. */
@@ -34,7 +48,10 @@ interface SelectionControllerProps {
  * - Delete/Backspace removes the selection; Esc cancels a drag or deselects
  *
  * Drags follow where the cursor ray meets the floor plane, so objects can't
- * leave the floor. Option and Control clicks are left to the camera.
+ * leave the floor. While dragging, the world dry-runs the move (room, wall,
+ * overlap, and doorway rules) so the object turns red where it can't go;
+ * releasing there puts it back. Option and Control clicks are left to the
+ * camera.
  */
 export function SelectionController({ element, floor }: SelectionControllerProps) {
   const get = useThree((state) => state.get)
@@ -53,6 +70,14 @@ export function SelectionController({ element, floor }: SelectionControllerProps
     const ndc = new THREE.Vector2()
     const isLocked = () => document.pointerLockElement === el
     const store = useEditorStore.getState
+    const checker = createLiveChecker(checkEdit, (key, response) => {
+      store().setLiveCheck({
+        key,
+        valid: response.valid,
+        message: response.error ? describeWorldError(response.error) : null,
+      })
+      get().invalidate()
+    })
 
     /** Points the raycaster through the cursor. */
     const castAt = (event: { clientX: number; clientY: number }) => {
@@ -67,27 +92,24 @@ export function SelectionController({ element, floor }: SelectionControllerProps
 
     const endDrag = (commit: boolean, pointerId?: number) => {
       if (pointerId !== undefined && el.hasPointerCapture(pointerId)) el.releasePointerCapture(pointerId)
-      const { drag, preview } = store()
+      checker.cancel()
+      const { drag, preview, liveCheck, showNotice } = store()
       if (!drag) return
       el.style.cursor = ''
-      const send = editRef.current
-      let sent = false
-      if (commit && preview) {
-        if (drag.handle === 'rotate' && preview.yaw !== drag.startYaw) {
-          send({ type: 'rotate_object', object_id: drag.objectId, rotation_z_degrees: preview.yaw })
-          sent = true
-        } else if (
-          drag.handle !== 'rotate' &&
-          (preview.position.x !== drag.start.x || preview.position.y !== drag.start.y)
-        ) {
-          send({ type: 'move_object', object_id: drag.objectId, position_m: preview.position })
-          sent = true
-        }
+      const edit = commit && preview ? dragEdit(drag, preview) : null
+      const knownInvalid = edit && liveCheck && !liveCheck.valid && liveCheck.key === editKey(edit)
+      if (edit && knownInvalid) {
+        // The world already said no: put the object back and say why.
+        showNotice(liveCheck.message ?? "Can't go there")
+        store().endDrag()
+      } else if (edit) {
+        editRef.current(edit)
+        // Let the patched scene render before dropping the preview, so the
+        // object doesn't flash back for a frame.
+        setTimeout(() => store().endDrag(), 0)
+      } else {
+        store().endDrag()
       }
-      // After a commit, let the patched scene render before dropping the
-      // preview, so the object doesn't flash back for a frame.
-      if (sent) setTimeout(() => store().endDrag(), 0)
-      else store().endDrag()
       get().invalidate()
     }
 
@@ -135,7 +157,7 @@ export function SelectionController({ element, floor }: SelectionControllerProps
         const z = floorZ(floorRef.current)
         const hit = rayFloorHit(castAt(event).ray, z)
         if (!hit || !preview) return
-        updateDrag(
+        const next: DragPreview =
           drag.handle === 'rotate'
             ? {
                 position: drag.start,
@@ -147,8 +169,15 @@ export function SelectionController({ element, floor }: SelectionControllerProps
                   event.shiftKey ? ROTATION_SNAP_DEGREES : undefined,
                 ),
               }
-            : { position: constrainedMove(drag.start, drag.startHit, hit, drag.handle, z), yaw: preview.yaw },
-        )
+            : { position: constrainedMove(drag.start, drag.startHit, hit, drag.handle, z), yaw: preview.yaw }
+        updateDrag(next)
+        const edit = dragEdit(drag, next)
+        if (edit) {
+          checker.request(edit)
+        } else {
+          checker.cancel()
+          store().setLiveCheck(null) // back where it started: always fine
+        }
         get().invalidate()
         return
       }
@@ -207,6 +236,7 @@ export function SelectionController({ element, floor }: SelectionControllerProps
     window.addEventListener('keydown', onKeyDown)
     document.addEventListener('pointerlockchange', onPointerLockChange)
     return () => {
+      checker.cancel()
       el.removeEventListener('pointerdown', onPointerDown)
       el.removeEventListener('pointermove', onPointerMove)
       el.removeEventListener('pointerup', onPointerUp)
