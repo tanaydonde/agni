@@ -1,8 +1,14 @@
 # Agent tool contract
 
-These are the planned JSON tools for the Gemini agent. The matching request and
-response types are exported by the `tflop-world-core` crate and use `snake_case`
-JSON fields.
+These are the world-editing JSON tools implemented today. The server exposes
+each one at `/api/world/<tool>`. The matching request and response types are
+exported by the `tflop-world-core` crate and use `snake_case` JSON fields.
+
+In the fire preplan product, these tools edit **interior obstacles**
+(furniture, storage, fixed equipment) so the scene can be corrected to match a
+walkthrough. The preplan agent's full tool surface (`get_property`,
+`propose_findings`, `create_scenario`, `run_scenario`, `compare_scenarios`) is
+planned and specified in `PREPLAN_AGENT.md`.
 
 | Tool | Status | Rust method |
 | --- | --- | --- |

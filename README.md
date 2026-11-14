@@ -1,5 +1,27 @@
 # tflop
 
+Firefighter preincident planning and scenario rehearsal. For a commercial
+building, tflop combines CoStar property data, Vexcel aerial imagery, and a
+Matterport interior scan into a visual building brief. An agent proposes
+access points, interior routes, and obstacles, and marks what a crew still
+needs to verify. A simulation lets crews rehearse hypothetical fires with
+occupants and search crews, then compare scenarios for bottlenecks,
+inaccessible areas, and sensitive assumptions. It is for preparation and
+training, not live tactical decisions.
+
+| Doc | Contents |
+| --- | --- |
+| `PRD.md` | Product requirements, user, demo, and MVP boundaries |
+| `TECH_STACK.md` | Architecture, data ingestion, simulation, and build order |
+| `PREPLAN_AGENT.md` | Agent modes, rules, and tool contract |
+| `docs/AGENT_TOOLS.md` | World API tools implemented today |
+| `docs/FIRE_PREPLAN_RESEARCH.md` | Research and reasoning behind the product boundaries |
+
+What exists today is the Matterport import, the Rust world server, and the 3D
+editor below. The furniture editor now serves to model interior obstacles;
+CoStar and Vexcel ingestion, findings, the simulation, and the agent are
+planned (see `TECH_STACK.md`).
+
 ## Workspace
 
 ```text
