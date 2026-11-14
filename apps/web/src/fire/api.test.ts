@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { describeFireError, runFireSimulation } from './api'
+import { DEFAULT_CREW, describeFireError, runFireSimulation } from './api'
 import type { SimulateFireResponse, SpawnOccupantsResponse } from './types'
 
 const agent = {
@@ -72,7 +72,11 @@ describe('runFireSimulation', () => {
     expect(fetch).toHaveBeenCalledWith('/api/fire/simulate/hybrid', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ object_id: 'sofa-1', occupants: occupants.occupants }),
+      body: JSON.stringify({
+        object_id: 'sofa-1',
+        occupants: occupants.occupants,
+        crews: [DEFAULT_CREW],
+      }),
     })
   })
 

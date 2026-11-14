@@ -1,4 +1,4 @@
-import type { AgentFrame, SimulationFrame } from './types'
+import type { AgentFrame, FirefighterPhase, SimulationFrame } from './types'
 
 /**
  * The newest frame at or before `seconds`, or undefined before the first.
@@ -18,6 +18,33 @@ export function frameAtTime(frames: SimulationFrame[], seconds: number): Simulat
     }
   }
   return answer
+}
+
+/** Body colors: occupants white, firefighters orange. */
+export const AGENT_COLORS = { occupant: '#ffffff', firefighter: '#f97316' } as const
+
+/** Whether to draw an agent on `floorId`: anyone who hasn't left the building. */
+export function isShownAgent(agent: AgentFrame, floorId: string): boolean {
+  return agent.floor_id === floorId && agent.role.phase !== 'exited'
+}
+
+const CREW_PHASE_LABELS: Record<FirefighterPhase, string> = {
+  staging: 'arriving',
+  advancing: 'moving in',
+  searching: 'searching',
+  suppressing: 'spraying',
+  withdrawing: 'leaving',
+  exited: 'out',
+  incapacitated: 'down',
+}
+
+/** What the first crew's leader is doing, for the playback bar, or null with no crew. */
+export function crewStatus(agents: AgentFrame[]): string | null {
+  const leader = agents
+    .filter((agent) => agent.role.type === 'firefighter')
+    .sort((left, right) => left.id.localeCompare(right.id))[0]
+  if (!leader || leader.role.type !== 'firefighter') return null
+  return `Crew ${CREW_PHASE_LABELS[leader.role.phase]}`
 }
 
 /** Linearly interpolated agent positions at the playback clock. Fire remains

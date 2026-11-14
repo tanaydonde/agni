@@ -2,16 +2,22 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use tflop_world_core::{
-    Dimensions3, FurnitureAsset, FurnitureObject, Scene, SceneValidationErrors, Vec3,
+    Dimensions3, Floor, FurnitureAsset, FurnitureObject, Scene, SceneValidationErrors, Vec3,
 };
 use thiserror::Error;
 
-use crate::{GridBuildError, GridCellKind, GridCoordinate, SimulationGrid};
+use crate::{GridBuildError, GridCellKind, GridCoordinate, SimulationGrid, grid::room_contains};
 
 pub const SURFACE_FIRE_SCHEMA_VERSION: u32 = 1;
 /// Maximum length of a furniture fire cell on any local axis.
 pub const FURNITURE_FIRE_CELL_SIZE_M: f64 = 0.25;
 const MAX_FURNITURE_FIRE_CELLS_PER_OBJECT: usize = 100_000;
+/// Horizontal distance a hose stream reaches inside a room.
+pub const DEFAULT_NOZZLE_REACH_M: f64 = 5.0;
+/// Effective cooling of one handline. Large next to a single room fire, so
+/// knockdown is quick once the fire is in reach: reaching it is what takes
+/// time.
+pub const DEFAULT_NOZZLE_COOLING_KW: f64 = 2_000.0;
 
 /// Approximate combustion properties used by the fast Rust surface model.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -130,6 +136,15 @@ pub struct SurfaceFireConfig {
     pub cell_size_m: f64,
     pub ambient_temperature_c: f64,
     pub furniture_radiation_range_m: f64,
+    /// A burning node goes out once the suppression cooling it has received
+    /// adds up to its current heat release over this many seconds, so larger
+    /// fires take longer to knock down.
+    #[serde(default = "default_knockdown_seconds")]
+    pub suppression_knockdown_seconds: f64,
+}
+
+const fn default_knockdown_seconds() -> f64 {
+    3.0
 }
 
 impl Default for SurfaceFireConfig {
@@ -138,6 +153,7 @@ impl Default for SurfaceFireConfig {
             cell_size_m: 0.5,
             ambient_temperature_c: 20.0,
             furniture_radiation_range_m: 1.5,
+            suppression_knockdown_seconds: default_knockdown_seconds(),
         }
     }
 }
@@ -161,6 +177,9 @@ pub enum CombustionState {
     Heating,
     Burning,
     BurnedOut,
+    /// Put out by suppression with fuel left. Reignites if it reheats past
+    /// its ignition energy.
+    Extinguished,
 }
 
 /// Identifies one cell in an object's local width/depth/height fire grid.
@@ -192,6 +211,9 @@ pub struct SurfaceFireNode {
     pub absorbed_heat_kj: f64,
     pub fuel_remaining_kj: f64,
     area_m2: f64,
+    /// Suppression cooling received while burning, toward knockdown.
+    #[serde(default)]
+    cooling_applied_kj: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -227,6 +249,44 @@ pub struct SurfaceFireFrame {
     pub time_seconds: f64,
     pub active_nodes: Vec<SurfaceFireNodeFrame>,
     pub room_heat_release: Vec<RoomHeatRelease>,
+}
+
+/// Water from one nozzle over one step.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Suppression {
+    /// Only nodes in this room are reached; walls block the stream.
+    pub room_id: String,
+    pub position_m: Vec3,
+    /// Horizontal distance from `position_m` that the stream reaches.
+    pub reach_m: f64,
+    pub cooling_kw: f64,
+}
+
+impl Suppression {
+    pub fn validate(&self) -> Result<(), SurfaceFireError> {
+        let field = if self.room_id.trim().is_empty() {
+            Some("room_id")
+        } else if !self.position_m.x.is_finite() || !self.position_m.y.is_finite() {
+            Some("position_m")
+        } else if !self.reach_m.is_finite() || self.reach_m <= 0.0 {
+            Some("reach_m")
+        } else if !self.cooling_kw.is_finite() || self.cooling_kw < 0.0 {
+            Some("cooling_kw")
+        } else {
+            None
+        };
+        field.map_or(Ok(()), |field| {
+            Err(SurfaceFireError::InvalidSuppression { field })
+        })
+    }
+}
+
+/// What one suppression call did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SuppressionOutcome {
+    /// Burning nodes the stream reached, including ones it put out.
+    pub burning_reached: usize,
+    pub extinguished_node_ids: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -307,7 +367,7 @@ impl SurfaceFireWorld {
                 if !material.combustible {
                     continue;
                 }
-                let room_id = object_room_id(grid, object)?;
+                let room_id = object_room_id(grid, floor, object)?;
                 let dimensions_m = scaled_dimensions(asset, object);
                 let (columns, rows, layers) = furniture_cell_counts(&object.id, dimensions_m)?;
                 let cell_width_m = dimensions_m.width_m / columns as f64;
@@ -493,6 +553,83 @@ impl SurfaceFireWorld {
         self.ignite_node(&floor_node_id(floor_id, coordinate))
     }
 
+    /// Applies `delta_seconds` of water without advancing time; call it before
+    /// [`step`](Self::step) for the same interval.
+    ///
+    /// The stream is aimed at flames: its cooling is shared evenly among the
+    /// burning nodes in reach, and a node goes out once its share adds up to
+    /// its heat release over the knockdown time. With no flames in reach, it
+    /// cools heating and extinguished nodes instead, which delays reignition.
+    pub fn suppress(
+        &mut self,
+        suppression: &Suppression,
+        delta_seconds: f64,
+    ) -> Result<SuppressionOutcome, SurfaceFireError> {
+        if !delta_seconds.is_finite() || delta_seconds <= 0.0 {
+            return Err(SurfaceFireError::InvalidDeltaSeconds { delta_seconds });
+        }
+        suppression.validate()?;
+
+        let in_reach = |node: &SurfaceFireNode| {
+            node.room_id == suppression.room_id
+                && (node.position_m.x - suppression.position_m.x)
+                    .hypot(node.position_m.y - suppression.position_m.y)
+                    <= suppression.reach_m
+        };
+        let burning = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node.state == CombustionState::Burning && in_reach(node))
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        let cooling_kj = suppression.cooling_kw * delta_seconds;
+        let mut outcome = SuppressionOutcome {
+            burning_reached: burning.len(),
+            extinguished_node_ids: Vec::new(),
+        };
+
+        if !burning.is_empty() {
+            let share_kj = cooling_kj / burning.len() as f64;
+            let knockdown_seconds = self.config.suppression_knockdown_seconds;
+            for index in burning {
+                let node = &mut self.nodes[index];
+                node.cooling_applied_kj += share_kj;
+                if node.cooling_applied_kj >= current_hrr_kw(node) * knockdown_seconds {
+                    node.state = CombustionState::Extinguished;
+                    node.absorbed_heat_kj = 0.0;
+                    node.cooling_applied_kj = 0.0;
+                    outcome.extinguished_node_ids.push(node.id.clone());
+                }
+            }
+            return Ok(outcome);
+        }
+
+        let warm = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| {
+                matches!(
+                    node.state,
+                    CombustionState::Heating | CombustionState::Extinguished
+                ) && in_reach(node)
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if !warm.is_empty() {
+            let share_kj = cooling_kj / warm.len() as f64;
+            for index in warm {
+                let node = &mut self.nodes[index];
+                node.absorbed_heat_kj = (node.absorbed_heat_kj - share_kj).max(0.0);
+                if node.state == CombustionState::Heating && node.absorbed_heat_kj == 0.0 {
+                    node.state = CombustionState::Unignited;
+                }
+            }
+        }
+        Ok(outcome)
+    }
+
     pub fn step(&mut self, delta_seconds: f64) -> Result<SurfaceFireFrame, SurfaceFireError> {
         if !delta_seconds.is_finite() || delta_seconds <= 0.0 {
             return Err(SurfaceFireError::InvalidDeltaSeconds { delta_seconds });
@@ -537,11 +674,26 @@ impl SurfaceFireWorld {
                         node.state = CombustionState::Unignited;
                     }
                 }
+                CombustionState::Extinguished => {
+                    let cooling_kw = node.material.cooling_kw_per_m2 * node.area_m2;
+                    let net_heat_kw = incoming_heat_kw[index] - cooling_kw;
+                    node.absorbed_heat_kj =
+                        (node.absorbed_heat_kj + net_heat_kw * delta_seconds).max(0.0);
+                    if node.absorbed_heat_kj >= ignition_energy(node) {
+                        node.state = CombustionState::Burning;
+                        node.ignition_time_seconds = Some(next_time);
+                    }
+                }
                 CombustionState::BurnedOut => {}
             }
         }
         self.time_seconds = next_time;
         Ok(self.snapshot())
+    }
+
+    #[must_use]
+    pub const fn time_seconds(&self) -> f64 {
+        self.time_seconds
     }
 
     #[must_use]
@@ -613,6 +765,8 @@ pub enum SurfaceFireError {
     },
     #[error("delta_seconds must be finite and greater than zero, got {delta_seconds}")]
     InvalidDeltaSeconds { delta_seconds: f64 },
+    #[error("invalid suppression field {field}")]
+    InvalidSuppression { field: &'static str },
 }
 
 struct NewNode {
@@ -643,6 +797,7 @@ fn new_node(input: NewNode) -> SurfaceFireNode {
         absorbed_heat_kj: 0.0,
         fuel_remaining_kj,
         area_m2: input.area_m2,
+        cooling_applied_kj: 0.0,
     }
 }
 
@@ -880,7 +1035,7 @@ fn node_frame(node: &SurfaceFireNode, ambient_temperature_c: f64) -> SurfaceFire
     let surface_temperature_c = match node.state {
         CombustionState::Burning => node.material.ignition_temperature_c + 400.0 * intensity,
         CombustionState::BurnedOut => ambient_temperature_c,
-        CombustionState::Heating | CombustionState::Unignited => {
+        CombustionState::Heating | CombustionState::Unignited | CombustionState::Extinguished => {
             ambient_temperature_c
                 + (node.material.ignition_temperature_c - ambient_temperature_c) * heat_fraction
         }
@@ -924,17 +1079,30 @@ fn ignition_energy(node: &SurfaceFireNode) -> f64 {
     node.material.ignition_energy_kj_per_m2 * node.area_m2
 }
 
+/// The room an object stands in. A coarse fire cell can straddle a shared
+/// wall and list both rooms; the one whose outline contains the object's
+/// position wins.
 fn object_room_id(
     grid: &SimulationGrid,
+    floor: &Floor,
     object: &FurnitureObject,
 ) -> Result<String, SurfaceFireError> {
-    grid.world_to_cell(object.transform.position_m)
+    let position = object.transform.position_m;
+    let room_ids = grid
+        .world_to_cell(position)
         .and_then(|coordinate| grid.cell(coordinate))
-        .and_then(|cell| cell.room_ids.first())
-        .cloned()
+        .map(|cell| &cell.room_ids)
+        .filter(|room_ids| !room_ids.is_empty())
         .ok_or_else(|| SurfaceFireError::ObjectOutsideGrid {
             object_id: object.id.clone(),
-        })
+        })?;
+    let containing = room_ids.iter().find(|room_id| {
+        floor
+            .rooms
+            .iter()
+            .any(|room| room.id == **room_id && room_contains(room, position))
+    });
+    Ok(containing.unwrap_or(&room_ids[0]).clone())
 }
 
 fn find_asset<'a>(
@@ -972,6 +1140,13 @@ fn validate_config(config: SurfaceFireConfig) -> Result<(), SurfaceFireError> {
     if !config.furniture_radiation_range_m.is_finite() || config.furniture_radiation_range_m < 0.0 {
         return Err(SurfaceFireError::InvalidConfig {
             field: "furniture_radiation_range_m",
+        });
+    }
+    if !config.suppression_knockdown_seconds.is_finite()
+        || config.suppression_knockdown_seconds <= 0.0
+    {
+        return Err(SurfaceFireError::InvalidConfig {
+            field: "suppression_knockdown_seconds",
         });
     }
     Ok(())

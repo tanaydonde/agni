@@ -1,6 +1,8 @@
-// White occupant ovals drawn inside Showcase's own three.js scene.
+// Agent ovals drawn inside Showcase's own three.js scene: occupants white,
+// firefighters orange.
 
 import type * as THREE from 'three'
+import { AGENT_COLORS } from '../fire/frames'
 import type { AgentFrame } from '../fire/types'
 import { Z_UP_TO_Y_UP } from '../scene/placement'
 import type { MpSdk, SceneComponent } from './sdk'
@@ -40,11 +42,14 @@ class AgentComponent implements SceneComponent<AgentInputs> {
     if (!three || !this.root) return
     this.clear()
     const geometry = new three.SphereGeometry(1, 16, 12)
-    const material = new three.MeshBasicMaterial({ color: '#ffffff' })
-    this.owned.push(geometry, material)
+    const materials = {
+      occupant: new three.MeshBasicMaterial({ color: AGENT_COLORS.occupant }),
+      firefighter: new three.MeshBasicMaterial({ color: AGENT_COLORS.firefighter }),
+    }
+    this.owned.push(geometry, materials.occupant, materials.firefighter)
 
     for (const agent of this.inputs.agents) {
-      const mesh = new three.Mesh(geometry, material)
+      const mesh = new three.Mesh(geometry, materials[agent.role.type])
       mesh.name = agent.id
       mesh.position.set(
         agent.position_m.x,
