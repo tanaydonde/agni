@@ -1,9 +1,24 @@
 # Frontend fire simulation guide
 
 This is the frontend contract for rendering the Rust surface fire and the
-CFAST room conditions on one timeline. The transport is intentionally not
-specified yet: the same payload can come from an HTTP request, WebSocket, or a
-local fixture.
+CFAST room conditions on one timeline. The same payload can come from an HTTP request,
+WebSocket, or a local fixture.
+
+Today the world server exposes it over HTTP (`crates/server/src/fire.rs`):
+
+```
+POST /api/fire/simulate
+{ "object_id": "sofa-1", "duration_seconds": 180, "step_seconds": 1 }
+→ { "revision": 4, "excluded_object_ids": [], "results": SimulationResults }
+```
+
+It ignites the object, runs the surface fire on a snapshot of the current scene
+until `duration_seconds` (max 600) or until nothing is heating or burning, and
+returns every frame. Only `surface_fire` is filled until the CFAST adapter
+exists. Objects that don't stand inside a room are left out of the run and
+listed in `excluded_object_ids`. Errors: 404 `object_not_found`, 422
+`object_outside_rooms`, `object_not_combustible`, or `simulation_failed`. The
+web app's placeholder renderer is `apps/web/src/scene/SurfaceFire.tsx`.
 
 ## Which data to render
 

@@ -170,7 +170,8 @@ export default defineConfig(({ mode }) => {
       __MATTERPORT_SDK_KEY__: JSON.stringify(sdkKey),
       __SHOWCASE_BUNDLE_URL__: JSON.stringify(`${SHOWCASE_BUNDLE_ROUTE}/showcase.html`),
     },
-    // The Rust world server (`cargo run -p tflop-server`) owns the scene.
-    server: { proxy: { '/api/world': worldServer } },
+    // The Rust world server (`cargo run -p tflop-server`) owns the scene and
+    // runs the fire simulation.
+    server: { proxy: { '/api/world': worldServer, '/api/fire': worldServer } },
   }
 })

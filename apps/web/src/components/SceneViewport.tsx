@@ -9,18 +9,21 @@ import {
   useWorld,
 } from '../scene/api'
 import { CameraController } from '../scene/CameraController'
-import { DetectedFurniture } from '../scene/DetectedFurniture'
 import { placeModels } from '../scene/modelChoice'
+import { detectedInScene } from '../scene/scanned'
 import { useEditorStore } from '../scene/editorStore'
 import { Furniture } from '../scene/Furniture'
 import { buildFloorGeometry } from '../scene/geometry'
 import { PlacementController } from '../scene/PlacementController'
 import { SceneModel } from '../scene/SceneModel'
 import { SelectionController } from '../scene/SelectionController'
+import { SurfaceFire } from '../scene/SurfaceFire'
 import { TransformGizmo } from '../scene/TransformGizmo'
 import type { DetectedObject, Floor, Scene } from '../scene/types'
 import { ShowcaseViewport } from '../showcase/ShowcaseViewport'
+import { usePlaybackClock } from '../fire/usePlaybackClock'
 import { ControlsHint, type Controls } from './ControlsHint'
+import { FireControls } from './FireControls'
 import { FlyIndicator } from './FlyIndicator'
 
 interface SceneViewportProps {
@@ -82,9 +85,15 @@ function SceneViews({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; mes
   const [view, setView] = useState<View>('editor')
   const [texturedOpened, setTexturedOpened] = useState(false)
   const { data: detection } = useDetectedFurniture(scene.id)
+  // Where the scene has them now, so moving or deleting a scanned piece in the
+  // editor moves or removes its model in the Matterport views too.
   const scanned = useMemo(
-    () => detection?.objects.filter((object) => object.floor_id === floor.id) ?? [],
-    [detection, floor.id],
+    () =>
+      detectedInScene(
+        detection?.objects.filter((object) => object.floor_id === floor.id) ?? [],
+        floor,
+      ),
+    [detection, floor],
   )
   const [showScanned, setShowScanned] = useState(true)
   const detected = showScanned ? scanned : NO_DETECTED
@@ -98,6 +107,8 @@ function SceneViews({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; mes
       ),
     [detected, furnitureModels, floor.rooms],
   )
+  // Fire playback runs in whichever view is showing.
+  usePlaybackClock()
   const show = (next: View) => {
     if (next !== 'editor') setTexturedOpened(true)
     setView(next)
@@ -106,7 +117,7 @@ function SceneViews({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; mes
   return (
     <>
       <div className={`absolute inset-0 ${view === 'editor' ? '' : 'invisible'}`}>
-        <SceneCanvas scene={scene} floor={floor} meshUrl={meshUrl} detected={detected} />
+        <SceneCanvas scene={scene} floor={floor} meshUrl={meshUrl} />
       </div>
       {texturedOpened && (
         <div className={`absolute inset-0 ${view === 'editor' ? 'invisible' : ''}`}>
@@ -140,7 +151,10 @@ function SceneViews({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; mes
           </button>
         ))}
       </div>
-      {scanned.length > 0 && (
+      <FireControls />
+      {/* The editor shows scanned furniture as scene objects (merged by the
+          server); this toggle only affects the Matterport views. */}
+      {scanned.length > 0 && view !== 'editor' && (
         <button
           type="button"
           aria-pressed={showScanned}
@@ -158,17 +172,7 @@ function SceneViews({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; mes
  * The canvas plus its controls. Clicking captures the pointer for flying
  * around; Esc gives it back.
  */
-function SceneCanvas({
-  scene,
-  floor,
-  meshUrl,
-  detected,
-}: {
-  scene: Scene
-  floor: Floor
-  meshUrl?: string
-  detected: DetectedObject[]
-}) {
+function SceneCanvas({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; meshUrl?: string }) {
   const focusTarget = useRef<HTMLDivElement>(null)
   const [active, setActive] = useState(false)
   // Depend on the room data only: furniture edits replace `floor` but must
@@ -187,8 +191,8 @@ function SceneCanvas({
         <hemisphereLight args={['#ffffff', '#d5dbe1', 1.6]} />
         <directionalLight position={[8, 14, 6]} intensity={1.4} />
         <SceneModel geometry={geometry} meshUrl={meshUrl} />
-        <DetectedFurniture objects={detected} assets={scene.assets} />
         <Furniture floor={floor} assets={scene.assets} />
+        <SurfaceFire floor={floor} />
         <TransformGizmo floor={floor} />
         <CameraController element={focusTarget} geometry={geometry} onActiveChange={setActive} />
         <SelectionController element={focusTarget} floor={floor} />

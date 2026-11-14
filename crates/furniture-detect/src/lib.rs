@@ -13,11 +13,15 @@ mod classify;
 mod matching;
 mod obj;
 mod rect;
+mod scene_objects;
 
 pub use classify::{FurnitureLabel, classify};
 pub use matching::nearest_asset;
 pub use obj::{Mesh, ObjError, parse_obj};
 pub use rect::{OrientedRect, min_area_rect};
+pub use scene_objects::{
+    MergeSummary, SCANNED_OBJECT_PREFIX, merge_into_scene, scene_object, yaw_quaternion,
+};
 
 use serde::{Deserialize, Serialize};
 use tflop_world_core::{Dimensions3, Floor, FurnitureAsset, Room, Scene, Vec3};

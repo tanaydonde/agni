@@ -2,7 +2,11 @@
 //! processes, chiefly the TypeScript designer agent in `apps/agent`.
 //!
 //! One route per tool in `docs/AGENT_TOOLS.md`. Request and response bodies are
-//! the world-core types serialized as-is; this crate adds no logic of its own.
+//! the world-core types serialized as-is. The one addition is
+//! `/api/fire/simulate` (see `fire`), which runs the surface-fire simulation on
+//! a snapshot of the world's scene for the renderer.
+
+mod fire;
 
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -15,6 +19,7 @@ use axum::{
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
+use tflop_furniture_detect::{DETECTION_SCHEMA_VERSION, Detection, MergeSummary, merge_into_scene};
 use tflop_world_core::{
     AddObjectRequest, ApplyEditsRequest, CheckEditsRequest, MoveObjectRequest, RemoveObjectRequest,
     RotateObjectRequest, Scene, SetObjectTransformRequest, World, WorldApiResult,
@@ -24,17 +29,56 @@ use tflop_world_core::{
 /// The hand-made demo scene used when no scene file is given.
 pub const DEMO_SCENE_JSON: &str = include_str!("../fixtures/demo-room.json");
 
-type SharedWorld = Arc<Mutex<World>>;
+pub(crate) type SharedWorld = Arc<Mutex<World>>;
 
 /// Parses and validates a canonical scene file.
 ///
 /// Scenes imported before the furniture catalog existed have no assets; they
 /// get the built-in catalog so the editor and agent can place furniture.
 pub fn load_scene(json: &str) -> Result<Scene, String> {
+    load_scene_with_detection(json, None).map(|(scene, _)| scene)
+}
+
+/// What happened to the scanned furniture offered to `load_scene_with_detection`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DetectionOutcome {
+    /// No detection file was given.
+    None,
+    Merged(MergeSummary),
+    /// The file was unreadable or belongs to another scene or schema version;
+    /// the scene loaded without it.
+    Ignored(String),
+}
+
+/// Like `load_scene`, but first adds the furniture found in the scan
+/// (`<scene>.detected.json` from `cargo run -p detect-furniture`) as ordinary
+/// scene objects, so editing and the fire simulation see it. A detection file
+/// that doesn't match the scene is ignored rather than failing the load.
+pub fn load_scene_with_detection(
+    json: &str,
+    detection_json: Option<&str>,
+) -> Result<(Scene, DetectionOutcome), String> {
     let mut scene: Scene = serde_json::from_str(json).map_err(|error| error.to_string())?;
     if scene.assets.is_empty() {
         scene.assets = default_furniture_catalog();
     }
+    let outcome = match detection_json {
+        None => DetectionOutcome::None,
+        Some(detection_json) => match serde_json::from_str::<Detection>(detection_json) {
+            Err(error) => DetectionOutcome::Ignored(format!("unreadable: {error}")),
+            Ok(detection) if detection.schema_version != DETECTION_SCHEMA_VERSION => {
+                DetectionOutcome::Ignored(format!(
+                    "schema v{} (this server reads v{DETECTION_SCHEMA_VERSION}); rerun detect-furniture",
+                    detection.schema_version
+                ))
+            }
+            Ok(detection) if detection.scene_id != scene.id => DetectionOutcome::Ignored(format!(
+                "it is for scene {}, not {}",
+                detection.scene_id, scene.id
+            )),
+            Ok(detection) => DetectionOutcome::Merged(merge_into_scene(&detection, &mut scene)),
+        },
+    };
     scene.validate().map_err(|errors| {
         errors
             .0
@@ -43,7 +87,7 @@ pub fn load_scene(json: &str) -> Result<Scene, String> {
             .collect::<Vec<_>>()
             .join("; ")
     })?;
-    Ok(scene)
+    Ok((scene, outcome))
 }
 
 /// Builds the HTTP routes around one shared, in-memory `World`.
@@ -57,6 +101,7 @@ pub fn load_scene(json: &str) -> Result<Scene, String> {
 /// | `/api/world/apply_edits` | POST | `apply_edits` |
 /// | `/api/world/check_edits` | POST | `check_edits` (dry run; always 200 with `{valid, error}`) |
 /// | `/api/world/validate_layout` | POST | `validate_layout` |
+/// | `/api/fire/simulate` | POST | none; runs the surface-fire simulation on a scene snapshot |
 ///
 /// Requests are serialized through a mutex, so edits apply one at a time.
 pub fn router(world: World) -> Router {
@@ -76,6 +121,7 @@ pub fn router(world: World) -> Router {
         .route("/api/world/apply_edits", post(apply_edits))
         .route("/api/world/check_edits", post(check_edits))
         .route("/api/world/validate_layout", post(validate_layout))
+        .route("/api/fire/simulate", post(fire::simulate))
         .with_state(state)
 }
 
@@ -129,12 +175,12 @@ mutation!(apply_edits, ApplyEditsRequest, apply_edits);
 
 /// Locks the world, recovering from a poisoned lock: `World` methods take
 /// `&mut self` and leave no partially written state on panic.
-fn lock(world: &SharedWorld) -> std::sync::MutexGuard<'_, World> {
+pub(crate) fn lock(world: &SharedWorld) -> std::sync::MutexGuard<'_, World> {
     world.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Malformed request bodies become structured JSON so the agent can read them.
-fn decode<T: DeserializeOwned>(
+pub(crate) fn decode<T: DeserializeOwned>(
     body: Result<Json<T>, JsonRejection>,
 ) -> Result<T, (StatusCode, Json<serde_json::Value>)> {
     body.map(|Json(request)| request).map_err(|rejection| {
