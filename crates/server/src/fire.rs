@@ -413,7 +413,7 @@ fn rehearsal_failed(error: &RehearsalError) -> Failure {
         RehearsalError::Firefighting(error) => {
             simulation_failure("firefighting_failed", error.to_string())
         }
-        RehearsalError::InvalidStep { .. } => {
+        RehearsalError::InvalidStep { .. } | RehearsalError::CrowdConfig(_) => {
             simulation_failure("simulation_failed", error.to_string())
         }
     }

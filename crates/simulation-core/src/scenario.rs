@@ -12,7 +12,7 @@ use tflop_world_core::{
 use crate::{
     agent::{
         Agent, AgentRole, Exposure, FIREFIGHTER_RADIUS_M, FirefighterPhase, FirefighterState,
-        OCCUPANT_RADIUS_M, OccupantPhase, OccupantState,
+        Movement, OCCUPANT_RADIUS_M, OccupantPhase, OccupantState,
     },
     grid::SimulationGrid,
     nav::nearest_walkable_cell,
@@ -326,6 +326,7 @@ fn create_crews(
                 velocity_m_per_s: ZERO,
                 radius_m: FIREFIGHTER_RADIUS_M,
                 exposure: Exposure::NONE,
+                movement: Movement::Stopped,
                 role: AgentRole::Firefighter(FirefighterState {
                     crew_id: crew.id.clone(),
                     phase: FirefighterPhase::Staging,
@@ -419,6 +420,7 @@ fn create_occupants(
             velocity_m_per_s: ZERO,
             radius_m: OCCUPANT_RADIUS_M,
             exposure: Exposure::NONE,
+            movement: Movement::Stopped,
             role: AgentRole::Occupant(OccupantState {
                 phase: OccupantPhase::Unaware,
                 walking_speed_m_per_s: occupant.walking_speed_m_per_s,

@@ -8,8 +8,10 @@
 //! The true fire state is used for one thing, physics: a body can't step into
 //! flames, so movement stops short of them.
 //!
-//! A crew moves as a unit. The leader decides and walks; followers keep a
-//! short distance behind it without overlapping, and share its phase.
+//! A crew moves as a unit. The leader decides where to walk; followers keep
+//! a short distance behind it, and share its phase. The shared
+//! [`Crowd`](crate::crowd) does the walking, so crews have to push through
+//! evacuating occupants in doors and hallways.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -20,10 +22,11 @@ use crate::{
     Agent, AgentFrame, AgentRole, CombustionState, CrewSpawn, DEFAULT_NOZZLE_COOLING_KW,
     DEFAULT_NOZZLE_REACH_M, FirefighterPhase, GridCoordinate, ScenarioValidationErrors, Simulation,
     SimulationConfig, SimulationError, SimulationGrid, Suppression, SurfaceFireNodeFrame,
+    crowd::{Crowd, CrowdConfig, CrowdGroup, Goal, Intent, PassageMap, SINGLE_FILE_MAX_WIDTH_M},
     exterior_exits,
     nav::{
-        Hazard, HazardMap, NavProfile, advance_along_path, distance_2d, distance_field,
-        exit_targets, find_path, room_floor_index,
+        Hazard, HazardMap, NavProfile, distance_2d, distance_field, exit_targets, find_path,
+        room_floor_index,
     },
     scenario::spawn_crews,
 };
@@ -90,8 +93,17 @@ pub struct Firefighting {
     room_floors: HashMap<String, String>,
     rooms: BTreeMap<String, RoomInfo>,
     exits: HashMap<String, Vec<GridCoordinate>>,
+    passages: Vec<PassageMap>,
     agents: Vec<Agent>,
     crews: Vec<Crew>,
+    /// What this frame's plan wants, one per agent.
+    intents: Vec<Intent>,
+    /// The fire as it stood when this frame was planned: bodies can't step
+    /// into it.
+    true_hazards: HazardMap,
+    /// Moves crews when firefighting runs on its own, outside a
+    /// [`Rehearsal`](crate::Rehearsal).
+    crowd: Crowd,
     time_seconds: f64,
 }
 
@@ -160,31 +172,59 @@ impl Firefighting {
             config,
             rooms: index_rooms(scene, &grids, profile, &reachable),
             room_floors: room_floor_index(scene),
+            passages: grids
+                .iter()
+                .map(|grid| PassageMap::build(grid, SINGLE_FILE_MAX_WIDTH_M))
+                .collect(),
             grids,
             exits,
+            intents: vec![Intent::HOLD; agents.len()],
             agents,
             crews: crew_states,
+            true_hazards: HazardMap::default(),
+            crowd: Crowd::new(CrowdConfig::default(), simulation_config.random_seed),
             time_seconds: 0.0,
         })
     }
 
     /// Acts over `[current time, time_seconds]` given the fire as it stood at
     /// the start of the interval, and returns the water to apply over it.
+    /// Crews move on their own, with no occupants in the way.
     pub fn advance_to(
         &mut self,
         time_seconds: f64,
         fire: &[SurfaceFireNodeFrame],
     ) -> Result<Vec<Suppression>, FirefightingError> {
+        let (suppressions, delta_seconds) = self.plan(time_seconds, fire)?;
+        if delta_seconds > 0.0 {
+            let mut crowd =
+                std::mem::replace(&mut self.crowd, Crowd::new(CrowdConfig::default(), 0));
+            crowd.step(&mut [self.crowd_group()], delta_seconds);
+            self.crowd = crowd;
+            self.finish(time_seconds);
+        }
+        Ok(suppressions)
+    }
+
+    /// Decides what every crew does over `[current time, time_seconds]`
+    /// given the fire as it stood at the start of the interval. Returns the
+    /// water to apply over it and the interval's length.
+    pub(crate) fn plan(
+        &mut self,
+        time_seconds: f64,
+        fire: &[SurfaceFireNodeFrame],
+    ) -> Result<(Vec<Suppression>, f64), FirefightingError> {
         if !time_seconds.is_finite() || time_seconds < self.time_seconds {
             return Err(FirefightingError::InvalidTime { time_seconds });
         }
         let delta_seconds = time_seconds - self.time_seconds;
         if delta_seconds == 0.0 {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), 0.0));
         }
         let profile = NavProfile::FIREFIGHTER;
         let true_hazards =
             HazardMap::from_fire(&self.grids, &self.room_floors, fire, profile.body_radius_m);
+        self.intents.fill(Intent::HOLD);
 
         let mut suppressions = Vec::new();
         for crew_index in 0..self.crews.len() {
@@ -194,8 +234,29 @@ impl Firefighting {
                 suppressions.push(suppression);
             }
         }
+        self.true_hazards = true_hazards;
+        Ok((suppressions, delta_seconds))
+    }
+
+    /// This frame's agents and intents, for the crowd to move.
+    pub(crate) fn crowd_group(&mut self) -> CrowdGroup<'_> {
+        CrowdGroup {
+            agents: &mut self.agents,
+            intents: &self.intents,
+            grids: &self.grids,
+            passages: &self.passages,
+            hazards: &self.true_hazards,
+            walk_radius_m: NavProfile::FIREFIGHTER.body_radius_m,
+        }
+    }
+
+    /// Ends the interval once the crowd has moved.
+    pub(crate) fn finish(&mut self, time_seconds: f64) {
         self.time_seconds = time_seconds;
-        Ok(suppressions)
+    }
+
+    pub(crate) fn set_crowd_config(&mut self, config: CrowdConfig) {
+        self.crowd = Crowd::new(config, self.crowd.seed());
     }
 
     /// Current renderer frames for every firefighter.
@@ -239,9 +300,6 @@ impl Firefighting {
     ) -> Option<Suppression> {
         let crew = &mut self.crews[crew_index];
         if crew.phase == FirefighterPhase::Exited {
-            for &member in &crew.members {
-                self.agents[member].velocity_m_per_s = ZERO;
-            }
             return None;
         }
         let grid = grid_for(&self.grids, &crew.floor_id);
@@ -294,7 +352,7 @@ impl Firefighting {
 
         let mut suppression = None;
         let mut target_fire = None;
-        let distance_m = crew.walking_speed_m_per_s * delta_seconds;
+        let speed = crew.walking_speed_m_per_s;
         crew.phase = match action {
             Action::Stage => FirefighterPhase::Staging,
             Action::Spray { node_id, room_id } => {
@@ -323,10 +381,10 @@ impl Firefighting {
                 FirefighterPhase::Searching
             }
             Action::Move { path, purpose } => {
-                let path = stop_short_of_flames(&path, &crew.floor_id, true_hazards);
-                let (position, _) =
-                    advance_along_path(leader_position, &path, grid, distance_m, &[]);
-                self.agents[leader_index].position_m = position;
+                self.intents[leader_index] = Intent {
+                    goal: Goal::Path(stop_short_of_flames(&path, &crew.floor_id, true_hazards)),
+                    speed_m_per_s: speed,
+                };
                 match purpose {
                     Purpose::Fire(node_id) => {
                         target_fire = Some(node_id);
@@ -343,21 +401,8 @@ impl Firefighting {
         let phase = crew.phase;
         let members = crew.members.clone();
         let floor_id = crew.floor_id.clone();
-        let leader = &mut self.agents[leader_index];
-        leader.velocity_m_per_s = velocity(leader_position, leader.position_m, delta_seconds);
-        if matches!(phase, FirefighterPhase::Staging | FirefighterPhase::Exited) {
-            for &member in &members {
-                self.agents[member].velocity_m_per_s = ZERO;
-            }
-        } else {
-            self.move_followers(
-                &members,
-                &floor_id,
-                distance_m,
-                delta_seconds,
-                &known_hazards,
-                true_hazards,
-            );
+        if !matches!(phase, FirefighterPhase::Staging | FirefighterPhase::Exited) {
+            self.plan_followers(&members, &floor_id, speed, &known_hazards, true_hazards);
         }
         for &member in &members {
             if let AgentRole::Firefighter(state) = &mut self.agents[member].role {
@@ -368,15 +413,14 @@ impl Firefighting {
         suppression
     }
 
-    /// Moves each follower toward a cell between `follow_min_m` and
-    /// `follow_max_m` from the leader and from every member already placed,
-    /// so the crew stays together without overlapping.
-    fn move_followers(
+    /// Sends each follower toward a cell between `follow_min_m` and
+    /// `follow_max_m` from the leader and from every member before it, so
+    /// the crew stays together without overlapping.
+    fn plan_followers(
         &mut self,
         members: &[usize],
         floor_id: &str,
-        distance_m: f64,
-        delta_seconds: f64,
+        speed_m_per_s: f64,
         known_hazards: &HazardMap,
         true_hazards: &HazardMap,
     ) {
@@ -389,7 +433,6 @@ impl Firefighting {
                 && placed
                     .iter()
                     .all(|other| distance_2d(old_position, *other) >= self.config.follow_min_m);
-            let mut position = old_position;
             if !in_place {
                 let targets =
                     follow_targets(grid, leader_position, &placed, &self.config, true_hazards);
@@ -402,14 +445,13 @@ impl Firefighting {
                         NavProfile::FIREFIGHTER,
                     )
                 {
-                    let path = stop_short_of_flames(&path, floor_id, true_hazards);
-                    position = advance_along_path(old_position, &path, grid, distance_m, &[]).0;
+                    self.intents[member] = Intent {
+                        goal: Goal::Path(stop_short_of_flames(&path, floor_id, true_hazards)),
+                        speed_m_per_s,
+                    };
                 }
             }
-            let agent = &mut self.agents[member];
-            agent.velocity_m_per_s = velocity(old_position, position, delta_seconds);
-            agent.position_m = position;
-            placed.push(position);
+            placed.push(old_position);
         }
     }
 }
@@ -899,20 +941,6 @@ fn grid_for<'a>(grids: &'a [SimulationGrid], floor_id: &str) -> &'a SimulationGr
         .find(|grid| grid.floor_id == floor_id)
         .expect("every floor has a grid")
 }
-
-fn velocity(from: Vec3, to: Vec3, delta_seconds: f64) -> Vec3 {
-    Vec3 {
-        x: (to.x - from.x) / delta_seconds,
-        y: (to.y - from.y) / delta_seconds,
-        z: 0.0,
-    }
-}
-
-const ZERO: Vec3 = Vec3 {
-    x: 0.0,
-    y: 0.0,
-    z: 0.0,
-};
 
 #[cfg(test)]
 mod tests {

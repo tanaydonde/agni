@@ -26,6 +26,8 @@ pub struct Agent {
     pub velocity_m_per_s: Vec3,
     pub radius_m: f64,
     pub exposure: Exposure,
+    /// How the agent moved through the crowd during the last step.
+    pub movement: Movement,
     pub role: AgentRole,
 }
 
@@ -56,6 +58,7 @@ impl Agent {
             velocity_m_per_s: self.velocity_m_per_s,
             radius_m: self.radius_m,
             exposure: self.exposure,
+            movement: self.movement,
             role: match &self.role {
                 AgentRole::Occupant(state) => AgentFrameRole::Occupant { phase: state.phase },
                 AgentRole::Firefighter(state) => AgentFrameRole::Firefighter {
@@ -88,6 +91,23 @@ impl Exposure {
     pub fn is_incapacitating(self) -> bool {
         self.heat >= 1.0 || self.toxic_gas >= 1.0
     }
+}
+
+/// How an agent moved through the crowd during the last step, so playback
+/// can show where people are held up.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Movement {
+    /// Not trying to move: waiting to leave, searching, spraying, or out of
+    /// the run.
+    #[default]
+    Stopped,
+    Walking,
+    /// Trying to move but held up by people in the way.
+    Queued,
+    /// Pressing past someone, in a doorway or hallway too narrow to pass
+    /// side by side.
+    Squeezing,
 }
 
 /// What kind of agent this is, with the state only that role needs.
@@ -160,6 +180,9 @@ pub struct AgentFrame {
     pub velocity_m_per_s: Vec3,
     pub radius_m: f64,
     pub exposure: Exposure,
+    /// Absent in frames written before crowd movement existed.
+    #[serde(default)]
+    pub movement: Movement,
     pub role: AgentFrameRole,
 }
 

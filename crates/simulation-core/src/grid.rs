@@ -241,6 +241,62 @@ impl SimulationGrid {
     }
 }
 
+#[cfg(test)]
+impl SimulationGrid {
+    /// A grid drawn as text, one string per row from row 0: `.` floor, `#`
+    /// wall, `D` door, anything else outside.
+    pub(crate) fn from_rows(floor_id: &str, rows: &[&str], cell_size_m: f64) -> Self {
+        let columns = rows[0].len() as u32;
+        let bounds = GridBounds {
+            min_x: 0.0,
+            min_y: 0.0,
+            max_x: f64::from(columns) * cell_size_m,
+            max_y: rows.len() as f64 * cell_size_m,
+            elevation_m: 0.0,
+        };
+        let mut cells = Vec::new();
+        for (row, text) in rows.iter().enumerate() {
+            for (column, symbol) in text.chars().enumerate() {
+                let coordinate = GridCoordinate {
+                    column: column as u32,
+                    row: row as u32,
+                };
+                let (kind, opening_kind) = match symbol {
+                    '.' => (GridCellKind::Floor, None),
+                    '#' => (GridCellKind::Wall, None),
+                    'D' => (GridCellKind::Opening, Some(OpeningKind::Door)),
+                    _ => (GridCellKind::Outside, None),
+                };
+                cells.push(GridCell {
+                    coordinate,
+                    center_m: cell_center(bounds, cell_size_m, coordinate),
+                    kind,
+                    room_ids: Vec::new(),
+                    boundary_edge_id: None,
+                    opening_id: opening_kind.map(|_| format!("door-{column}-{row}")),
+                    opening_kind,
+                    object_id: None,
+                });
+            }
+        }
+        Self {
+            floor_id: floor_id.to_owned(),
+            cell_size_m,
+            columns,
+            rows: rows.len() as u32,
+            bounds,
+            cells,
+        }
+    }
+
+    /// An open grid of floor cells.
+    pub(crate) fn test_grid(floor_id: &str, columns: u32, rows: u32, cell_size_m: f64) -> Self {
+        let row = ".".repeat(columns as usize);
+        let rows = vec![row.as_str(); rows as usize];
+        Self::from_rows(floor_id, &rows, cell_size_m)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct GridBounds {
     pub min_x: f64,
