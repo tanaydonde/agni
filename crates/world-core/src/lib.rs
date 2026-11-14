@@ -7,10 +7,10 @@ mod placement;
 mod validation;
 
 pub use agent_api::{
-    AddObjectRequest, ApplyEditsRequest, EditCommand, EditResponse, GetSceneResponse,
-    ListAssetsResponse, MoveObjectRequest, RemoveObjectRequest, RotateObjectRequest,
-    SetObjectTransformRequest, ValidateLayoutResponse, ValidationIssue, World, WorldApiError,
-    WorldApiResult,
+    AddObjectRequest, ApplyEditsRequest, CheckEditsRequest, CheckEditsResponse, EditCommand,
+    EditResponse, GetSceneResponse, ListAssetsResponse, MoveObjectRequest, RemoveObjectRequest,
+    RotateObjectRequest, SetObjectTransformRequest, ValidateLayoutResponse, ValidationIssue, World,
+    WorldApiError, WorldApiResult,
 };
 pub use catalog::default_furniture_catalog;
 pub use model::{

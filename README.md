@@ -8,6 +8,7 @@ apps/
 └── web/                React + Three.js editor (Vite)
 crates/
 ├── matterport/         Matterport API and normalization boundary
+├── server/             HTTP server exposing the world API (cargo run -p tflop-server)
 └── world-core/         Canonical scene types and world rules
 data/
 ├── fixtures/           Small sanitized test inputs
@@ -23,16 +24,42 @@ cargo test --workspace
 
 ## Run the web app
 
+The Rust world server owns the scene; the web app reads and edits it through
+`/api/world/*`, which Vite proxies to `TFLOP_SERVER_ADDR` (default
+`127.0.0.1:3000`). Import the scene first (below), then in two terminals:
+
 ```bash
-pnpm install
-pnpm --filter web dev
+cargo run -p tflop-server -- --scene data/prepared-scenes/<model-id>.json
+pnpm install && pnpm --filter web dev
 ```
 
-In development, the app loads `data/prepared-scenes/<id>.json` through
-`GET /api/scenes/<id>` (the route the Rust server will provide). It shows
-the `MATTERPORT_MODEL_ID` from `.env` by default (only that key is read; the
-credentials never reach the browser). Set `VITE_SCENE_ID` to load another
-prepared scene. Run the importer below first.
+Edits live in the server's memory; restarting it reloads the file. The
+defurnished mesh is still served by Vite from
+`data/prepared-scenes/<model-id>.obj`.
+
+### Editing and flying
+
+The view has two modes. The cursor is only captured while flying.
+
+- **Edit mode** (default): drag an item from the Furniture panel into the
+  view; it follows the floor and is added where you release it. Click
+  furniture to select it (click anything else to deselect). Drag the red (X)
+  or green (Y) arrow to slide along that axis, the grey square to move freely
+  across the floor, or the blue ring to rotate (hold Shift to snap to 15°).
+  Del removes the selection and Esc deselects. Pinch moves toward the cursor,
+  a two-finger swipe looks around, and ⌥ + drag orbits.
+- **Fly mode**: right-click (or Control-click) to capture the cursor; Esc or
+  another right-click returns to edit mode. Move to look, WASD/QE to fly,
+  Shift for speed, Space + move to pan, ⌥ + move to orbit. Nothing can be
+  selected or edited while flying.
+
+While you drag, the world dry-runs the placement (`POST /api/world/check_edits`)
+against its rules: inside a room, clear of walls and other furniture, and out
+of door clearances. Furniture turns red with the reason where it can't go, and
+releasing there puts it back.
+
+Furniture always stands on the floor: the world snaps every object's
+`z` to its floor's elevation and rejects tilted rotations.
 
 ## Import a Matterport scene
 

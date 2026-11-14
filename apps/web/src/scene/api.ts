@@ -1,37 +1,147 @@
-import { useQuery } from '@tanstack/react-query'
-import { SCENE_SCHEMA_VERSION, type Scene } from './types'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useCallback } from 'react'
+import { useEditorStore } from './editorStore'
+import { applyEditLocally } from './placement'
+import { describeWorldError } from './worldErrors'
+import {
+  SCENE_SCHEMA_VERSION,
+  type ApplyEditsRequest,
+  type CheckEditsRequest,
+  type CheckEditsResponse,
+  type EditCommand,
+  type EditResponse,
+  type GetSceneResponse,
+  type WorldApiErrorBody,
+} from './types'
 
-export class SceneNotFoundError extends Error {
-  readonly sceneId: string
+export const WORLD_QUERY_KEY = ['world'] as const
+const WORLD_EDIT_KEY = ['world-edit'] as const
 
-  constructor(sceneId: string) {
-    super(`No prepared scene for ${sceneId}`)
-    this.sceneId = sceneId
+/** The Rust world server (`cargo run -p tflop-server`) isn't reachable. */
+export class WorldServerUnavailableError extends Error {
+  constructor() {
+    super('The world server is not running')
   }
 }
 
-export async function fetchScene(sceneId: string): Promise<Scene> {
-  const response = await fetch(`/api/scenes/${encodeURIComponent(sceneId)}`)
-  if (response.status === 404) throw new SceneNotFoundError(sceneId)
-  if (!response.ok) throw new Error(`Loading scene ${sceneId} failed (${response.status})`)
+/** A world API call failed with a structured `{ code, ... }` error. */
+export class WorldApiError extends Error {
+  readonly status: number
+  readonly body: WorldApiErrorBody
 
-  const scene = (await response.json()) as Scene
-  if (scene.schema_version !== SCENE_SCHEMA_VERSION) {
+  constructor(status: number, body: WorldApiErrorBody) {
+    super(`World API error ${status}: ${body.code}`)
+    this.status = status
+    this.body = body
+  }
+}
+
+export async function fetchWorld(): Promise<GetSceneResponse> {
+  const response = await fetch('/api/world/scene').catch(() => null)
+  // The Vite proxy answers 5xx when the Rust server is down.
+  if (!response || response.status >= 500) throw new WorldServerUnavailableError()
+  if (!response.ok) throw new Error(`Loading the scene failed (${response.status})`)
+
+  const world = (await response.json()) as GetSceneResponse
+  if (world.scene.schema_version !== SCENE_SCHEMA_VERSION) {
     throw new Error(
-      `Scene ${sceneId} uses schema v${scene.schema_version}; this app reads v${SCENE_SCHEMA_VERSION}`,
+      `Scene ${world.scene.id} uses schema v${world.scene.schema_version}; this app reads v${SCENE_SCHEMA_VERSION}`,
     )
   }
-  return scene
+  return world
 }
 
-export function useScene(sceneId: string) {
+/** The authoritative scene and its revision, from the Rust world. */
+export function useWorld() {
   return useQuery({
-    queryKey: ['scene', sceneId],
-    queryFn: () => fetchScene(sceneId),
-    retry: (count, error) => !(error instanceof SceneNotFoundError) && count < 2,
+    queryKey: WORLD_QUERY_KEY,
+    queryFn: fetchWorld,
+    retry: (count, error) => !(error instanceof WorldServerUnavailableError) && count < 2,
     staleTime: Infinity,
-    enabled: sceneId !== '',
   })
+}
+
+async function postEdit(request: ApplyEditsRequest): Promise<EditResponse> {
+  const response = await fetch('/api/world/apply_edits', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  }).catch(() => null)
+  if (!response) throw new WorldServerUnavailableError()
+  const body = await response.json().catch(() => null)
+  if (!response.ok) {
+    throw new WorldApiError(response.status, body ?? { code: 'unknown' })
+  }
+  return body as EditResponse
+}
+
+/** Dry-runs one edit: would the world accept it right now? Changes nothing. */
+export async function checkEdit(edit: EditCommand): Promise<CheckEditsResponse> {
+  const request: CheckEditsRequest = { edits: [edit] }
+  const response = await fetch('/api/world/check_edits', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  })
+  if (!response.ok) throw new Error(`Checking the edit failed (${response.status})`)
+  return (await response.json()) as CheckEditsResponse
+}
+
+/**
+ * Returns a function that sends one edit to the world. The cached scene is
+ * patched synchronously, so furniture released from a drag doesn't jump back
+ * while the request is in flight; the server's scene (which snaps furniture
+ * to the floor) replaces it afterwards. Edits run one at a time so each
+ * carries the revision its predecessor produced.
+ */
+export function useWorldEdit(): (edit: EditCommand) => void {
+  const queryClient = useQueryClient()
+
+  const { mutate } = useMutation({
+    mutationKey: WORLD_EDIT_KEY,
+    scope: { id: 'world-edit' },
+    mutationFn: async (edit: EditCommand) => {
+      const current = queryClient.getQueryData<GetSceneResponse>(WORLD_QUERY_KEY)
+      if (!current) throw new Error('The scene has not loaded yet')
+      return postEdit({ expected_revision: current.revision, edits: [edit] })
+    },
+    onSuccess: (response) => {
+      queryClient.setQueryData<GetSceneResponse>(WORLD_QUERY_KEY, (world) =>
+        world && { ...world, revision: response.revision },
+      )
+    },
+    onError: (error) => {
+      // Placement rules, or stale_revision (someone else, e.g. the agent,
+      // edited first): the refetch below drops the optimistic change.
+      useEditorStore
+        .getState()
+        .showNotice(
+          error instanceof WorldApiError
+            ? describeWorldError(error.body)
+            : error instanceof WorldServerUnavailableError
+              ? "Couldn't reach the world server"
+              : 'The edit failed',
+        )
+    },
+    onSettled: () => {
+      // Refetch once the last queued edit finishes, so later optimistic edits
+      // aren't briefly overwritten by an older server scene.
+      if (queryClient.isMutating({ mutationKey: WORLD_EDIT_KEY }) <= 1) {
+        return queryClient.invalidateQueries({ queryKey: WORLD_QUERY_KEY })
+      }
+    },
+  })
+
+  return useCallback(
+    (edit: EditCommand) => {
+      void queryClient.cancelQueries({ queryKey: WORLD_QUERY_KEY })
+      queryClient.setQueryData<GetSceneResponse>(WORLD_QUERY_KEY, (world) =>
+        world && { ...world, scene: applyEditLocally(world.scene, edit) },
+      )
+      mutate(edit)
+    },
+    [mutate, queryClient],
+  )
 }
 
 export function sceneMeshUrl(sceneId: string): string {
