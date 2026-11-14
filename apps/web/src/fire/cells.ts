@@ -24,14 +24,16 @@ export interface FireCellBox {
 }
 
 /**
- * The heating and burning cells of `frame`. Furniture cell sizes are in the
+ * The heating and burning cells of `frame`. Heating cells show where the
+ * fire is about to spread, so they're only drawn while something burns: once
+ * the fire is out, nothing is drawn. Furniture cell sizes are in the
  * object's local axes, so those cells take the object's rotation.
  */
 export function fireCellBoxes(
   frame: SimulationFrame | undefined,
   objects: Pick<FurnitureObject, 'id' | 'transform'>[],
 ): FireCellBox[] {
-  if (!frame) return []
+  if (!frame || !frame.surface_fire.some((node) => node.state === 'burning')) return []
   const rotations = new Map(objects.map((object) => [object.id, object.transform.rotation]))
   return frame.surface_fire.flatMap((node) => {
     if (node.state !== 'burning' && node.state !== 'heating') return []
