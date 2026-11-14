@@ -98,6 +98,84 @@ fn reset_restores_the_spawned_agents() {
 }
 
 #[test]
+fn atomically_spawns_a_valid_occupant_batch() {
+    let mut simulation = Simulation::new(scene_fixture(), SimulationConfig::default())
+        .expect("simulation should build");
+    let occupants = vec![
+        occupant("occupant-1", "floor-1", 0.75, 3.0),
+        occupant("occupant-2", "floor-1", 1.5, 3.0),
+    ];
+
+    let spawned = simulation
+        .spawn_occupants(&occupants)
+        .expect("both occupants should fit");
+
+    assert_eq!(spawned.len(), 2);
+    assert_eq!(simulation.agents().len(), 2);
+    assert_eq!(simulation.reset().agents.len(), 2);
+}
+
+#[test]
+fn rejects_an_entire_batch_when_occupants_overlap() {
+    let mut simulation = Simulation::new(scene_fixture(), SimulationConfig::default())
+        .expect("simulation should build");
+    let occupants = vec![
+        occupant("occupant-1", "floor-1", 1.0, 3.0),
+        occupant("occupant-2", "floor-1", 1.4, 3.0),
+    ];
+
+    let Err(SimulationError::InvalidScenario(errors)) = simulation.spawn_occupants(&occupants)
+    else {
+        panic!("overlapping occupants should fail");
+    };
+
+    assert!(has_error(
+        &errors.0,
+        "occupants[1].position_m",
+        "overlaps another agent"
+    ));
+    assert!(simulation.agents().is_empty(), "spawn must be atomic");
+}
+
+#[test]
+fn rejects_an_occupant_whose_body_overlaps_furniture() {
+    let mut simulation = Simulation::new(scene_fixture(), SimulationConfig::default())
+        .expect("simulation should build");
+    let occupants = [occupant("occupant-1", "floor-1", 1.0, 1.5)];
+
+    let Err(SimulationError::InvalidScenario(errors)) = simulation.spawn_occupants(&occupants)
+    else {
+        panic!("body overlapping furniture should fail");
+    };
+
+    assert!(has_error(
+        &errors.0,
+        "occupants[0].position_m",
+        "walkable clearance"
+    ));
+    assert!(simulation.agents().is_empty());
+}
+
+#[test]
+fn rejects_an_occupant_whose_body_overlaps_a_wall() {
+    let mut simulation = Simulation::new(scene_fixture(), SimulationConfig::default())
+        .expect("simulation should build");
+    let occupants = [occupant("occupant-1", "floor-1", 0.3, 3.0)];
+
+    let Err(SimulationError::InvalidScenario(errors)) = simulation.spawn_occupants(&occupants)
+    else {
+        panic!("body overlapping a wall should fail");
+    };
+
+    assert!(has_error(
+        &errors.0,
+        "occupants[0].position_m",
+        "walkable clearance"
+    ));
+    assert!(simulation.agents().is_empty());
+}
+
+#[test]
 fn deserializes_with_defaults() {
     let scenario: Scenario = serde_json::from_value(serde_json::json!({
         "schema_version": SCENARIO_SCHEMA_VERSION,

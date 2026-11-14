@@ -25,7 +25,7 @@ export function FireControls() {
     >
       <span aria-hidden className="size-2 rounded-full bg-[#ff6a1a]" />
       {status === 'loading' ? (
-        <span>Simulating fire at {objectId}…</span>
+        <span>Generating occupants and simulating fire at {objectId}…</span>
       ) : status === 'error' ? (
         <span className="text-danger">{error}</span>
       ) : (

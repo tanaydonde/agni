@@ -155,6 +155,73 @@ impl SimulationGrid {
             .map(|_| cell_center(self.bounds, self.cell_size_m, coordinate))
     }
 
+    /// Whether a circular body fits entirely on walkable cells. Touching a
+    /// blocked cell is allowed; overlapping one is not.
+    #[must_use]
+    pub fn circle_is_walkable(&self, center_m: Vec3, radius_m: f64) -> bool {
+        if !center_m.x.is_finite()
+            || !center_m.y.is_finite()
+            || !radius_m.is_finite()
+            || radius_m <= 0.0
+            || center_m.x - radius_m < self.bounds.min_x
+            || center_m.x + radius_m > self.bounds.max_x
+            || center_m.y - radius_m < self.bounds.min_y
+            || center_m.y + radius_m > self.bounds.max_y
+        {
+            return false;
+        }
+
+        let Some(center_coordinate) = self.world_to_cell(center_m) else {
+            return false;
+        };
+        if !self
+            .cell(center_coordinate)
+            .is_some_and(GridCell::is_walkable)
+        {
+            return false;
+        }
+
+        let min_column = ((center_m.x - radius_m - self.bounds.min_x) / self.cell_size_m)
+            .floor()
+            .max(0.0) as u32;
+        let max_column = ((center_m.x + radius_m - self.bounds.min_x) / self.cell_size_m)
+            .floor()
+            .min(f64::from(self.columns - 1)) as u32;
+        let min_row = ((center_m.y - radius_m - self.bounds.min_y) / self.cell_size_m)
+            .floor()
+            .max(0.0) as u32;
+        let max_row = ((center_m.y + radius_m - self.bounds.min_y) / self.cell_size_m)
+            .floor()
+            .min(f64::from(self.rows - 1)) as u32;
+        let radius_squared = radius_m * radius_m;
+
+        for row in min_row..=max_row {
+            for column in min_column..=max_column {
+                let Some(cell) = self.cell(GridCoordinate { column, row }) else {
+                    return false;
+                };
+                if cell.is_walkable() {
+                    continue;
+                }
+
+                let half_cell = self.cell_size_m / 2.0;
+                let closest_x = center_m
+                    .x
+                    .clamp(cell.center_m.x - half_cell, cell.center_m.x + half_cell);
+                let closest_y = center_m
+                    .y
+                    .clamp(cell.center_m.y - half_cell, cell.center_m.y + half_cell);
+                let dx = center_m.x - closest_x;
+                let dy = center_m.y - closest_y;
+                if dx * dx + dy * dy < radius_squared - GEOMETRY_EPSILON {
+                    return false;
+                }
+            }
+        }
+
+        true
+    }
+
     #[must_use]
     pub fn summary(&self) -> GridSummary {
         let mut summary = GridSummary {

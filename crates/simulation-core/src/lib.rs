@@ -169,6 +169,19 @@ impl Simulation {
         &self.agents
     }
 
+    /// Adds a batch of occupants to the run's initial state. The operation is
+    /// atomic: if any occupant is invalid, none of them are added.
+    pub fn spawn_occupants(
+        &mut self,
+        occupants: &[OccupantSpawn],
+    ) -> Result<Vec<AgentFrame>, SimulationError> {
+        let spawned = scenario::spawn_occupants(occupants, &self.grids, &self.agents)?;
+        let frames = spawned.iter().map(Agent::frame).collect();
+        self.initial_agents.extend(spawned.iter().cloned());
+        self.agents.extend(spawned);
+        Ok(frames)
+    }
+
     #[must_use]
     pub fn grid(&self, floor_id: &str) -> Option<&SimulationGrid> {
         self.grids.iter().find(|grid| grid.floor_id == floor_id)

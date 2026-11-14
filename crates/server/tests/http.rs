@@ -175,6 +175,20 @@ async fn malformed_body_returns_structured_400() {
 }
 
 #[tokio::test]
+async fn occupant_agent_rejects_an_invalid_count_before_calling_gemini() {
+    let (status, body) = call(
+        app(),
+        "POST",
+        "/api/agents/spawn_occupants",
+        Some(json!({ "count": 0 })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "invalid_count");
+}
+
+#[tokio::test]
 async fn hybrid_fire_route_rejects_a_malformed_request() {
     let (status, body) = call(
         app(),

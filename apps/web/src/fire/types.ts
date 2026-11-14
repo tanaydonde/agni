@@ -140,3 +140,17 @@ export interface SimulateFireResponse {
   excluded_object_ids: string[]
   results: SimulationResults
 }
+
+/** `POST /api/agents/spawn_occupants` (crates/server/src/occupant_agent.rs). */
+export interface SpawnOccupantsResponse {
+  revision: number
+  attempts: number
+  occupants: Array<{
+    id: string
+    floor_id: string
+    position_m: Vec3
+    walking_speed_m_per_s: number
+    pre_movement_delay_seconds: number
+  }>
+  agents: AgentFrame[]
+}

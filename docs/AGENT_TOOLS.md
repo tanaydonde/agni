@@ -22,6 +22,16 @@ planned and specified in `PREPLAN_AGENT.md`.
 | `apply_edits` | Working | `World::apply_edits(...)` |
 | `check_edits` | Working | `World::check_edits(...)` |
 | `validate_layout` | Working | `World::validate_layout()` |
+| `spawn_occupants` | Working | Gemini proposes exactly N occupants; `Simulation::spawn_occupants` validates them and retries up to three attempts |
+
+`POST /api/agents/spawn_occupants` takes `{ "count": N }`. Rust first derives a
+catalog of collision-free, mutually separated spawn sites from the simulation
+grid. Gemini must call the `spawn_occupants` function with the complete batch
+and select only those site IDs; Rust resolves the IDs back to exact world
+coordinates and validates the result. A rejected batch is returned to Gemini
+as field-level feedback; after three failed proposals the endpoint returns
+`occupant_generation_failed`. Set `GEMINI_API_KEY` and optionally
+`GEMINI_MODEL` in `.env`.
 
 ## Example requests
 

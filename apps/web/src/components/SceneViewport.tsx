@@ -18,6 +18,7 @@ import { PlacementController } from '../scene/PlacementController'
 import { SceneModel } from '../scene/SceneModel'
 import { SelectionController } from '../scene/SelectionController'
 import { SurfaceFire } from '../scene/SurfaceFire'
+import { SimulationAgents } from '../scene/SimulationAgents'
 import { TransformGizmo } from '../scene/TransformGizmo'
 import type { DetectedObject, Floor, Scene } from '../scene/types'
 import { ShowcaseViewport } from '../showcase/ShowcaseViewport'
@@ -193,6 +194,7 @@ function SceneCanvas({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; me
         <SceneModel geometry={geometry} meshUrl={meshUrl} />
         <Furniture floor={floor} assets={scene.assets} />
         <SurfaceFire floor={floor} />
+        <SimulationAgents floor={floor} />
         <TransformGizmo floor={floor} />
         <CameraController element={focusTarget} geometry={geometry} onActiveChange={setActive} />
         <SelectionController element={focusTarget} floor={floor} />

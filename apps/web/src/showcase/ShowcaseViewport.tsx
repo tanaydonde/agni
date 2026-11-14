@@ -9,6 +9,7 @@ import type { Floor, Scene } from '../scene/types'
 import { type CameraDriver, createHopDriver } from './cameraDriver'
 import { activateDefurnishedView, showSpaceVersion, type SpaceVersion } from './defurnish'
 import { createFlyDriver } from './flyDriver'
+import { mountAgents, type ShowcaseAgents } from './agents'
 import { mountFire, type ShowcaseFire } from './fire'
 import { furnitureItems, mountFurniture, type ShowcaseFurniture } from './furniture'
 import { mountEnvironment } from './environment'
@@ -93,6 +94,12 @@ export function ShowcaseViewport({ scene, floor, models, version }: ShowcaseView
   const fireCells = useMemo(() => fireCellBoxes(fireFrame, floor.objects), [fireFrame, floor.objects])
   const fire = useRef<ShowcaseFire | null>(null)
   const latestFireCells = useRef(fireCells)
+  const agents = useMemo(
+    () => fireFrame?.agents.filter((agent) => agent.floor_id === floor.id) ?? [],
+    [fireFrame, floor.id],
+  )
+  const agentOverlay = useRef<ShowcaseAgents | null>(null)
+  const latestAgents = useRef(agents)
   const freeFlight = status.kind === 'ready' && Boolean(status.driver.look)
 
   // Keep Showcase's furniture in step with world edits.
@@ -110,6 +117,11 @@ export function ShowcaseViewport({ scene, floor, models, version }: ShowcaseView
     latestFireCells.current = fireCells
     fire.current?.update(fireCells)
   }, [fireCells])
+
+  useEffect(() => {
+    latestAgents.current = agents
+    agentOverlay.current?.update(agents)
+  }, [agents])
 
   // Swap furnished/defurnished in place once the player is up; the initial
   // version is applied when it loads (below).
@@ -158,6 +170,7 @@ export function ShowcaseViewport({ scene, floor, models, version }: ShowcaseView
       furniture.current = await mountFurniture(sdk, latestItems.current)
       furnitureModels.current = mountModels(sdk, latestModels.current)
       fire.current = await mountFire(sdk, latestFireCells.current)
+      agentOverlay.current = await mountAgents(sdk, latestAgents.current)
       environment = await mountEnvironment(sdk)
       signal.throwIfAborted()
       signal.throwIfAborted()
@@ -190,6 +203,8 @@ export function ShowcaseViewport({ scene, floor, models, version }: ShowcaseView
       furnitureModels.current = null
       fire.current?.dispose()
       fire.current = null
+      agentOverlay.current?.dispose()
+      agentOverlay.current = null
       environment?.dispose()
       sdkRef.current = null
       iframe.remove()
