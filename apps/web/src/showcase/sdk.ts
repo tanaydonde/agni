@@ -92,8 +92,16 @@ export interface SceneComponent<Inputs extends object = Record<string, unknown>>
   onDestroy?(): void
 }
 
+/** Showcase's three.js vector and quaternion on a node, set in place. */
+interface Settable3 {
+  set(x: number, y: number, z: number): unknown
+}
+
 export interface SceneNode {
   addComponent<Inputs extends object>(name: string, inputs?: Partial<Inputs>): { inputs: Inputs }
+  readonly position: Settable3
+  readonly quaternion: { set(x: number, y: number, z: number, w: number): unknown }
+  readonly scale: Settable3
 }
 
 export interface SceneObject {

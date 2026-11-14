@@ -8,6 +8,7 @@ import {
   SCENE_SCHEMA_VERSION,
   type ApplyEditsRequest,
   type Detection,
+  type FurnitureModel,
   type CheckEditsRequest,
   type CheckEditsResponse,
   type EditCommand,
@@ -167,6 +168,24 @@ export function useDetectedFurniture(sceneId: string) {
     },
     staleTime: Infinity,
     enabled: sceneId !== '',
+  })
+}
+
+/**
+ * The normalized furniture models (`pnpm --filter web normalize-furniture`),
+ * or none if they haven't been prepared. The model files aren't in Git.
+ */
+export function useFurnitureModels() {
+  return useQuery({
+    queryKey: ['furniture-models'],
+    queryFn: async (): Promise<FurnitureModel[]> => {
+      const response = await fetch('/models/furniture/index.json')
+      // Vite answers a missing file with its HTML page, not a 404.
+      if (!response.ok || !response.headers.get('content-type')?.includes('json')) return []
+      const index = (await response.json()) as { models: FurnitureModel[] }
+      return index.models
+    },
+    staleTime: Infinity,
   })
 }
 

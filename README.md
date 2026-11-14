@@ -135,8 +135,12 @@ grid, split into connected pieces, and fitted with the smallest rotated
 rectangle; the height is the top of each piece. Things hanging above a large
 vertical gap (a chandelier over a table) are ignored, and footprints that fill
 their rectangle poorly (an L-shaped sofa) are split into several boxes. Each
-box is drawn as the catalog asset closest to it in size, whatever the
-furniture actually is; the measured box is always the object's size.
+box gets a label (sofa, chair, table, desk, bed, storage, counter, or
+unknown) from its size and room type. The editor colors it like the catalog
+asset closest in size; the textured and furnished views draw it as the
+furniture model with the same label that is closest in size (see below),
+stretched to fill the box, and leave it out when no model has that label.
+The measured box is always the object's size.
 
 ## Furniture models
 

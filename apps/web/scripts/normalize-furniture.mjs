@@ -54,14 +54,14 @@ for (const model of manifest.models) {
   const credit = model.credit ?? root.getAsset().extras ?? {}
   root.getAsset().extras = {
     ...credit,
-    tflop: { id: model.id, category: model.category, source: model.source, size_m: after },
+    tflop: { id: model.id, label: model.label, source: model.source, size_m: after },
   }
   await document.transform(prune(), dedup())
 
   const output = join(OUTPUT_DIR, `${model.id}.glb`)
   const bytes = await io.writeBinary(document)
   await writeFile(output, bytes)
-  rows.push({ id: model.id, before, scale, after, mb: bytes.byteLength / 1e6 })
+  rows.push({ id: model.id, label: model.label, before, scale, after, mb: bytes.byteLength / 1e6 })
   credits.push({ id: model.id, ...credit })
 }
 
@@ -76,6 +76,23 @@ for (const row of rows) {
     row.mb.toFixed(1),
   )
 }
+
+// The viewer's list of models: merge this run into the previous index, and
+// drop models no longer in the manifest.
+const indexPath = join(OUTPUT_DIR, 'index.json')
+const previous = JSON.parse(await readFile(indexPath, 'utf8').catch(() => '{"models":[]}')).models
+const entries = new Map(previous.map((entry) => [entry.id, entry]))
+for (const row of rows) {
+  const [width, height, depth] = row.after
+  entries.set(row.id, {
+    id: row.id,
+    url: `/models/furniture/${row.id}.glb`,
+    label: row.label,
+    size_m: { width_m: width, depth_m: depth, height_m: height },
+  })
+}
+const listed = manifest.models.map((model) => entries.get(model.id)).filter(Boolean)
+await writeFile(indexPath, `${JSON.stringify({ models: listed }, null, 2)}\n`)
 
 if (only.size === 0) {
   await writeFile(join(FURNITURE_DIR, 'CREDITS.md'), creditsMarkdown(credits))

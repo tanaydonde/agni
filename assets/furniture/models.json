@@ -1,38 +1,38 @@
 {
-  "$comment": "Furniture models for the viewer. `pnpm --filter web normalize-furniture` reads each source from assets/furniture/source/, scales it to real-world metres (by `scale`, or uniformly to `height_m`), turns its long side along X (plus `yaw_degrees`), stands it on the floor centred on the origin, and writes apps/web/public/models/furniture/<id>.glb. Sources are never modified, so rerunning is safe.",
+  "$comment": "Furniture models for the viewer. `pnpm --filter web normalize-furniture` reads each source from assets/furniture/source/, scales it to real-world metres (by `scale`, or uniformly to `height_m`), turns its long side along X (plus `yaw_degrees`), stands it on the floor centred on the origin, and writes apps/web/public/models/furniture/<id>.glb plus an index.json the viewer reads. `label` uses the detector's labels (sofa, chair, table, desk, bed, storage, counter): scanned furniture is drawn as a model with its label, the closest in size. Sources are never modified, so rerunning is safe.",
   "models": [
     {
       "id": "sofa-modern",
       "source": "sofa.glb",
-      "category": "sofa",
+      "label": "sofa",
       "scale": 1,
       "note": "Already in metres: 2.32 x 0.90 tall x 0.98 m."
     },
     {
       "id": "armchair-old",
       "source": "old_sofa.glb",
-      "category": "chair",
+      "label": "chair",
       "scale": 0.01,
       "note": "Centimetres. An armchair despite the title 'Old Sofa': 0.97 m wide, 0.78 m tall."
     },
     {
       "id": "chair-tub",
       "source": "sofa_1.glb",
-      "category": "chair",
+      "label": "chair",
       "height_m": 0.78,
       "note": "A round tub armchair on metal legs, despite the source title 'Sofa'. Arbitrary units: 143 tall including legs, so scaled to a 0.78 m armchair."
     },
     {
       "id": "chair-barcelona",
       "source": "barcelona_chair.glb",
-      "category": "chair",
+      "label": "chair",
       "scale": 0.01,
       "note": "Centimetres; the real chair is 75 x 77 cm and 76 cm tall. barcelona_chair_gltf/ is the same model as .gltf and is unused."
     },
     {
       "id": "nightstand",
       "source": "side_table_night_stand.glb",
-      "category": "storage_cabinet",
+      "label": "storage",
       "height_m": 0.6,
       "yaw_degrees": -90,
       "note": "Arbitrary units (2.0 tall); nightstands are about 0.55-0.65 m tall. Turned so its drawer faces +Z."
@@ -40,21 +40,21 @@
     {
       "id": "cabinet-vintage",
       "source": "vintage_charm_cabinet.glb",
-      "category": "storage_cabinet",
+      "label": "storage",
       "height_m": 1.05,
       "note": "A three-drawer chest with a plant on top. Its units read as metres but its drawers would be 45 cm tall at 1.99 m, so it is scaled to 1.05 m including the plant (about 0.85 m without)."
     },
     {
       "id": "dining-set",
       "source": "dining_table.glb",
-      "category": "meeting_table",
+      "label": "table",
       "scale": 0.129,
       "note": "Arbitrary units: table top at 5.8, so 0.129 puts it at 0.75 m. A table with chairs around it and decor on top, about 1.1 x 2.4 m."
     },
     {
       "id": "dining-table",
       "source": "dining_table_polyhaven.glb",
-      "category": "meeting_table",
+      "label": "table",
       "scale": 1,
       "note": "Poly Haven (CC0), exported from dining_table_1k_blend/ with Blender; already in metres: 2.05 x 1.15 m, 0.79 m tall, with a tablecloth.",
       "credit": {

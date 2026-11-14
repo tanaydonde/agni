@@ -4,11 +4,13 @@ import {
   WorldServerUnavailableError,
   sceneMeshUrl,
   useDetectedFurniture,
+  useFurnitureModels,
   useSceneMeshAvailable,
   useWorld,
 } from '../scene/api'
 import { CameraController } from '../scene/CameraController'
 import { DetectedFurniture } from '../scene/DetectedFurniture'
+import { placeModels } from '../scene/modelChoice'
 import { useEditorStore } from '../scene/editorStore'
 import { Furniture } from '../scene/Furniture'
 import { buildFloorGeometry } from '../scene/geometry'
@@ -86,6 +88,16 @@ function SceneViews({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; mes
   )
   const [showScanned, setShowScanned] = useState(true)
   const detected = showScanned ? scanned : NO_DETECTED
+  const { data: furnitureModels } = useFurnitureModels()
+  const models = useMemo(
+    () =>
+      placeModels(
+        detected,
+        furnitureModels ?? [],
+        floor.rooms.flatMap((room) => room.boundary),
+      ),
+    [detected, furnitureModels, floor.rooms],
+  )
   const show = (next: View) => {
     if (next !== 'editor') setTexturedOpened(true)
     setView(next)
@@ -101,7 +113,7 @@ function SceneViews({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; mes
           <ShowcaseViewport
             scene={scene}
             floor={floor}
-            detected={detected}
+            models={models}
             version={view === 'furnished' ? 'furnished' : 'defurnished'}
           />
         </div>

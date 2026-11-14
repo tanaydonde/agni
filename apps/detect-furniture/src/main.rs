@@ -99,14 +99,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     )?;
 
     println!(
-        "{:<13} {:<14} {:<22} {:>6} {:>6} {:>6} {:>6}",
-        "id", "room", "drawn as", "w", "d", "h", "yaw"
+        "{:<13} {:<14} {:<9} {:<22} {:>6} {:>6} {:>6} {:>6}",
+        "id", "room", "label", "catalog asset", "w", "d", "h", "yaw"
     );
     for object in &detection.objects {
         println!(
-            "{:<13} {:<14} {:<22} {:>6.2} {:>6.2} {:>6.2} {:>6.0}",
+            "{:<13} {:<14} {:<9} {:<22} {:>6.2} {:>6.2} {:>6.2} {:>6.0}",
             object.id,
             object.room_type.as_deref().unwrap_or("-"),
+            format!("{:?}", object.label).to_lowercase(),
             object.asset_id.as_deref().unwrap_or("-"),
             object.size_m.width_m,
             object.size_m.depth_m,

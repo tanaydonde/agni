@@ -5,13 +5,16 @@
 //! mesh but lie well away from every defurnished surface are furniture. Those
 //! are voxelized, projected to a top-down grid, split into connected pieces,
 //! and each piece becomes an upright box: a measured footprint, rotation, and
-//! height that can serve as a collision hitbox. Each box is drawn as the
-//! scene catalog asset closest to it in size.
+//! height that can serve as a collision hitbox. Each box gets a label (what it
+//! probably is, from size and room type) and the scene catalog asset closest
+//! to it in size.
 
+mod classify;
 mod matching;
 mod obj;
 mod rect;
 
+pub use classify::{FurnitureLabel, classify};
 pub use matching::nearest_asset;
 pub use obj::{Mesh, ObjError, parse_obj};
 pub use rect::{OrientedRect, min_area_rect};
@@ -20,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use tflop_world_core::{Dimensions3, Floor, FurnitureAsset, Room, Scene, Vec3};
 
 /// Current version of the serialized detection output.
-pub const DETECTION_SCHEMA_VERSION: u32 = 2;
+pub const DETECTION_SCHEMA_VERSION: u32 = 3;
 
 /// Tuning knobs. The defaults suit Matterport's 50k defurnished mesh, whose
 /// decimated walls and floors deviate from the full-resolution scan by a few
@@ -98,6 +101,8 @@ pub struct DetectedObject {
     pub room_id: Option<String>,
     /// Matterport's room classification, e.g. "Living Room".
     pub room_type: Option<String>,
+    /// What it probably is, from its size and room type.
+    pub label: FurnitureLabel,
     /// Catalog asset closest in size, drawn in place of the real furniture.
     /// `None` only if the scene has no catalog.
     pub asset_id: Option<String>,
@@ -314,6 +319,7 @@ fn detect_floor(
             floor_id: floor.id.clone(),
             room_id: room.map(|room| room.id.clone()),
             room_type: room.and_then(|room| room_type(room)).map(str::to_owned),
+            label: classify(size, room.and_then(|room| room_type(room))),
             asset_id: nearest_asset(size, assets).map(|asset| asset.id.clone()),
             position_m: Vec3 {
                 x: rect.center[0],
