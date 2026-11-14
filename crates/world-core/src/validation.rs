@@ -105,6 +105,7 @@ impl Scene {
             for (object_index, object) in floor.objects.iter().enumerate() {
                 let object_path = format!("{floor_path}.objects[{object_index}]");
                 validate_object(object, &object_path, &asset_ids, &mut errors);
+                validate_on_floor(object, floor.floor_z(), &object_path, &mut errors);
                 if !object_ids.insert(object.id.as_str()) {
                     push_error(
                         &format!("{object_path}.id"),
@@ -217,6 +218,32 @@ fn validate_object(
         push_error(
             &format!("{path}.transform.rotation"),
             "quaternion must be normalized",
+            errors,
+        );
+    }
+}
+
+/// Furniture must stand upright with its bottom (the asset origin) on the
+/// floor surface.
+fn validate_on_floor(
+    object: &FurnitureObject,
+    floor_z: f64,
+    path: &str,
+    errors: &mut Vec<SceneValidationError>,
+) {
+    const FLOOR_TOLERANCE_M: f64 = 1.0e-6;
+    let z = object.transform.position_m.z;
+    if z.is_finite() && floor_z.is_finite() && (z - floor_z).abs() > FLOOR_TOLERANCE_M {
+        push_error(
+            &format!("{path}.transform.position_m.z"),
+            "object must stand on the floor (z must equal the floor elevation)",
+            errors,
+        );
+    }
+    if !object.transform.rotation.is_yaw_only() {
+        push_error(
+            &format!("{path}.transform.rotation"),
+            "object must stay upright (rotation about Z only)",
             errors,
         );
     }

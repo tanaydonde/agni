@@ -110,3 +110,97 @@ export interface Vec3 {
   y: number
   z: number
 }
+
+// World API (crates/world-core/src/agent_api.rs), served by crates/server.
+
+export interface GetSceneResponse {
+  revision: number
+  scene: Scene
+}
+
+export type Mobility = FurnitureObject['mobility']
+
+export type EditCommand =
+  | {
+      type: 'add_object'
+      object_id: string
+      asset_id: string
+      floor_id: string
+      /** `z` is ignored: the world snaps furniture to the floor. */
+      position_m: Vec3
+      rotation_z_degrees: number
+      mobility: Mobility
+    }
+  | { type: 'move_object'; object_id: string; position_m: Vec3 }
+  | { type: 'rotate_object'; object_id: string; rotation_z_degrees: number }
+  | { type: 'remove_object'; object_id: string }
+
+export interface ApplyEditsRequest {
+  expected_revision: number
+  edits: EditCommand[]
+}
+
+export interface EditResponse {
+  revision: number
+  changed_object_ids: string[]
+}
+
+/** World errors serialize as `{ code, ...details }`. */
+export interface WorldApiErrorBody {
+  code: string
+  [detail: string]: unknown
+}
+
+export interface CheckEditsRequest {
+  edits: EditCommand[]
+}
+
+/** Dry-run result: `error` is what `apply_edits` would have returned. */
+export interface CheckEditsResponse {
+  valid: boolean
+  error: WorldApiErrorBody | null
+}
+
+// Furniture detected in the scan (crates/furniture-detect), written by
+// `cargo run -p detect-furniture` beside the scene.
+
+export const DETECTION_SCHEMA_VERSION = 3
+
+/** What a detected box probably is, from its size and room type. */
+export type FurnitureLabel = 'bed' | 'sofa' | 'chair' | 'table' | 'desk' | 'storage' | 'counter' | 'unknown'
+
+export interface Detection {
+  schema_version: number
+  scene_id: string
+  objects: DetectedObject[]
+}
+
+/** One piece of scanned furniture as an upright, measured box. */
+export interface DetectedObject {
+  id: string
+  floor_id: string
+  room_id: string | null
+  room_type: string | null
+  label: FurnitureLabel
+  /** Catalog asset closest in size, drawn in place of the real furniture. */
+  asset_id: string | null
+  /** Bottom centre, on the floor. */
+  position_m: Vec3
+  yaw_degrees: number
+  /** Measured size; width is the long side. */
+  size_m: Dimensions3
+  footprint_area_m2: number
+}
+
+/**
+ * A normalized furniture model (assets/furniture/models.json, written to
+ * public/models/furniture/index.json by `pnpm normalize-furniture`): glTF
+ * Y-up metres, long side along X, front facing +Z, standing on the origin.
+ */
+export interface FurnitureModel {
+  id: string
+  url: string
+  label: FurnitureLabel
+  /** Width along the model's X, depth along Z, height along Y. */
+  size_m: Dimensions3
+}

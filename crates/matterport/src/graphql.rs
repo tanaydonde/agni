@@ -38,6 +38,48 @@ query MeshAssets($id: ID!) {
 }
 "#;
 
+/// The MatterPak: the furnished, textured OBJ (plus point cloud and plans) as
+/// one signed zip.
+pub(crate) const MATTERPAK_QUERY: &str = r#"
+query MatterPak($id: ID!) {
+  model(id: $id) {
+    bundle(id: "mp:matterpak") {
+      availability
+      assets { url }
+    }
+  }
+}
+"#;
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct MatterPakResponse {
+    pub data: Option<MatterPakData>,
+    #[serde(default)]
+    pub errors: Vec<GraphQlError>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct MatterPakData {
+    pub model: Option<MatterPakModel>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct MatterPakModel {
+    pub bundle: Option<MatterPakBundle>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct MatterPakBundle {
+    pub availability: Option<String>,
+    #[serde(default)]
+    pub assets: Vec<BundleAsset>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct BundleAsset {
+    pub url: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct MeshAssetsResponse {
     pub data: Option<MeshAssetsData>,

@@ -31,6 +31,15 @@ pub struct Floor {
     pub objects: Vec<FurnitureObject>,
 }
 
+impl Floor {
+    /// Height of the walkable floor surface. Furniture origins (bottom center)
+    /// sit exactly at this height.
+    #[must_use]
+    pub fn floor_z(&self) -> f64 {
+        self.elevation_m.unwrap_or(0.0)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Room {
     pub id: String,
@@ -117,6 +126,14 @@ impl Quaternion {
     #[must_use]
     pub fn magnitude_squared(self) -> f64 {
         self.x * self.x + self.y * self.y + self.z * self.z + self.w * self.w
+    }
+
+    /// Whether this rotation only turns about the vertical Z axis, i.e. keeps
+    /// furniture upright. Assumes a normalized quaternion.
+    #[must_use]
+    pub fn is_yaw_only(self) -> bool {
+        const TOLERANCE: f64 = 1.0e-6;
+        self.x.abs() <= TOLERANCE && self.y.abs() <= TOLERANCE
     }
 }
 

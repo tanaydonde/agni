@@ -26,6 +26,11 @@ struct Args {
     /// Skip downloading Matterport's defurnished mesh.
     #[arg(long)]
     skip_mesh: bool,
+
+    /// Also download the furnished mesh from the MatterPak (about 140 MB) to
+    /// <model-id>.furnished.obj, for `cargo run -p detect-furniture`.
+    #[arg(long)]
+    furnished_mesh: bool,
 }
 
 #[tokio::main]
@@ -79,6 +84,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
             None => println!("No defurnished mesh is available for {}", args.model_id),
         }
+    }
+
+    if args.furnished_mesh {
+        let mesh_path = output.with_extension("furnished.obj");
+        println!("Downloading the MatterPak for the furnished mesh…");
+        let obj = client.fetch_furnished_mesh(&args.model_id).await?;
+        fs::write(&mesh_path, obj)?;
+        println!("Saved furnished mesh to {}", mesh_path.display());
     }
 
     Ok(())

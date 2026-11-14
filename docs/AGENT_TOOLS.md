@@ -1,8 +1,14 @@
 # Agent tool contract
 
-These are the planned JSON tools for the Gemini agent. The matching request and
-response types are exported by the `tflop-world-core` crate and use `snake_case`
-JSON fields.
+These are the world-editing JSON tools implemented today. The server exposes
+each one at `/api/world/<tool>`. The matching request and response types are
+exported by the `tflop-world-core` crate and use `snake_case` JSON fields.
+
+In the fire preplan product, these tools edit **interior obstacles**
+(furniture, storage, fixed equipment) so the scene can be corrected to match a
+walkthrough. The preplan agent's full tool surface (`get_property`,
+`propose_findings`, `create_scenario`, `run_scenario`, `compare_scenarios`) is
+planned and specified in `PREPLAN_AGENT.md`.
 
 | Tool | Status | Rust method |
 | --- | --- | --- |
@@ -14,6 +20,7 @@ JSON fields.
 | `set_object_transform` | Working | `World::set_object_transform(...)` |
 | `remove_object` | Working | `World::remove_object(...)` |
 | `apply_edits` | Working | `World::apply_edits(...)` |
+| `check_edits` | Working | `World::check_edits(...)` |
 | `validate_layout` | Working | `World::validate_layout()` |
 
 ## Example requests
@@ -81,11 +88,21 @@ the other objects on that floor. Invalid edits leave the object and world
 revision unchanged. `validate_layout` runs both structural and placement checks
 across the complete scene.
 
-Furniture may touch but not overlap other furniture. It must remain upright and
-may only rotate around the canonical Z axis. The default door/passage clearance
-extends 0.75 m from each side of its wall and 0.15 m past each side of the
-opening; Rust callers may override these values with `PlacementRules` and
-`World::with_placement_rules`.
+Furniture always stands on the floor. The asset origin is the bottom center,
+so the world sets `position_m.z` to the floor's `elevation_m` on every add and
+move; any `z` you send is ignored. Furniture may touch but not overlap other
+furniture. It must remain upright and may only rotate around the canonical Z
+axis (`unsupported_furniture_rotation` otherwise). `validate_layout` also
+reports objects that are off the floor or tilted. The default door/passage
+clearance extends 0.75 m from each side of its wall and 0.15 m past each side
+of the opening; Rust callers may override these values with `PlacementRules`
+and `World::with_placement_rules`.
+
+`check_edits` takes `{ "edits": [...] }` (no revision) and dry-runs the batch
+exactly like `apply_edits` without changing anything. It returns
+`{ "valid": true, "error": null }` or `{ "valid": false, "error": { ... } }`,
+where `error` is what `apply_edits` would have returned. Use it to test a
+placement before committing it.
 
 ## Error codes
 

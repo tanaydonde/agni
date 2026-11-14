@@ -10,9 +10,8 @@ import * as THREE from 'three'
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import type { FloorGeometry, Point2, WallPiece } from './geometry'
+import { Z_UP_TO_Y_UP } from './placement'
 
-/** Rotates the canonical Z-up world into Three.js Y-up: (x, y, z) → (x, z, -y). */
-const Z_UP_TO_Y_UP: [number, number, number] = [-Math.PI / 2, 0, 0]
 
 const COLORS = {
   mesh: '#e9ecf0',
