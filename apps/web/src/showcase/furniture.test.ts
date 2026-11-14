@@ -38,3 +38,9 @@ describe('furnitureItems', () => {
     expect(furnitureItems({ objects: [placed('ghost', 'nope')] }, [desk])).toEqual([])
   })
 })
+
+describe('furnitureItems with scanned furniture', () => {
+  it('leaves scanned objects to their models', () => {
+    expect(furnitureItems({ objects: [placed('scan-detected-001', 'desk-1')] }, [desk])).toEqual([])
+  })
+})

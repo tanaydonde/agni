@@ -5,6 +5,7 @@
 import type * as THREE from 'three'
 import { categoryColor, EDGE_COLOR } from '../scene/furnitureStyle'
 import { Z_UP_TO_Y_UP } from '../scene/placement'
+import { isScannedObject } from '../scene/scanned'
 import type { Dimensions3, Floor, FurnitureAsset, Quaternion, Vec3 } from '../scene/types'
 import type { MpSdk, SceneComponent } from './sdk'
 
@@ -18,12 +19,15 @@ export interface FurnitureItem {
   color: string
 }
 
-/** The floor's placed furniture as boxes, the way the editor draws them. */
+/**
+ * The floor's placed furniture as boxes, the way the editor draws them.
+ * Scanned furniture is left out: real models stand in for it here.
+ */
 export function furnitureItems(floor: Pick<Floor, 'objects'>, assets: FurnitureAsset[]): FurnitureItem[] {
   const assetsById = new Map(assets.map((asset) => [asset.id, asset]))
   return floor.objects.flatMap((object) => {
     const asset = assetsById.get(object.asset_id)
-    if (!asset) return []
+    if (!asset || isScannedObject(object)) return []
     return [
       {
         id: object.id,

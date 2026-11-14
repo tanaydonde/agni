@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from 'react'
 import * as THREE from 'three'
+import { useFireFrame } from '../fire/fireStore'
 import { useEditorStore } from './editorStore'
 import { categoryColor, EDGE_COLOR, INVALID_COLOR, SELECTED_COLOR } from './furnitureStyle'
 import { FURNITURE_GROUP, Z_UP_TO_Y_UP, zRotation } from './placement'
@@ -28,6 +29,15 @@ export function Furniture({ floor, assets }: FurnitureProps) {
   const invalid = useEditorStore((state) => state.liveCheck?.valid === false)
   const assetsById = useMemo(() => new Map(assets.map((asset) => [asset.id, asset])), [assets])
   const ghostAsset = placing ? assetsById.get(placing.assetId) : undefined
+  // Furniture with fire cells turns see-through, so the cells inside show.
+  const fireFrame = useFireFrame()
+  const onFire = useMemo(
+    () =>
+      new Set(
+        fireFrame?.surface_fire.flatMap((node) => (node.source.type === 'furniture' ? [node.source.object_id] : [])),
+      ),
+    [fireFrame],
+  )
 
   return (
     <group name={FURNITURE_GROUP} rotation={Z_UP_TO_Y_UP}>
@@ -45,6 +55,7 @@ export function Furniture({ floor, assets }: FurnitureProps) {
             scale={object.transform.scale}
             selected={object.id === selectedId}
             invalid={invalid && Boolean(dragged)}
+            onFire={onFire.has(object.id)}
           />
         )
       })}
@@ -73,6 +84,8 @@ interface FurnitureBoxProps {
   ghost?: boolean
   /** The world would reject this placement. */
   invalid?: boolean
+  /** Has fire cells; drawn see-through so they show. */
+  onFire?: boolean
 }
 
 function FurnitureBox({
@@ -84,6 +97,7 @@ function FurnitureBox({
   selected = false,
   ghost = false,
   invalid = false,
+  onFire = false,
 }: FurnitureBoxProps) {
   const { width_m: width, depth_m: depth, height_m: height } = asset.dimensions_m
   // Shift the box up so its bottom face sits at the origin, i.e. on the floor.
@@ -109,8 +123,9 @@ function FurnitureBox({
       <mesh geometry={box} userData={objectId ? { objectId } : {}} raycast={ghost ? noRaycast : undefined}>
         <meshStandardMaterial
           color={invalid ? INVALID_COLOR : categoryColor(asset.category)}
-          transparent={ghost || invalid}
-          opacity={ghost || invalid ? 0.6 : 1}
+          transparent={ghost || invalid || onFire}
+          opacity={onFire ? 0.3 : ghost || invalid ? 0.6 : 1}
+          depthWrite={!onFire}
           emissive={invalid ? INVALID_COLOR : selected ? SELECTED_COLOR : '#000000'}
           emissiveIntensity={invalid ? 0.4 : selected ? 0.35 : 0}
         />

@@ -8,7 +8,9 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
-use tflop_server::{DEMO_SCENE_JSON, load_scene, router};
+use tflop_server::{
+    DEMO_SCENE_JSON, DetectionOutcome, load_scene, load_scene_with_detection, router,
+};
 use tflop_world_core::World;
 use tower::ServiceExt;
 
@@ -170,4 +172,108 @@ async fn malformed_body_returns_structured_400() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["code"], "invalid_request");
+}
+
+#[tokio::test]
+async fn simulate_fire_returns_a_growing_timeline() {
+    let (status, body) = call(
+        app(),
+        "POST",
+        "/api/fire/simulate",
+        Some(json!({ "object_id": "chair-1", "duration_seconds": 30.0 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["revision"], 0);
+    let results = &body["results"];
+    assert_eq!(results["scene_id"], "demo-room");
+    let frames = results["frames"].as_array().expect("frames");
+    assert!(frames.len() > 1, "{body}");
+    assert!(
+        frames[0]["surface_fire"]
+            .as_array()
+            .is_some_and(|nodes| nodes.iter().any(|node| node["state"] == "burning")),
+        "the ignited cell burns in frame 0"
+    );
+    let times: Vec<f64> = frames
+        .iter()
+        .map(|frame| frame["time_seconds"].as_f64().expect("time"))
+        .collect();
+    assert!(times.windows(2).all(|pair| pair[0] < pair[1]), "{times:?}");
+    assert!(*times.last().expect("last") <= 30.0 + 1e-9);
+}
+
+#[tokio::test]
+async fn simulate_fire_rejects_unknown_objects() {
+    let (status, body) = call(
+        app(),
+        "POST",
+        "/api/fire/simulate",
+        Some(json!({ "object_id": "piano-1" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["code"], "object_not_found");
+}
+
+fn demo_detection(scene_id: &str) -> String {
+    json!({
+        "schema_version": 3,
+        "scene_id": scene_id,
+        "params": tflop_furniture_detect::DetectParams::default(),
+        "objects": [{
+            "id": "detected-001",
+            "floor_id": "floor-1",
+            "room_id": "room-1",
+            "room_type": null,
+            "label": "sofa",
+            "asset_id": "sofa-3s",
+            "position_m": { "x": 1.5, "y": 1.5, "z": 0.01 },
+            "yaw_degrees": 0.0,
+            "size_m": { "width_m": 1.8, "depth_m": 0.8, "height_m": 0.8 },
+            "footprint_area_m2": 1.44
+        }]
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn scanned_furniture_becomes_scene_objects_that_can_burn() {
+    let (scene, outcome) =
+        load_scene_with_detection(DEMO_SCENE_JSON, Some(&demo_detection("demo-room")))
+            .expect("scene with detection loads");
+    assert!(
+        matches!(outcome, DetectionOutcome::Merged(summary) if summary.merged == 1),
+        "{outcome:?}"
+    );
+    let app = router(World::new(scene));
+
+    let (_, body) = call(app.clone(), "GET", "/api/world/scene", None).await;
+    let objects = body["scene"]["floors"][0]["objects"]
+        .as_array()
+        .expect("objects");
+    assert!(objects.iter().any(|object| object["id"] == "scan-detected-001"));
+
+    let (status, body) = call(
+        app,
+        "POST",
+        "/api/fire/simulate",
+        Some(json!({ "object_id": "scan-detected-001", "duration_seconds": 5.0 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[test]
+fn detection_for_another_scene_is_ignored() {
+    let (scene, outcome) =
+        load_scene_with_detection(DEMO_SCENE_JSON, Some(&demo_detection("other-scene")))
+            .expect("scene still loads");
+    assert!(matches!(outcome, DetectionOutcome::Ignored(_)), "{outcome:?}");
+    assert!(
+        scene.floors[0]
+            .objects
+            .iter()
+            .all(|object| !object.id.starts_with("scan-"))
+    );
 }

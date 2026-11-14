@@ -5,7 +5,7 @@
 use std::{error::Error, fs, net::SocketAddr, path::PathBuf};
 
 use clap::Parser;
-use tflop_server::{DEMO_SCENE_JSON, load_scene, router};
+use tflop_server::{DEMO_SCENE_JSON, DetectionOutcome, load_scene_with_detection, router};
 use tflop_world_core::World;
 
 #[derive(Debug, Parser)]
@@ -33,7 +33,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ),
         None => (DEMO_SCENE_JSON.to_owned(), "built-in demo room".to_owned()),
     };
-    let scene = load_scene(&json).map_err(|error| format!("invalid scene ({source}): {error}"))?;
+    // Furniture found in the scan sits beside the scene as <id>.detected.json.
+    let detection = args
+        .scene
+        .as_ref()
+        .map(|path| path.with_extension("detected.json"))
+        .and_then(|path| fs::read_to_string(&path).ok().map(|json| (path, json)));
+    let (scene, outcome) =
+        load_scene_with_detection(&json, detection.as_ref().map(|(_, json)| json.as_str()))
+            .map_err(|error| format!("invalid scene ({source}): {error}"))?;
+    if let Some((path, _)) = &detection {
+        match outcome {
+            DetectionOutcome::Merged(summary) => println!(
+                "tflop-server: merged {} scanned objects from {} ({} skipped)",
+                summary.merged,
+                path.display(),
+                summary.skipped
+            ),
+            DetectionOutcome::Ignored(reason) => {
+                eprintln!("tflop-server: ignoring {}: {reason}", path.display());
+            }
+            DetectionOutcome::None => {}
+        }
+    }
 
     let listener = tokio::net::TcpListener::bind(args.addr).await?;
     println!("tflop-server: serving {source} on http://{}", args.addr);
