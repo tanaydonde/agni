@@ -2,7 +2,7 @@
 //! doors and hallways, and squeeze past each other.
 
 use tflop_simulation_core::{
-    AgentFrame, AgentFrameRole, CROWD_GIVE_M, CrewSpawn, CrowdConfig, Evacuation,
+    AgentFrame, AgentFrameRole, AlarmConfig, CROWD_GIVE_M, CrewSpawn, CrowdConfig, Evacuation,
     FireMaterialCatalog, FirefighterPhase, Firefighting, FirefightingConfig, Movement,
     OccupantPhase, OccupantSpawn, Rehearsal, RehearsalFrame, SimulationConfig, SurfaceFireConfig,
     SurfaceFireWorld,
@@ -160,8 +160,9 @@ fn a_packed_office_and_a_crew_never_gridlock() {
             random_seed: seed,
             ..SimulationConfig::default()
         };
-        let evacuation =
-            Evacuation::new(&scene, &occupants(45), config).expect("evacuation builds");
+        let evacuation = Evacuation::new(&scene, &occupants(45), config)
+            .expect("evacuation builds")
+            .with_alarm(AlarmConfig::Immediate);
         let crew = Firefighting::new(&scene, &[crew(5.0)], config, FirefightingConfig::default())
             .expect("crew is valid");
         let mut rehearsal =
@@ -198,7 +199,8 @@ fn a_different_seed_changes_who_goes_first() {
                 ..SimulationConfig::default()
             },
         )
-        .expect("evacuation builds");
+        .expect("evacuation builds")
+        .with_alarm(AlarmConfig::Immediate);
         let mut rehearsal = Rehearsal::new(fire_world(&scene), Some(evacuation));
         rehearsal
             .run_until(60.0, STEP_SECONDS)
@@ -221,7 +223,9 @@ fn rejects_an_invalid_crowd_config() {
 fn run(occupants: &[OccupantSpawn], crew: Option<CrewSpawn>, until: f64) -> Vec<RehearsalFrame> {
     let scene = scene_fixture();
     let evacuation = (!occupants.is_empty()).then(|| {
-        Evacuation::new(&scene, occupants, SimulationConfig::default()).expect("evacuation builds")
+        Evacuation::new(&scene, occupants, SimulationConfig::default())
+            .expect("evacuation builds")
+            .with_alarm(AlarmConfig::Immediate)
     });
     let mut rehearsal = Rehearsal::new(fire_world(&scene), evacuation);
     if let Some(crew) = crew {

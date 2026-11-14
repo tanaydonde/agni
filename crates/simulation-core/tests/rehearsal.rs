@@ -1,8 +1,8 @@
 use tflop_simulation_core::{
-    AgentFrameRole, CombustionState, DEFAULT_NOZZLE_COOLING_KW, DEFAULT_NOZZLE_REACH_M, Evacuation,
-    FireMaterialCatalog, FireMaterialProfile, FurnitureFireMaterial, OccupantPhase, OccupantSpawn,
-    Rehearsal, RehearsalError, RehearsalFrame, SimulationConfig, Suppression, SurfaceFireConfig,
-    SurfaceFireError, SurfaceFireWorld,
+    AgentFrameRole, AlarmConfig, CombustionState, DEFAULT_NOZZLE_COOLING_KW,
+    DEFAULT_NOZZLE_REACH_M, Evacuation, FireMaterialCatalog, FireMaterialProfile,
+    FurnitureFireMaterial, OccupantPhase, OccupantSpawn, Rehearsal, RehearsalError, RehearsalFrame,
+    SimulationConfig, Suppression, SurfaceFireConfig, SurfaceFireError, SurfaceFireWorld,
 };
 use tflop_world_core::{
     BoundaryEdge, BoundaryKind, Dimensions3, Floor, FurnitureAsset, FurnitureObject, Mobility,
@@ -24,7 +24,8 @@ fn matches_replaying_occupants_over_a_finished_fire() {
 
     let mut fire = fire_world(&scene, &catalog);
     let mut evacuation = Evacuation::new(&scene, &occupants, SimulationConfig::default())
-        .expect("evacuation builds");
+        .expect("evacuation builds")
+        .with_alarm(AlarmConfig::Immediate);
     let mut fire_frames = vec![fire.ignite_object("chair-1").expect("chair ignites")];
     for _ in 0..8 {
         fire_frames.push(fire.step(1.0).expect("fire steps"));
@@ -206,8 +207,9 @@ fn rehearsal(
     catalog: &FireMaterialCatalog,
     occupants: &[OccupantSpawn],
 ) -> Rehearsal {
-    let evacuation =
-        Evacuation::new(scene, occupants, SimulationConfig::default()).expect("evacuation builds");
+    let evacuation = Evacuation::new(scene, occupants, SimulationConfig::default())
+        .expect("evacuation builds")
+        .with_alarm(AlarmConfig::Immediate);
     Rehearsal::new(fire_world(scene, catalog), Some(evacuation))
 }
 

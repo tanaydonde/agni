@@ -47,8 +47,8 @@ pub struct OccupantSpawn {
     pub position_m: Vec3,
     #[serde(default = "default_occupant_speed")]
     pub walking_speed_m_per_s: f64,
-    /// Time from ignition until the occupant starts moving (perceiving a cue,
-    /// seeking information, preparing).
+    /// Time from hearing the alarm until the occupant starts moving
+    /// (seeking information, preparing). See [`AlarmConfig`](crate::AlarmConfig).
     #[serde(default)]
     pub pre_movement_delay_seconds: f64,
 }

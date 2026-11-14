@@ -17,9 +17,10 @@ use tflop_cfast::{
     resolve_cfast_bin,
 };
 use tflop_simulation_core::{
-    CrewSpawn, Evacuation, FireMaterialCatalog, Firefighting, FirefightingConfig, OccupantSpawn,
-    Rehearsal, RehearsalError, RehearsalFrame, SIMULATION_RESULTS_SCHEMA_VERSION, SimulationConfig,
-    SimulationEngine, SimulationResults, SurfaceFireConfig, SurfaceFireError, SurfaceFireWorld,
+    AlarmConfig, CrewSpawn, Evacuation, FireMaterialCatalog, Firefighting, FirefightingConfig,
+    OccupantSpawn, Rehearsal, RehearsalError, RehearsalFrame, SIMULATION_RESULTS_SCHEMA_VERSION,
+    SimulationConfig, SimulationEngine, SimulationResults, SurfaceFireConfig, SurfaceFireError,
+    SurfaceFireWorld,
 };
 use tflop_world_core::{Scene, resolve_opening_connections};
 
@@ -45,6 +46,19 @@ pub(crate) struct SimulateFireRequest {
     /// changes how the fire spreads.
     #[serde(default)]
     crews: Vec<CrewSpawn>,
+    /// When occupants learn about the fire.
+    #[serde(default)]
+    alarm: AlarmMode,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum AlarmMode {
+    /// Someone near a noticeable fire raises the alarm; it spreads from them.
+    #[default]
+    Detected,
+    /// Everyone knows from ignition.
+    Immediate,
 }
 
 #[derive(Debug, Serialize)]
@@ -151,7 +165,7 @@ fn run(
         duration,
     );
 
-    let evacuation = build_evacuation(&scene, &request.occupants)?;
+    let evacuation = build_evacuation(&scene, &request.occupants, request.alarm)?;
     let (fire, excluded_object_ids) = build_fire_world(&mut scene)?;
     if excluded_object_ids.iter().any(|id| id == object_id) {
         return Err((
@@ -195,7 +209,7 @@ fn run_hybrid(
 ) -> Result<SimulateFireResponse, Failure> {
     let object_id = request.object_id.as_str();
     require_object(&source_scene, object_id)?;
-    let evacuation = build_evacuation(&source_scene, &request.occupants)?;
+    let evacuation = build_evacuation(&source_scene, &request.occupants, request.alarm)?;
 
     let prepared = prepare_cfast_scene(&source_scene)
         .map_err(|error| simulation_failure("cfast_preparation_failed", error.to_string()))?;
@@ -301,12 +315,17 @@ fn run_hybrid(
 fn build_evacuation(
     scene: &Scene,
     occupants: &[OccupantSpawn],
+    alarm: AlarmMode,
 ) -> Result<Option<Evacuation>, Failure> {
     if occupants.is_empty() {
         return Ok(None);
     }
+    let alarm = match alarm {
+        AlarmMode::Detected => AlarmConfig::default(),
+        AlarmMode::Immediate => AlarmConfig::Immediate,
+    };
     Evacuation::new(scene, occupants, SimulationConfig::default())
-        .map(Some)
+        .map(|evacuation| Some(evacuation.with_alarm(alarm)))
         .map_err(|error| simulation_failure("evacuation_failed", error.to_string()))
 }
 
