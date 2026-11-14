@@ -1,17 +1,15 @@
-import { useLoader, useThree } from '@react-three/fiber'
+import { useLoader } from '@react-three/fiber'
 import {
   Component,
   Suspense,
   useEffect,
-  useLayoutEffect,
   useMemo,
   type ReactNode,
 } from 'react'
 import * as THREE from 'three'
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
-import { buildFloorGeometry, type FloorGeometry, type Point2, type WallPiece } from './geometry'
-import type { Floor } from './types'
+import type { FloorGeometry, Point2, WallPiece } from './geometry'
 
 /** Rotates the canonical Z-up world into Three.js Y-up: (x, y, z) → (x, z, -y). */
 const Z_UP_TO_Y_UP: [number, number, number] = [-Math.PI / 2, 0, 0]
@@ -25,13 +23,12 @@ const COLORS = {
 }
 
 interface SceneModelProps {
-  floor: Floor
+  geometry: FloorGeometry
   /** Matterport's defurnished mesh, shown instead of the plain room shell. */
   meshUrl?: string
 }
 
-export function SceneModel({ floor, meshUrl }: SceneModelProps) {
-  const geometry = useMemo(() => buildFloorGeometry(floor), [floor])
+export function SceneModel({ geometry, meshUrl }: SceneModelProps) {
   const shell = <RoomShell geometry={geometry} />
 
   return (
@@ -46,7 +43,6 @@ export function SceneModel({ floor, meshUrl }: SceneModelProps) {
       ) : (
         shell
       )}
-      <FrameFloor geometry={geometry} />
     </>
   )
 }
@@ -124,43 +120,6 @@ class FallbackOnError extends Component<{ fallback: ReactNode; children: ReactNo
   render() {
     return this.state.failed ? this.props.fallback : this.props.children
   }
-}
-
-/** Places the camera at a three-quarter view that fits the whole floor. */
-function FrameFloor({ geometry }: { geometry: FloorGeometry }) {
-  const getState = useThree((state) => state.get)
-  const size = useThree((state) => state.size)
-
-  useLayoutEffect(() => {
-    const { camera, invalidate } = getState()
-    if (!(camera instanceof THREE.PerspectiveCamera)) return
-    const { min, max, height } = geometry.bounds
-    const center = new THREE.Vector3(
-      (min.x + max.x) / 2,
-      geometry.floorZ + height / 2,
-      -(min.y + max.y) / 2, // world y → three -z
-    )
-    const radius = Math.hypot(max.x - min.x, max.y - min.y, height) / 2
-
-    const vFov = THREE.MathUtils.degToRad(camera.fov)
-    const hFov = 2 * Math.atan(Math.tan(vFov / 2) * (size.width / size.height))
-    const distance = (radius / Math.sin(Math.min(vFov, hFov) / 2)) * 1.05
-
-    const elevation = THREE.MathUtils.degToRad(50)
-    const azimuth = THREE.MathUtils.degToRad(35)
-    camera.position.set(
-      center.x + distance * Math.cos(elevation) * Math.sin(azimuth),
-      center.y + distance * Math.sin(elevation),
-      center.z + distance * Math.cos(elevation) * Math.cos(azimuth),
-    )
-    camera.near = Math.max(0.01, distance / 100)
-    camera.far = distance * 10
-    camera.lookAt(center)
-    camera.updateProjectionMatrix()
-    invalidate()
-  }, [getState, geometry, size])
-
-  return null
 }
 
 function floorGeometry({ roomOutlines, floorZ }: FloorGeometry): THREE.BufferGeometry | null {

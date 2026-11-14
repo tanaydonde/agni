@@ -26,6 +26,12 @@ body,
   height: 100%;
 }
 
+html,
+body {
+  /* Stop trackpad swipes from triggering browser back/forward. */
+  overscroll-behavior: none;
+}
+
 body {
   margin: 0;
   background: var(--color-canvas);
