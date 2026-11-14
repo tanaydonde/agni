@@ -192,13 +192,40 @@ export function partGeometry(three: typeof THREE, part: BodyPart): THREE.BufferG
   return geometry
 }
 
-export function partMaterial(three: typeof THREE, part: BodyPart): THREE.MeshStandardMaterial {
-  return new three.MeshStandardMaterial({
+/** How an agent is highlighted: held up in a queue, or squeezing past someone. */
+export type AgentTint = 'none' | 'queued' | 'squeezing'
+
+/** Glow added to a body for each highlight: red for stuck, amber for pushing past. */
+export const TINT_COLORS: Record<Exclude<AgentTint, 'none'>, string> = {
+  queued: '#dc2626',
+  squeezing: '#f59e0b',
+}
+
+/** One of something for every tint. */
+export function byTint<T>(make: (tint: AgentTint) => T): Record<AgentTint, T> {
+  return { none: make('none'), queued: make('queued'), squeezing: make('squeezing') }
+}
+
+export function agentTint(agent: AgentFrame): AgentTint {
+  return agent.movement === 'queued' || agent.movement === 'squeezing' ? agent.movement : 'none'
+}
+
+export function partMaterial(
+  three: typeof THREE,
+  part: BodyPart,
+  tint: AgentTint = 'none',
+): THREE.MeshStandardMaterial {
+  const material = new three.MeshStandardMaterial({
     color: part.color,
     roughness: part.roughness,
     metalness: part.metalness,
     side: part.doubleSided ? three.DoubleSide : three.FrontSide,
   })
+  if (tint !== 'none') {
+    material.emissive = new three.Color(TINT_COLORS[tint])
+    material.emissiveIntensity = 0.55
+  }
+  return material
 }
 
 /**

@@ -5,8 +5,12 @@ import { useSimulationAgents } from '../fire/fireStore'
 import { AGENT_COLORS, isShownAgent } from '../fire/frames'
 import {
   type AgentKind,
+  type AgentTint,
   type BodyModel,
+  TINT_COLORS,
   agentScale,
+  agentTint,
+  byTint,
   loadAgentModels,
   nextHeadings,
   partGeometry,
@@ -17,9 +21,19 @@ import type { Floor } from './types'
 
 const BODY_HEIGHT_M = 1.7
 const UNIT_SPHERE = new THREE.SphereGeometry(1, 16, 12)
+function ovalMaterials(color: string): Record<AgentTint, THREE.Material> {
+  return byTint(
+    (tint) =>
+      new THREE.MeshStandardMaterial({
+        color,
+        roughness: 0.8,
+        ...(tint === 'none' ? {} : { emissive: TINT_COLORS[tint], emissiveIntensity: 0.55 }),
+      }),
+  )
+}
 const MATERIALS = {
-  occupant: new THREE.MeshStandardMaterial({ color: AGENT_COLORS.occupant, roughness: 0.8 }),
-  firefighter: new THREE.MeshStandardMaterial({ color: AGENT_COLORS.firefighter, roughness: 0.8 }),
+  occupant: ovalMaterials(AGENT_COLORS.occupant),
+  firefighter: ovalMaterials(AGENT_COLORS.firefighter),
 }
 const noRaycast = () => {}
 
@@ -27,6 +41,7 @@ const noRaycast = () => {}
  * Simulation agents as their role's blob model (see ./agentModels), drawn
  * AGENT_DRAW_SCALE times their collision circle and turned to face where they
  * walk. Upright ovals stand in until a model loads, or if it fails to.
+ * People held up in the crowd glow red; people squeezing past glow amber.
  */
 export function SimulationAgents({ floor }: { floor: Floor }) {
   const simulationAgents = useSimulationAgents()
@@ -47,7 +62,8 @@ export function SimulationAgents({ floor }: { floor: Floor }) {
   return (
     <group name="simulation-agents" rotation={Z_UP_TO_Y_UP}>
       {agents.map((agent) => {
-        const body = bodies[agent.role.type]
+        const tint = agentTint(agent)
+        const body = bodies[agent.role.type]?.[tint]
         return body ? (
           <group
             key={agent.id}
@@ -65,7 +81,7 @@ export function SimulationAgents({ floor }: { floor: Floor }) {
             key={agent.id}
             name={agent.id}
             geometry={UNIT_SPHERE}
-            material={MATERIALS[agent.role.type]}
+            material={MATERIALS[agent.role.type][tint]}
             position={[
               agent.position_m.x,
               agent.position_m.y,
@@ -82,8 +98,8 @@ export function SimulationAgents({ floor }: { floor: Floor }) {
 
 type BodyMeshes = { geometry: THREE.BufferGeometry; material: THREE.Material }[]
 
-/** Each role's model as meshes, once loaded; a role is missing until then. */
-function useAgentBodies(): Partial<Record<AgentKind, BodyMeshes>> {
+/** Each role's model as meshes in every tint, once loaded; a role is missing until then. */
+function useAgentBodies(): Partial<Record<AgentKind, Record<AgentTint, BodyMeshes>>> {
   const [models, setModels] = useState<Partial<Record<AgentKind, BodyModel>>>({})
   useEffect(() => {
     let live = true
@@ -96,22 +112,31 @@ function useAgentBodies(): Partial<Record<AgentKind, BodyMeshes>> {
   const bodies = useMemo(
     () =>
       Object.fromEntries(
-        Object.entries(models).map(([kind, model]) => [
-          kind,
-          model.parts.map((part) => ({
-            geometry: partGeometry(THREE, part),
-            material: partMaterial(THREE, part),
-          })),
-        ]),
-      ) as Partial<Record<AgentKind, BodyMeshes>>,
+        Object.entries(models).map(([kind, model]) => {
+          // Tints share each part's geometry and differ only in material.
+          const geometries = model.parts.map((part) => partGeometry(THREE, part))
+          return [
+            kind,
+            byTint((tint) =>
+              model.parts.map((part, index) => ({
+                geometry: geometries[index],
+                material: partMaterial(THREE, part, tint),
+              })),
+            ),
+          ]
+        }),
+      ) as Partial<Record<AgentKind, Record<AgentTint, BodyMeshes>>>,
     [models],
   )
   useEffect(
     () => () => {
-      for (const body of Object.values(bodies)) {
-        for (const part of body) {
-          part.geometry.dispose()
-          part.material.dispose()
+      for (const tints of Object.values(bodies)) {
+        for (const body of Object.values(tints)) {
+          for (const part of body) {
+            // Shared across tints; disposing twice is harmless.
+            part.geometry.dispose()
+            part.material.dispose()
+          }
         }
       }
     },

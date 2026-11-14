@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { agentsAtTime, crewStatus, frameAtTime, isShownAgent, occupantCounts } from './frames'
+import {
+  agentsAtTime,
+  crewStatus,
+  frameAtTime,
+  heldUpCount,
+  isShownAgent,
+  occupantCounts,
+} from './frames'
 import type { SimulationFrame } from './types'
 
 const frame = (time_seconds: number): SimulationFrame => ({
@@ -45,6 +52,33 @@ describe('agentsAtTime', () => {
 
     expect(agentsAtTime([first, second], 0.25)[0].position_m.x).toBe(0.5)
     expect(agentsAtTime([first, second], 0.75)[0].position_m.x).toBe(1.5)
+  })
+})
+
+describe('heldUpCount', () => {
+  it('counts people queued or squeezing who are still inside', () => {
+    const walking = { ...agent(0), movement: 'walking' as const }
+    const queued = { ...agent(1), id: 'occupant-2', movement: 'queued' as const }
+    const squeezing = { ...agent(2), id: 'occupant-3', movement: 'squeezing' as const }
+    const out = {
+      ...agent(3),
+      id: 'occupant-4',
+      movement: 'queued' as const,
+      role: { type: 'occupant' as const, phase: 'exited' as const },
+    }
+
+    expect(heldUpCount([walking, queued, squeezing, out, agent(4)])).toBe(2)
+  })
+})
+
+describe('agentsAtTime movement', () => {
+  it('keeps the earlier frame\'s movement between frames', () => {
+    const first = frame(0)
+    const second = frame(1)
+    first.agents = [{ ...agent(0), movement: 'queued' }]
+    second.agents = [{ ...agent(2), movement: 'walking' }]
+
+    expect(agentsAtTime([first, second], 0.5)[0].movement).toBe('queued')
   })
 })
 

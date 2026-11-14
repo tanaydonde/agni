@@ -77,6 +77,16 @@ export type FirefighterPhase =
   | 'exited'
   | 'incapacitated'
 
+/**
+ * How an agent moved through the crowd in the last step. `queued`: held up
+ * by people in the way. `squeezing`: pressing past someone in a doorway or
+ * hallway too narrow to pass side by side.
+ */
+export type Movement = 'stopped' | 'walking' | 'queued' | 'squeezing'
+
+/** `spread`: Gemini places people plausibly. `crowded`: packed into the largest rooms. */
+export type OccupantLayout = 'spread' | 'crowded'
+
 export type AgentRole =
   | { type: 'occupant'; phase: OccupantPhase }
   | { type: 'firefighter'; crew_id: string; phase: FirefighterPhase }
@@ -96,6 +106,8 @@ export interface AgentFrame {
   velocity_m_per_s: Vec3
   radius_m: number
   exposure: Exposure
+  /** Missing from timelines simulated before crowd movement. */
+  movement?: Movement
   role: AgentRole
 }
 

@@ -4,14 +4,22 @@
 
 import { create } from 'zustand'
 import { useMemo } from 'react'
-import { describeFireError, runFireSimulation } from './api'
+import {
+  DEFAULT_OCCUPANT_COUNT,
+  DEFAULT_OCCUPANT_LAYOUT,
+  type ScenarioOptions,
+  describeFireError,
+  runFireSimulation,
+} from './api'
 import { agentsAtTime, frameAtTime } from './frames'
 import type { AgentFrame, SimulateFireResponse, SimulationFrame } from './types'
 
 const NO_AGENTS: AgentFrame[] = []
 
-/** Simulated seconds per real second. */
-export const PLAYBACK_RATE = 1
+/** Simulated seconds per real second, to start with. Real time reads as
+ * sluggish across a whole building, so playback starts at double speed. */
+export const DEFAULT_PLAYBACK_RATE = 2
+export const PLAYBACK_RATES = [1, 2, 4] as const
 /** Longest clock step per tick, so a backgrounded tab doesn't skip the fire. */
 const MAX_TICK_SECONDS = 0.1
 
@@ -25,6 +33,10 @@ interface FireState {
   /** Simulated time being shown. */
   clockSeconds: number
   error: string | null
+  /** Simulated seconds per real second. */
+  playbackRate: number
+  /** Who is in the building for the next run. */
+  scenario: ScenarioOptions
 
   /** Simulates a fire starting at `objectId`, then plays it from the start. */
   start: (objectId: string) => Promise<void>
@@ -34,6 +46,8 @@ interface FireState {
   clear: () => void
   /** Advances the clock by `realSeconds`; pauses at the end. */
   tick: (realSeconds: number) => void
+  setPlaybackRate: (rate: number) => void
+  setScenario: (scenario: Partial<ScenarioOptions>) => void
 }
 
 /** The time of the last frame, where playback stops. */
@@ -50,12 +64,14 @@ export const useFireStore = create<FireState>()((set, get) => ({
   run: null,
   clockSeconds: 0,
   error: null,
+  playbackRate: DEFAULT_PLAYBACK_RATE,
+  scenario: { occupantCount: DEFAULT_OCCUPANT_COUNT, layout: DEFAULT_OCCUPANT_LAYOUT },
 
   start: async (objectId) => {
     const request = ++latestRequest
     set({ status: 'loading', objectId, run: null, clockSeconds: 0, error: null })
     try {
-      const run = await runFireSimulation(objectId)
+      const run = await runFireSimulation(objectId, get().scenario)
       if (request === latestRequest) set({ status: 'playing', run })
     } catch (error) {
       if (request === latestRequest) set({ status: 'error', error: describeFireError(error) })
@@ -74,12 +90,14 @@ export const useFireStore = create<FireState>()((set, get) => ({
     set({ status: 'idle', objectId: null, run: null, clockSeconds: 0, error: null })
   },
   tick: (realSeconds) => {
-    const { status, run, clockSeconds } = get()
+    const { status, run, clockSeconds, playbackRate } = get()
     if (status !== 'playing' || !run) return
     const end = endSeconds(run)
-    const next = clockSeconds + Math.min(realSeconds, MAX_TICK_SECONDS) * PLAYBACK_RATE
+    const next = clockSeconds + Math.min(realSeconds, MAX_TICK_SECONDS) * playbackRate
     set(next >= end ? { clockSeconds: end, status: 'paused' } : { clockSeconds: next })
   },
+  setPlaybackRate: (playbackRate) => set({ playbackRate }),
+  setScenario: (scenario) => set((state) => ({ scenario: { ...state.scenario, ...scenario } })),
 }))
 
 /**
@@ -93,7 +111,7 @@ export function useFireFrame(): SimulationFrame | undefined {
   )
 }
 
-/** Smooth positions between the one-second authoritative simulation frames. */
+/** Smooth positions between the authoritative simulation frames. */
 export function useSimulationAgents(): AgentFrame[] {
   const frames = useFireStore((state) => state.run?.results.frames)
   const clockSeconds = useFireStore((state) => state.clockSeconds)

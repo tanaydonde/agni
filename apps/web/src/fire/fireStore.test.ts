@@ -1,7 +1,7 @@
 import { createElement } from 'react'
 import { renderToString } from 'react-dom/server'
 import { afterEach, describe, expect, it } from 'vitest'
-import { PLAYBACK_RATE, useFireStore, useSimulationAgents } from './fireStore'
+import { DEFAULT_PLAYBACK_RATE, useFireStore, useSimulationAgents } from './fireStore'
 import type { SimulateFireResponse } from './types'
 
 const run: SimulateFireResponse = {
@@ -37,10 +37,25 @@ describe('fire playback', () => {
   it('advances while playing and pauses at the last frame', () => {
     useFireStore.setState({ status: 'playing', run, clockSeconds: 0 })
     useFireStore.getState().tick(0.05)
-    expect(useFireStore.getState().clockSeconds).toBeCloseTo(0.05 * PLAYBACK_RATE)
+    expect(useFireStore.getState().clockSeconds).toBeCloseTo(0.05 * DEFAULT_PLAYBACK_RATE)
 
     for (let i = 0; i < 100; i++) useFireStore.getState().tick(0.1)
     expect(useFireStore.getState()).toMatchObject({ clockSeconds: 2, status: 'paused' })
+  })
+
+  it('advances at the chosen playback rate', () => {
+    useFireStore.setState({ status: 'playing', run, clockSeconds: 0 })
+    useFireStore.getState().setPlaybackRate(4)
+    useFireStore.getState().tick(0.05)
+    expect(useFireStore.getState().clockSeconds).toBeCloseTo(0.2)
+    useFireStore.getState().setPlaybackRate(DEFAULT_PLAYBACK_RATE)
+  })
+
+  it('keeps scenario choices it was not given', () => {
+    const before = useFireStore.getState().scenario
+    useFireStore.getState().setScenario({ occupantCount: 200 })
+    expect(useFireStore.getState().scenario).toEqual({ ...before, occupantCount: 200 })
+    useFireStore.getState().setScenario(before)
   })
 
   it('does not advance while paused', () => {

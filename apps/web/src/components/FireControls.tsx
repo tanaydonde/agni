@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
-import { crewStatus, occupantCounts } from '../fire/frames'
-import { endSeconds, useFireStore, useSimulationAgents } from '../fire/fireStore'
+import { crewStatus, heldUpCount, occupantCounts } from '../fire/frames'
+import { PLAYBACK_RATES, endSeconds, useFireStore, useSimulationAgents } from '../fire/fireStore'
 import { useWorld } from '../scene/api'
 
 /**
@@ -8,9 +8,22 @@ import { useWorld } from '../scene/api'
  * pause, restart, clear, and the simulated time. Hidden with no run.
  */
 export function FireControls() {
-  const { status, objectId, run, clockSeconds, error, play, pause, restart, clear } = useFireStore()
+  const {
+    status,
+    objectId,
+    run,
+    clockSeconds,
+    error,
+    playbackRate,
+    play,
+    pause,
+    restart,
+    clear,
+    setPlaybackRate,
+  } = useFireStore()
   const agents = useSimulationAgents()
   const counts = occupantCounts(agents)
+  const heldUp = heldUpCount(agents)
   const crew = crewStatus(agents)
   const revision = useWorld().data?.revision
 
@@ -36,6 +49,11 @@ export function FireControls() {
         <>
           <span className="font-medium text-ink">
             Inside {counts.inside} · Exited {counts.exited}
+            {heldUp > 0 && (
+              <span className="text-danger" title="Queued, or squeezing past someone">
+                {` · Held up ${heldUp}`}
+              </span>
+            )}
             {crew && ` · ${crew}`}
           </span>
           <span className="font-mono text-ink tabular-nums">
@@ -45,6 +63,21 @@ export function FireControls() {
             {status === 'playing' ? 'Pause' : 'Play'}
           </ControlButton>
           <ControlButton onClick={restart}>Restart</ControlButton>
+          <div role="group" aria-label="Playback speed" className="flex">
+            {PLAYBACK_RATES.map((rate) => (
+              <button
+                key={rate}
+                type="button"
+                aria-pressed={playbackRate === rate}
+                onClick={() => setPlaybackRate(rate)}
+                className={`border border-control-border px-1.5 py-0.5 font-medium first:rounded-l last:rounded-r [&:not(:first-child)]:-ml-px ${
+                  playbackRate === rate ? 'bg-ink text-white' : 'text-ink hover:bg-canvas'
+                }`}
+              >
+                {rate}×
+              </button>
+            ))}
+          </div>
         </>
       )}
       {status !== 'loading' && <ControlButton onClick={clear}>Clear</ControlButton>}

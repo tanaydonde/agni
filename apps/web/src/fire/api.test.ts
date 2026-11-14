@@ -51,6 +51,25 @@ const response: SimulateFireResponse = {
 afterEach(() => vi.unstubAllGlobals())
 
 describe('runFireSimulation', () => {
+  it('asks for the chosen number and layout of occupants', async () => {
+    const fetch = vi.fn((url: string) =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => (url === '/api/agents/spawn_occupants' ? occupants : response),
+      }),
+    )
+    vi.stubGlobal('fetch', fetch)
+
+    await runFireSimulation('sofa-1', { occupantCount: 200, layout: 'spread' })
+
+    expect(fetch).toHaveBeenCalledWith('/api/agents/spawn_occupants', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ count: 200, layout: 'spread' }),
+    })
+  })
+
   it('generates occupants then sends them into the hybrid simulation', async () => {
     const fetch = vi.fn((url: string) =>
       Promise.resolve({
@@ -67,7 +86,7 @@ describe('runFireSimulation', () => {
     expect(fetch).toHaveBeenCalledWith('/api/agents/spawn_occupants', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ count: 10 }),
+      body: JSON.stringify({ count: 50, layout: 'crowded' }),
     })
     expect(fetch).toHaveBeenCalledWith('/api/fire/simulate/hybrid', {
       method: 'POST',

@@ -1,13 +1,18 @@
 // Agents drawn inside Showcase's own three.js scene as their role's blob
-// model (see ../scene/agentModels), with ovals until a model loads.
+// model (see ../scene/agentModels), with ovals until a model loads. People
+// held up in the crowd glow red; people squeezing past glow amber.
 
 import type * as THREE from 'three'
 import { AGENT_COLORS } from '../fire/frames'
 import type { AgentFrame } from '../fire/types'
 import {
   type AgentKind,
+  type AgentTint,
   type BodyModel,
+  TINT_COLORS,
   agentScale,
+  agentTint,
+  byTint,
   loadAgentModels,
   nextHeadings,
   partGeometry,
@@ -30,10 +35,12 @@ class AgentComponent implements SceneComponent<AgentInputs> {
   private root?: THREE.Group
   private oval?: {
     geometry: THREE.SphereGeometry
-    materials: Record<AgentKind, THREE.Material>
+    materials: Record<AgentKind, Record<AgentTint, THREE.Material>>
   }
-  /** Built with Showcase's three.js once the models arrive. */
-  private bodies: Partial<Record<AgentKind, { geometry: THREE.BufferGeometry; material: THREE.Material }[]>> = {}
+  /** Built with Showcase's three.js once the models arrive, in every tint. */
+  private bodies: Partial<
+    Record<AgentKind, Record<AgentTint, { geometry: THREE.BufferGeometry; material: THREE.Material }[]>>
+  > = {}
   private headings = new Map<string, number>()
   private destroyed = false
   private readonly models: Promise<Partial<Record<AgentKind, BodyModel>>>
@@ -47,21 +54,28 @@ class AgentComponent implements SceneComponent<AgentInputs> {
     this.root = new three.Group()
     this.root.rotation.set(...Z_UP_TO_Y_UP)
     this.outputs.objectRoot = this.root
+    const ovals = (color: string): Record<AgentTint, THREE.Material> =>
+      byTint(
+        (tint) => new three.MeshBasicMaterial({ color: tint === 'none' ? color : TINT_COLORS[tint] }),
+      )
     this.oval = {
       geometry: new three.SphereGeometry(1, 16, 12),
       materials: {
-        occupant: new three.MeshBasicMaterial({ color: AGENT_COLORS.occupant }),
-        firefighter: new three.MeshBasicMaterial({ color: AGENT_COLORS.firefighter }),
+        occupant: ovals(AGENT_COLORS.occupant),
+        firefighter: ovals(AGENT_COLORS.firefighter),
       },
     }
     void this.models.then((models) => {
       if (this.destroyed) return
       // Lit by Showcase's scene environment (./environment).
       for (const [kind, model] of Object.entries(models) as [AgentKind, BodyModel][]) {
-        this.bodies[kind] = model.parts.map((part) => ({
-          geometry: partGeometry(three, part),
-          material: partMaterial(three, part),
-        }))
+        const geometries = model.parts.map((part) => partGeometry(three, part))
+        this.bodies[kind] = byTint((tint) =>
+          model.parts.map((part, index) => ({
+            geometry: geometries[index],
+            material: partMaterial(three, part, tint),
+          })),
+        )
       }
       this.build()
     })
@@ -76,11 +90,15 @@ class AgentComponent implements SceneComponent<AgentInputs> {
     this.destroyed = true
     this.root?.clear()
     this.oval?.geometry.dispose()
-    for (const material of Object.values(this.oval?.materials ?? {})) material.dispose()
-    for (const body of Object.values(this.bodies)) {
-      for (const part of body) {
-        part.geometry.dispose()
-        part.material.dispose()
+    for (const tints of Object.values(this.oval?.materials ?? {})) {
+      for (const material of Object.values(tints)) material.dispose()
+    }
+    for (const tints of Object.values(this.bodies)) {
+      for (const body of Object.values(tints)) {
+        for (const part of body) {
+          part.geometry.dispose()
+          part.material.dispose()
+        }
       }
     }
   }
@@ -92,7 +110,8 @@ class AgentComponent implements SceneComponent<AgentInputs> {
     this.headings = nextHeadings(this.inputs.agents, this.headings)
 
     for (const agent of this.inputs.agents) {
-      const body = this.bodies[agent.role.type]
+      const tint = agentTint(agent)
+      const body = this.bodies[agent.role.type]?.[tint]
       if (body) {
         const group = new three.Group()
         group.name = agent.id
@@ -103,7 +122,7 @@ class AgentComponent implements SceneComponent<AgentInputs> {
         this.root.add(group)
         continue
       }
-      const mesh = new three.Mesh(this.oval.geometry, this.oval.materials[agent.role.type])
+      const mesh = new three.Mesh(this.oval.geometry, this.oval.materials[agent.role.type][tint])
       mesh.name = agent.id
       mesh.position.set(
         agent.position_m.x,
