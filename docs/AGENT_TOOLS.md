@@ -8,22 +8,13 @@ JSON fields.
 | --- | --- | --- |
 | `get_scene` | Working | `World::get_scene()` |
 | `list_assets` | Working | `World::list_assets()` |
-| `add_object` | Contract only | `World::add_object(...)` |
-| `move_object` | Contract only | `World::move_object(...)` |
-| `rotate_object` | Contract only | `World::rotate_object(...)` |
-| `set_object_transform` | Contract only | `World::set_object_transform(...)` |
-| `remove_object` | Contract only | `World::remove_object(...)` |
-| `apply_edits` | Contract only | `World::apply_edits(...)` |
-| `validate_layout` | Contract only | `World::validate_layout()` |
-
-Contract-only methods return:
-
-```json
-{
-  "code": "not_implemented",
-  "operation": "move_object"
-}
-```
+| `add_object` | Working | `World::add_object(...)` |
+| `move_object` | Working | `World::move_object(...)` |
+| `rotate_object` | Working | `World::rotate_object(...)` |
+| `set_object_transform` | Working | `World::set_object_transform(...)` |
+| `remove_object` | Working | `World::remove_object(...)` |
+| `apply_edits` | Working | `World::apply_edits(...)` |
+| `validate_layout` | Working | `World::validate_layout()` |
 
 ## Example requests
 
@@ -70,7 +61,7 @@ Contract-only methods return:
 }
 ```
 
-Successful mutations will eventually return:
+Successful mutations return:
 
 ```json
 {
@@ -82,3 +73,25 @@ Successful mutations will eventually return:
 `expected_revision` prevents an agent or editor from overwriting a newer scene
 snapshot. Angles in the agent-facing API use degrees around the canonical Z
 axis; Rust will convert them to normalized quaternions internally.
+
+Edits currently validate IDs, asset and floor references, transforms, mobility,
+and revisions. `validate_layout` runs the full structural scene validator.
+Room containment, furniture overlap, wall collision, and door-clearance checks
+are not implemented yet.
+
+## Error codes
+
+Errors are serialized with a `code` field. Current codes are:
+
+- `stale_revision`
+- `floor_not_found`
+- `asset_not_found`
+- `object_not_found`
+- `duplicate_object_id`
+- `object_fixed`
+- `invalid_request`
+- `batch_edit_failed`
+
+A failed batch includes its zero-based `edit_index` and the underlying error in
+`reason`. Failed commands do not increment the revision or partially change the
+world.

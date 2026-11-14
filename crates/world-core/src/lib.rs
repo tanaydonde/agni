@@ -1,6 +1,7 @@
 //! Canonical scene types and world rules shared by every tflop component.
 
 mod agent_api;
+mod catalog;
 mod model;
 mod validation;
 
@@ -10,6 +11,7 @@ pub use agent_api::{
     SetObjectTransformRequest, ValidateLayoutResponse, ValidationIssue, World, WorldApiError,
     WorldApiResult,
 };
+pub use catalog::default_furniture_catalog;
 pub use model::{
     BoundaryEdge, BoundaryKind, Dimensions3, Floor, FurnitureAsset, FurnitureObject, Mobility,
     Opening, OpeningKind, Quaternion, Room, RoomClassification, RoomDimensions,

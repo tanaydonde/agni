@@ -39,3 +39,8 @@ data/prepared-scenes/zvKHR9DHNjJ.json
 
 Generated scenes are ignored by Git. They do not contain credentials or signed
 Matterport asset URLs.
+
+Imported scenes include a built-in five-item furniture catalog: chair, desk,
+meeting table, sofa, and storage cabinet. These entries contain real-world
+placeholder dimensions but no GLB URI yet, so renderers should display boxes
+until final models are assigned.

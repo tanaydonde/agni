@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use tflop_world_core::{
     BoundaryEdge, BoundaryKind, Floor, Opening, OpeningKind, Room, RoomClassification,
-    RoomDimensions, SCENE_SCHEMA_VERSION, Scene, SceneSource, Vec3,
+    RoomDimensions, SCENE_SCHEMA_VERSION, Scene, SceneSource, Vec3, default_furniture_catalog,
 };
 
 use crate::{
@@ -109,7 +109,7 @@ fn convert_model(model: Model) -> Result<Scene, MatterportError> {
             provider: "matterport".to_owned(),
             external_id: model.id,
         },
-        assets: Vec::new(),
+        assets: default_furniture_catalog(),
         floors,
     };
     scene.validate()?;

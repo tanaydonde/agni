@@ -7,7 +7,8 @@ fn converts_graphql_geometry_into_a_valid_scene() {
 
     assert_eq!(scene.id, "model-1");
     assert_eq!(scene.name.as_deref(), Some("Example model"));
-    assert!(scene.assets.is_empty());
+    assert_eq!(scene.assets.len(), 5);
+    assert!(scene.assets.iter().any(|asset| asset.id == "chair-basic"));
     assert_eq!(scene.floors.len(), 1);
 
     let floor = &scene.floors[0];
