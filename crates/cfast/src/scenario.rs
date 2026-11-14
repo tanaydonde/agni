@@ -16,7 +16,7 @@ pub struct CfastScenario {
     /// Initial state of every opening used by an all-room simulation.
     #[serde(default)]
     pub opening_states: Vec<CfastOpeningState>,
-    pub fire: CfastFire,
+    pub fires: Vec<CfastRoomFire>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -34,6 +34,13 @@ pub struct CfastFire {
     pub area_m2: f64,
     pub fuel: CfastFuel,
     pub heat_release_curve: Vec<HeatReleasePoint>,
+}
+
+/// Associates one prescribed fire with its canonical room.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CfastRoomFire {
+    pub room_id: String,
+    pub fire: CfastFire,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

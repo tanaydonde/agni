@@ -147,43 +147,66 @@ fn parse_compartments(
             entity_id: "any compartment".to_owned(),
         });
     }
-    let fire_id = scenario.fire.id.as_str();
-    let fire = FireColumns {
-        ignited: find_column(codes, ids, fire_id, "IGN_", "ignition", COMPARTMENTS_FILE)?,
-        pyrolysis_rate: find_column(
-            codes,
-            ids,
-            fire_id,
-            "PYROL_",
-            "pyrolysis rate",
-            COMPARTMENTS_FILE,
-        )?,
-        expected_hrr: find_column(
-            codes,
-            ids,
-            fire_id,
-            "HRR_E",
-            "expected HRR",
-            COMPARTMENTS_FILE,
-        )?,
-        actual_hrr: find_column(codes, ids, fire_id, "HRR_", "actual HRR", COMPARTMENTS_FILE)?,
-        convective_hrr: find_column(
-            codes,
-            ids,
-            fire_id,
-            "HRRC_",
-            "convective HRR",
-            COMPARTMENTS_FILE,
-        )?,
-        flame_height: find_column(
-            codes,
-            ids,
-            fire_id,
-            "FLHGT_",
-            "flame height",
-            COMPARTMENTS_FILE,
-        )?,
-    };
+    let fires = scenario
+        .fires
+        .iter()
+        .map(|room_fire| {
+            let fire_id = room_fire.fire.id.as_str();
+            Ok((
+                room_fire,
+                FireColumns {
+                    ignited: find_column(
+                        codes,
+                        ids,
+                        fire_id,
+                        "IGN_",
+                        "ignition",
+                        COMPARTMENTS_FILE,
+                    )?,
+                    pyrolysis_rate: find_column(
+                        codes,
+                        ids,
+                        fire_id,
+                        "PYROL_",
+                        "pyrolysis rate",
+                        COMPARTMENTS_FILE,
+                    )?,
+                    expected_hrr: find_column(
+                        codes,
+                        ids,
+                        fire_id,
+                        "HRR_E",
+                        "expected HRR",
+                        COMPARTMENTS_FILE,
+                    )?,
+                    actual_hrr: find_column(
+                        codes,
+                        ids,
+                        fire_id,
+                        "HRR_",
+                        "actual HRR",
+                        COMPARTMENTS_FILE,
+                    )?,
+                    convective_hrr: find_column(
+                        codes,
+                        ids,
+                        fire_id,
+                        "HRRC_",
+                        "convective HRR",
+                        COMPARTMENTS_FILE,
+                    )?,
+                    flame_height: find_column(
+                        codes,
+                        ids,
+                        fire_id,
+                        "FLHGT_",
+                        "flame height",
+                        COMPARTMENTS_FILE,
+                    )?,
+                },
+            ))
+        })
+        .collect::<Result<Vec<_>, CfastParseError>>()?;
 
     data.iter()
         .enumerate()
@@ -196,36 +219,46 @@ fn parse_compartments(
             Ok(SimulationFrame {
                 time_seconds: value(record, time, row, COMPARTMENTS_FILE)?,
                 rooms,
-                fires: vec![FireConditions {
-                    fire_id: scenario.fire.id.clone(),
-                    room_id: scenario.room_id.clone(),
-                    ignited: value(record, fire.ignited, row, COMPARTMENTS_FILE)? > 0.5,
-                    expected_hrr_kw: watts_to_kilowatts(value(
-                        record,
-                        fire.expected_hrr,
-                        row,
-                        COMPARTMENTS_FILE,
-                    )?),
-                    actual_hrr_kw: watts_to_kilowatts(value(
-                        record,
-                        fire.actual_hrr,
-                        row,
-                        COMPARTMENTS_FILE,
-                    )?),
-                    convective_hrr_kw: watts_to_kilowatts(value(
-                        record,
-                        fire.convective_hrr,
-                        row,
-                        COMPARTMENTS_FILE,
-                    )?),
-                    flame_height_m: value(record, fire.flame_height, row, COMPARTMENTS_FILE)?,
-                    pyrolysis_rate_kg_per_s: value(
-                        record,
-                        fire.pyrolysis_rate,
-                        row,
-                        COMPARTMENTS_FILE,
-                    )?,
-                }],
+                fires: fires
+                    .iter()
+                    .map(|(room_fire, columns)| {
+                        Ok(FireConditions {
+                            fire_id: room_fire.fire.id.clone(),
+                            room_id: room_fire.room_id.clone(),
+                            ignited: value(record, columns.ignited, row, COMPARTMENTS_FILE)? > 0.5,
+                            expected_hrr_kw: watts_to_kilowatts(value(
+                                record,
+                                columns.expected_hrr,
+                                row,
+                                COMPARTMENTS_FILE,
+                            )?),
+                            actual_hrr_kw: watts_to_kilowatts(value(
+                                record,
+                                columns.actual_hrr,
+                                row,
+                                COMPARTMENTS_FILE,
+                            )?),
+                            convective_hrr_kw: watts_to_kilowatts(value(
+                                record,
+                                columns.convective_hrr,
+                                row,
+                                COMPARTMENTS_FILE,
+                            )?),
+                            flame_height_m: value(
+                                record,
+                                columns.flame_height,
+                                row,
+                                COMPARTMENTS_FILE,
+                            )?,
+                            pyrolysis_rate_kg_per_s: value(
+                                record,
+                                columns.pyrolysis_rate,
+                                row,
+                                COMPARTMENTS_FILE,
+                            )?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, CfastParseError>>()?,
                 openings: Vec::new(),
                 surface_fire: Vec::new(),
             })

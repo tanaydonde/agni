@@ -9,7 +9,7 @@ use tflop_world_core::{
 };
 use thiserror::Error;
 
-use crate::{CfastFire, CfastFuel, CfastScenario, HeatReleasePoint};
+use crate::{CfastFire, CfastFuel, CfastRoomFire, CfastScenario, HeatReleasePoint};
 
 const CFAST_INPUT_VERSION: u32 = 7700;
 const POSITION_EPSILON_M: f64 = 1.0e-6;
@@ -83,25 +83,7 @@ fn export_rooms(
         .iter()
         .find(|compartment| compartment.room.id == scenario.room_id)
         .expect("the selected room was mapped above");
-
-    if !point_in_room(scenario.fire.position_m, room) {
-        return Err(CfastExportError::FireOutsideRoom {
-            fire_id: scenario.fire.id.clone(),
-            room_id: room.id.clone(),
-        });
-    }
-    let fire_x = scale_coordinate(
-        scenario.fire.position_m.x,
-        selected.bounds.min_x,
-        selected.bounds.max_x,
-        selected.width_m,
-    );
-    let fire_y = scale_coordinate(
-        scenario.fire.position_m.y,
-        selected.bounds.min_y,
-        selected.bounds.max_y,
-        selected.depth_m,
-    );
+    let fires = map_fires(&scenario.fires, &compartments)?;
 
     let vents = match scope {
         RoomScope::Selected => {
@@ -130,14 +112,7 @@ fn export_rooms(
         )?,
     };
 
-    render_input(
-        scenario,
-        &compartments,
-        selected.room,
-        fire_x,
-        fire_y,
-        &vents,
-    )
+    render_input(scenario, &compartments, &fires, &vents)
 }
 
 #[derive(Debug, Error)]
@@ -166,6 +141,8 @@ pub enum CfastExportError {
     DuplicateOpeningState { opening_id: String },
     #[error("fire {fire_id} is outside room {room_id}")]
     FireOutsideRoom { fire_id: String, room_id: String },
+    #[error("fire {fire_id} references room {room_id}, which is not included in this export")]
+    FireRoomNotIncluded { fire_id: String, room_id: String },
     #[error("invalid CFAST scenario field {field}: {message}")]
     InvalidScenario {
         field: &'static str,
@@ -205,6 +182,12 @@ struct CompartmentMapping<'a> {
     floor_elevation_m: f64,
 }
 
+struct FireMapping<'a> {
+    room_fire: &'a CfastRoomFire,
+    x_m: f64,
+    y_m: f64,
+}
+
 #[derive(Clone, Copy)]
 enum VentFace {
     Front,
@@ -239,15 +222,10 @@ struct VentMapping {
 fn render_input(
     scenario: &CfastScenario,
     compartments: &[CompartmentMapping<'_>],
-    fire_room: &Room,
-    fire_x: f64,
-    fire_y: f64,
+    fires: &[FireMapping<'_>],
     vents: &[VentMapping],
 ) -> Result<String, CfastExportError> {
     let mut output = String::new();
-    let room_id = quote(&fire_room.id);
-    let fire_id = quote(&scenario.fire.id);
-    let fire_properties_id = quote(&format!("{} Properties", scenario.fire.id));
 
     writeln!(
         output,
@@ -295,21 +273,27 @@ fn render_input(
         render_vent(&mut output, vent, scenario.duration_seconds)?;
     }
 
-    writeln!(
-        output,
-        "&FIRE ID = {fire_id} COMP_ID = {room_id} FIRE_ID = {fire_properties_id}"
-    )
-    .and_then(|()| {
+    for mapped in fires {
+        let room_id = quote(&mapped.room_fire.room_id);
+        let fire = &mapped.room_fire.fire;
+        let fire_id = quote(&fire.id);
+        let fire_properties_id = quote(&format!("{} Properties", fire.id));
         writeln!(
             output,
-            "      LOCATION = {}, {} /",
-            number(fire_x),
-            number(fire_y)
+            "&FIRE ID = {fire_id} COMP_ID = {room_id} FIRE_ID = {fire_properties_id}"
         )
-    })
-    .map_err(CfastExportError::Render)?;
-    render_fuel(&mut output, fire_properties_id.as_str(), scenario.fire.fuel)?;
-    render_fire_curve(&mut output, fire_properties_id.as_str(), &scenario.fire)?;
+        .and_then(|()| {
+            writeln!(
+                output,
+                "      LOCATION = {}, {} /",
+                number(mapped.x_m),
+                number(mapped.y_m)
+            )
+        })
+        .map_err(CfastExportError::Render)?;
+        render_fuel(&mut output, fire_properties_id.as_str(), fire.fuel)?;
+        render_fire_curve(&mut output, fire_properties_id.as_str(), fire)?;
+    }
     writeln!(output, "\n&TAIL /").map_err(CfastExportError::Render)?;
 
     Ok(output)
@@ -384,6 +368,45 @@ fn map_compartment<'a>(
             .or(floor.elevation_m)
             .unwrap_or(bounds.min_z),
     })
+}
+
+fn map_fires<'a>(
+    fires: &'a [CfastRoomFire],
+    compartments: &[CompartmentMapping<'_>],
+) -> Result<Vec<FireMapping<'a>>, CfastExportError> {
+    fires
+        .iter()
+        .map(|room_fire| {
+            let compartment = compartments
+                .iter()
+                .find(|compartment| compartment.room.id == room_fire.room_id)
+                .ok_or_else(|| CfastExportError::FireRoomNotIncluded {
+                    fire_id: room_fire.fire.id.clone(),
+                    room_id: room_fire.room_id.clone(),
+                })?;
+            if !point_in_room(room_fire.fire.position_m, compartment.room) {
+                return Err(CfastExportError::FireOutsideRoom {
+                    fire_id: room_fire.fire.id.clone(),
+                    room_id: room_fire.room_id.clone(),
+                });
+            }
+            Ok(FireMapping {
+                room_fire,
+                x_m: scale_coordinate(
+                    room_fire.fire.position_m.x,
+                    compartment.bounds.min_x,
+                    compartment.bounds.max_x,
+                    compartment.width_m,
+                ),
+                y_m: scale_coordinate(
+                    room_fire.fire.position_m.y,
+                    compartment.bounds.min_y,
+                    compartment.bounds.max_y,
+                    compartment.depth_m,
+                ),
+            })
+        })
+        .collect()
 }
 
 fn render_compartment(
@@ -514,13 +537,27 @@ fn validate_scenario(scenario: &CfastScenario) -> Result<(), CfastExportError> {
             ));
         }
     }
-    validate_nonempty("fire.id", &scenario.fire.id)?;
-    validate_positive("fire.area_m2", scenario.fire.area_m2)?;
-    validate_finite("fire.position_m.x", scenario.fire.position_m.x)?;
-    validate_finite("fire.position_m.y", scenario.fire.position_m.y)?;
-    validate_finite("fire.position_m.z", scenario.fire.position_m.z)?;
-    validate_fuel(scenario.fire.fuel)?;
-    validate_curve(&scenario.fire.heat_release_curve, scenario.duration_seconds)
+    if scenario.fires.is_empty() {
+        return Err(invalid("fires", "requires at least one fire"));
+    }
+    let mut fire_ids = HashSet::new();
+    for room_fire in &scenario.fires {
+        validate_nonempty("fires.room_id", &room_fire.room_id)?;
+        validate_nonempty("fires.fire.id", &room_fire.fire.id)?;
+        if !fire_ids.insert(room_fire.fire.id.as_str()) {
+            return Err(invalid("fires.fire.id", "fire IDs must be unique"));
+        }
+        validate_positive("fires.fire.area_m2", room_fire.fire.area_m2)?;
+        validate_finite("fires.fire.position_m.x", room_fire.fire.position_m.x)?;
+        validate_finite("fires.fire.position_m.y", room_fire.fire.position_m.y)?;
+        validate_finite("fires.fire.position_m.z", room_fire.fire.position_m.z)?;
+        validate_fuel(room_fire.fire.fuel)?;
+        validate_curve(
+            &room_fire.fire.heat_release_curve,
+            scenario.duration_seconds,
+        )?;
+    }
+    Ok(())
 }
 
 fn validate_fuel(fuel: CfastFuel) -> Result<(), CfastExportError> {

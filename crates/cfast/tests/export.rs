@@ -1,6 +1,6 @@
 use tflop_cfast::{
-    CfastExportError, CfastFire, CfastFuel, CfastOpeningState, CfastScenario, HeatReleasePoint,
-    export_all_rooms, export_single_room,
+    CfastExportError, CfastFire, CfastFuel, CfastOpeningState, CfastRoomFire, CfastScenario,
+    HeatReleasePoint, export_all_rooms, export_single_room,
 };
 use tflop_world_core::{
     BoundaryEdge, BoundaryKind, Floor, Opening, OpeningKind, Room, RoomDimensions,
@@ -34,7 +34,7 @@ fn normalizes_translated_world_coordinates_into_the_compartment() {
         edge.end.y += 20.0;
     }
     let mut scenario = scenario_fixture();
-    scenario.fire.position_m = point(12.5, 22.0);
+    scenario.fires[0].fire.position_m = point(12.5, 22.0);
 
     let input = export_single_room(&scene, &scenario).expect("translated room should export");
 
@@ -46,7 +46,7 @@ fn normalizes_translated_world_coordinates_into_the_compartment() {
 #[test]
 fn rejects_fires_outside_the_selected_room() {
     let mut scenario = scenario_fixture();
-    scenario.fire.position_m = point(20.0, 20.0);
+    scenario.fires[0].fire.position_m = point(20.0, 20.0);
 
     assert!(matches!(
         export_single_room(&scene_fixture(), &scenario),
@@ -64,7 +64,7 @@ fn rejects_missing_openings_and_invalid_fire_curves() {
     ));
 
     let mut invalid_curve = scenario_fixture();
-    invalid_curve.fire.heat_release_curve[1].time_seconds = 0.0;
+    invalid_curve.fires[0].fire.heat_release_curve[1].time_seconds = 0.0;
     assert!(matches!(
         export_single_room(&scene_fixture(), &invalid_curve),
         Err(CfastExportError::InvalidScenario { .. })
@@ -82,6 +82,29 @@ fn exports_every_room_as_a_positioned_compartment() {
     assert!(input.contains("ORIGIN = 6, 0, 0"));
     assert_eq!(input.matches("&VENT TYPE = 'WALL'").count(), 1);
     assert_eq!(input.matches("&FIRE ID =").count(), 1);
+}
+
+#[test]
+fn exports_simultaneous_fires_in_multiple_rooms() {
+    let scene = two_room_scene();
+    let mut scenario = scenario_fixture();
+    scenario.fires.push(CfastRoomFire {
+        room_id: "Second Room".to_owned(),
+        fire: CfastFire {
+            id: "Second Fire".to_owned(),
+            position_m: point(8.0, 2.0),
+            area_m2: 0.2,
+            fuel: CfastFuel::default(),
+            heat_release_curve: scenario.fires[0].fire.heat_release_curve.clone(),
+        },
+    });
+
+    let input = export_all_rooms(&scene, &scenario).expect("both fires should export");
+
+    assert_eq!(input.matches("&FIRE ID =").count(), 2);
+    assert!(input.contains("ID = 'Demo Fire' COMP_ID = 'Demo Room'"));
+    assert!(input.contains("ID = 'Second Fire' COMP_ID = 'Second Room'"));
+    assert!(input.contains("&CHEM ID = 'Second Fire Properties'"));
 }
 
 #[test]
@@ -135,30 +158,33 @@ fn scenario_fixture() -> CfastScenario {
             opening_id: "Exterior Door".to_owned(),
             open_fraction: 1.0,
         }],
-        fire: CfastFire {
-            id: "Demo Fire".to_owned(),
-            position_m: point(2.5, 2.0),
-            area_m2: 0.3,
-            fuel: CfastFuel::default(),
-            heat_release_curve: vec![
-                HeatReleasePoint {
-                    time_seconds: 0.0,
-                    hrr_kw: 0.0,
-                },
-                HeatReleasePoint {
-                    time_seconds: 30.0,
-                    hrr_kw: 75.0,
-                },
-                HeatReleasePoint {
-                    time_seconds: 60.0,
-                    hrr_kw: 300.0,
-                },
-                HeatReleasePoint {
-                    time_seconds: 120.0,
-                    hrr_kw: 300.0,
-                },
-            ],
-        },
+        fires: vec![CfastRoomFire {
+            room_id: "Demo Room".to_owned(),
+            fire: CfastFire {
+                id: "Demo Fire".to_owned(),
+                position_m: point(2.5, 2.0),
+                area_m2: 0.3,
+                fuel: CfastFuel::default(),
+                heat_release_curve: vec![
+                    HeatReleasePoint {
+                        time_seconds: 0.0,
+                        hrr_kw: 0.0,
+                    },
+                    HeatReleasePoint {
+                        time_seconds: 30.0,
+                        hrr_kw: 75.0,
+                    },
+                    HeatReleasePoint {
+                        time_seconds: 60.0,
+                        hrr_kw: 300.0,
+                    },
+                    HeatReleasePoint {
+                        time_seconds: 120.0,
+                        hrr_kw: 300.0,
+                    },
+                ],
+            },
+        }],
     }
 }
 
