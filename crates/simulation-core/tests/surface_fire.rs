@@ -739,6 +739,72 @@ fn room_heat_does_not_pass_through_walls() {
     assert!(!warmed_next_door);
 }
 
+#[test]
+fn burning_cells_burn_out_instead_of_smouldering_forever() {
+    let scene = scene_with_chairs(&[("chair-1", 2.0, 2.0)]);
+    let mut world = SurfaceFireWorld::from_scene(
+        &scene,
+        &FireMaterialCatalog::default(),
+        SurfaceFireConfig::default(),
+    )
+    .expect("surface world should build");
+    world.start_fire("chair-1").expect("chair ignites");
+    let mut frame = world.snapshot();
+    for _ in 0..1_200 {
+        frame = world.step(0.5).expect("steps");
+    }
+    let still_burning = frame
+        .active_nodes
+        .iter()
+        .filter(|node| node.state == CombustionState::Burning)
+        .map(|node| node.heat_release_rate_kw)
+        .collect::<Vec<_>>();
+    assert!(
+        still_burning.is_empty(),
+        "still 'burning' at {still_burning:?} kW"
+    );
+}
+
+#[test]
+fn a_desk_fire_grows_into_a_noticeable_one() {
+    // Wood is harder to light than upholstery; a desk fire must still grow
+    // rather than die out on the few cells it started on.
+    let mut scene = scene_with_chairs(&[("desk-1", 2.0, 2.0)]);
+    scene.assets[0].category = "desk".to_owned();
+    scene.assets[0].dimensions_m = Dimensions3 {
+        width_m: 1.2,
+        depth_m: 0.6,
+        height_m: 0.75,
+    };
+    let mut world = SurfaceFireWorld::from_scene(
+        &scene,
+        &FireMaterialCatalog::default(),
+        SurfaceFireConfig::default(),
+    )
+    .expect("surface world should build");
+    world.start_fire("desk-1").expect("desk ignites");
+    let mut peak_kw = 0.0;
+    let mut noticeable_at = None;
+    for step in 1..=240 {
+        let frame = world.step(0.5).expect("steps");
+        let total = frame
+            .active_nodes
+            .iter()
+            .map(|node| node.heat_release_rate_kw)
+            .sum::<f64>();
+        peak_kw = f64::max(peak_kw, total);
+        if noticeable_at.is_none() && total >= 50.0 {
+            noticeable_at = Some(f64::from(step) * 0.5);
+        }
+    }
+    let noticeable_at = noticeable_at.expect("the desk fire gets noticeable");
+    assert!(noticeable_at <= 45.0, "50 kW only at {noticeable_at} s");
+    assert!(
+        peak_kw >= 200.0,
+        "the desk fire peaked at {peak_kw:.0} kW in two minutes"
+    );
+}
+
 /// Spread only between touching neighbours: no room-wide heat and no
 /// furniture radiating onto the floor around it, so tests of how fire moves
 /// cell by cell aren't swamped by them.
