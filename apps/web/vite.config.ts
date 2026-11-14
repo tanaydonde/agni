@@ -172,6 +172,6 @@ export default defineConfig(({ mode }) => {
     },
     // The Rust world server (`cargo run -p tflop-server`) owns the scene and
     // runs the fire simulation.
-    server: { proxy: { '/api/world': worldServer, '/api/fire': worldServer } },
+    server: { proxy: { '/api/world': worldServer, '/api/fire': worldServer, '/api/agents': worldServer } },
   }
 })

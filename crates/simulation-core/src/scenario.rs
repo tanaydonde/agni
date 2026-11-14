@@ -108,28 +108,7 @@ impl Scenario {
         require_nonempty(&self.ignition_object_id, "ignition_object_id", errors);
 
         let mut agent_ids = HashSet::new();
-        for (index, occupant) in self.occupants.iter().enumerate() {
-            let path = format!("occupants[{index}]");
-            require_unique(&occupant.id, &format!("{path}.id"), &mut agent_ids, errors);
-            require_nonempty(&occupant.floor_id, &format!("{path}.floor_id"), errors);
-            if !occupant.position_m.x.is_finite() || !occupant.position_m.y.is_finite() {
-                push_error(
-                    &format!("{path}.position_m"),
-                    "position must be finite",
-                    errors,
-                );
-            }
-            require_positive(
-                occupant.walking_speed_m_per_s,
-                &format!("{path}.walking_speed_m_per_s"),
-                errors,
-            );
-            require_nonnegative(
-                occupant.pre_movement_delay_seconds,
-                &format!("{path}.pre_movement_delay_seconds"),
-                errors,
-            );
-        }
+        validate_occupants_into(&self.occupants, &mut agent_ids, errors);
 
         let mut crew_ids = HashSet::new();
         for (index, crew) in self.crews.iter().enumerate() {
@@ -202,44 +181,7 @@ impl Scenario {
             );
         }
 
-        let mut agents = Vec::new();
-        for (index, occupant) in self.occupants.iter().enumerate() {
-            let path = format!("occupants[{index}]");
-            let Some(grid) = grids.iter().find(|grid| grid.floor_id == occupant.floor_id) else {
-                push_error(
-                    &format!("{path}.floor_id"),
-                    "floor does not exist in the scene",
-                    &mut errors,
-                );
-                continue;
-            };
-            let walkable = grid
-                .world_to_cell(occupant.position_m)
-                .and_then(|coordinate| grid.cell(coordinate))
-                .is_some_and(|cell| cell.is_walkable());
-            if !walkable {
-                push_error(
-                    &format!("{path}.position_m"),
-                    "position is not on a walkable floor cell",
-                    &mut errors,
-                );
-                continue;
-            }
-            agents.push(Agent {
-                id: occupant.id.clone(),
-                floor_id: occupant.floor_id.clone(),
-                position_m: on_floor(occupant.position_m, grid),
-                velocity_m_per_s: ZERO,
-                radius_m: OCCUPANT_RADIUS_M,
-                exposure: Exposure::NONE,
-                role: AgentRole::Occupant(OccupantState {
-                    phase: OccupantPhase::Unaware,
-                    walking_speed_m_per_s: occupant.walking_speed_m_per_s,
-                    pre_movement_delay_seconds: occupant.pre_movement_delay_seconds,
-                    target_exit_id: None,
-                }),
-            });
-        }
+        let mut agents = create_occupants(&self.occupants, grids, &[], &mut errors);
 
         for (index, crew) in self.crews.iter().enumerate() {
             let path = format!("crews[{index}]");
@@ -287,6 +229,23 @@ impl Scenario {
     }
 }
 
+/// Validates and constructs a batch of occupants without mutating a
+/// simulation. Existing agents participate in ID and body collision checks.
+pub(crate) fn spawn_occupants(
+    occupants: &[OccupantSpawn],
+    grids: &[SimulationGrid],
+    existing_agents: &[Agent],
+) -> Result<Vec<Agent>, ScenarioValidationErrors> {
+    let mut errors = Vec::new();
+    let mut agent_ids = existing_agents
+        .iter()
+        .map(|agent| agent.id.clone())
+        .collect();
+    validate_occupants_into(occupants, &mut agent_ids, &mut errors);
+    let agents = create_occupants(occupants, grids, existing_agents, &mut errors);
+    finish(errors).map(|()| agents)
+}
+
 const ZERO: Vec3 = Vec3 {
     x: 0.0,
     y: 0.0,
@@ -302,6 +261,102 @@ fn on_floor(position_m: Vec3, grid: &SimulationGrid) -> Vec3 {
         z: grid.bounds.elevation_m,
         ..position_m
     }
+}
+
+fn validate_occupants_into(
+    occupants: &[OccupantSpawn],
+    agent_ids: &mut HashSet<String>,
+    errors: &mut Vec<ScenarioValidationError>,
+) {
+    for (index, occupant) in occupants.iter().enumerate() {
+        let path = format!("occupants[{index}]");
+        require_unique(&occupant.id, &format!("{path}.id"), agent_ids, errors);
+        require_nonempty(&occupant.floor_id, &format!("{path}.floor_id"), errors);
+        if !occupant.position_m.x.is_finite() || !occupant.position_m.y.is_finite() {
+            push_error(
+                &format!("{path}.position_m"),
+                "position must be finite",
+                errors,
+            );
+        }
+        require_positive(
+            occupant.walking_speed_m_per_s,
+            &format!("{path}.walking_speed_m_per_s"),
+            errors,
+        );
+        require_nonnegative(
+            occupant.pre_movement_delay_seconds,
+            &format!("{path}.pre_movement_delay_seconds"),
+            errors,
+        );
+    }
+}
+
+fn create_occupants(
+    occupants: &[OccupantSpawn],
+    grids: &[SimulationGrid],
+    existing_agents: &[Agent],
+    errors: &mut Vec<ScenarioValidationError>,
+) -> Vec<Agent> {
+    let mut agents = Vec::new();
+    for (index, occupant) in occupants.iter().enumerate() {
+        let path = format!("occupants[{index}]");
+        let Some(grid) = grids.iter().find(|grid| grid.floor_id == occupant.floor_id) else {
+            push_error(
+                &format!("{path}.floor_id"),
+                "floor does not exist in the scene",
+                errors,
+            );
+            continue;
+        };
+        if !grid.circle_is_walkable(occupant.position_m, OCCUPANT_RADIUS_M) {
+            push_error(
+                &format!("{path}.position_m"),
+                "position does not leave enough walkable clearance for the occupant",
+                errors,
+            );
+            continue;
+        }
+
+        let candidate = Agent {
+            id: occupant.id.clone(),
+            floor_id: occupant.floor_id.clone(),
+            position_m: on_floor(occupant.position_m, grid),
+            velocity_m_per_s: ZERO,
+            radius_m: OCCUPANT_RADIUS_M,
+            exposure: Exposure::NONE,
+            role: AgentRole::Occupant(OccupantState {
+                phase: OccupantPhase::Unaware,
+                walking_speed_m_per_s: occupant.walking_speed_m_per_s,
+                pre_movement_delay_seconds: occupant.pre_movement_delay_seconds,
+                target_exit_id: None,
+            }),
+        };
+        if existing_agents
+            .iter()
+            .chain(agents.iter())
+            .any(|other| agents_overlap(&candidate, other))
+        {
+            push_error(
+                &format!("{path}.position_m"),
+                "occupant overlaps another agent",
+                errors,
+            );
+            continue;
+        }
+        agents.push(candidate);
+    }
+    agents
+}
+
+fn agents_overlap(left: &Agent, right: &Agent) -> bool {
+    if left.floor_id != right.floor_id {
+        return false;
+    }
+    let dx = left.position_m.x - right.position_m.x;
+    let dy = left.position_m.y - right.position_m.y;
+    let combined_radius = left.radius_m + right.radius_m;
+    dx * dx + dy * dy < combined_radius * combined_radius
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -8,7 +8,12 @@ Today the world server exposes it over HTTP (`crates/server/src/fire.rs`):
 
 ```
 POST /api/fire/simulate/hybrid
-{ "object_id": "sofa-1", "duration_seconds": 180, "step_seconds": 1 }
+{
+  "object_id": "sofa-1",
+  "duration_seconds": 180,
+  "step_seconds": 1,
+  "occupants": [/* OccupantSpawn records from /api/agents/spawn_occupants */]
+}
 → { "revision": 4, "excluded_object_ids": [], "results": SimulationResults }
 ```
 
@@ -31,6 +36,9 @@ The final payload is `SimulationResults`. Choose a frame using
 - `frame.rooms`: CFAST smoke and gas conditions for each room.
 - `frame.openings`: CFAST flow through doors, windows, and passages.
 - `frame.fires`: CFAST's room-level representation of the Rust heat output.
+- `frame.agents`: occupants advanced by the Rust evacuation engine. It honors
+  pre-movement delay and walking speed, routes to exterior doors/passages,
+  replans around fire, and uses `rerouting` when no safe path is available.
 
 The Rust-only simulator currently returns `SurfaceFireFrame`, where the same
 cell array is named `active_nodes`. When the CFAST adapter is complete,

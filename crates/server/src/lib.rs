@@ -6,6 +6,7 @@
 //! Rust-only simulation and the hybrid Rust + CFAST pipeline.
 
 mod fire;
+mod occupant_agent;
 
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -123,6 +124,10 @@ pub fn router(world: World) -> Router {
         .route("/api/world/validate_layout", post(validate_layout))
         .route("/api/fire/simulate", post(fire::simulate))
         .route("/api/fire/simulate/hybrid", post(fire::simulate_hybrid))
+        .route(
+            "/api/agents/spawn_occupants",
+            post(occupant_agent::spawn_occupants),
+        )
         .with_state(state)
 }
 

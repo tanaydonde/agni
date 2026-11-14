@@ -1,4 +1,4 @@
-import type { SimulationFrame } from './types'
+import type { AgentFrame, SimulationFrame } from './types'
 
 /**
  * The newest frame at or before `seconds`, or undefined before the first.
@@ -18,4 +18,60 @@ export function frameAtTime(frames: SimulationFrame[], seconds: number): Simulat
     }
   }
   return answer
+}
+
+/** Linearly interpolated agent positions at the playback clock. Fire remains
+ * frame-stepped, but people move smoothly between authoritative Rust frames. */
+export function agentsAtTime(frames: SimulationFrame[], seconds: number): AgentFrame[] {
+  const lower = frameAtTime(frames, seconds)
+  if (!lower) return []
+  const lowerIndex = frames.indexOf(lower)
+  const upper = frames[lowerIndex + 1]
+  if (!upper || seconds <= lower.time_seconds) return lower.agents
+  const fraction = Math.min(
+    1,
+    (seconds - lower.time_seconds) / (upper.time_seconds - lower.time_seconds),
+  )
+  const upperById = new Map(upper.agents.map((agent) => [agent.id, agent]))
+
+  return lower.agents.map((agent) => {
+    const next = upperById.get(agent.id)
+    if (!next) return agent
+    return {
+      ...agent,
+      position_m: lerpVector(agent.position_m, next.position_m, fraction),
+      velocity_m_per_s: lerpVector(agent.velocity_m_per_s, next.velocity_m_per_s, fraction),
+      exposure: {
+        heat: lerp(agent.exposure.heat, next.exposure.heat, fraction),
+        toxic_gas: lerp(agent.exposure.toxic_gas, next.exposure.toxic_gas, fraction),
+      },
+    }
+  })
+}
+
+export function occupantCounts(agents: AgentFrame[]): { inside: number; exited: number } {
+  let inside = 0
+  let exited = 0
+  for (const agent of agents) {
+    if (agent.role.type !== 'occupant') continue
+    if (agent.role.phase === 'exited') exited++
+    else inside++
+  }
+  return { inside, exited }
+}
+
+function lerpVector(
+  left: { x: number; y: number; z: number },
+  right: { x: number; y: number; z: number },
+  fraction: number,
+) {
+  return {
+    x: lerp(left.x, right.x, fraction),
+    y: lerp(left.y, right.y, fraction),
+    z: lerp(left.z, right.z, fraction),
+  }
+}
+
+function lerp(left: number, right: number, fraction: number): number {
+  return left + (right - left) * fraction
 }

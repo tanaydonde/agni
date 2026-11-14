@@ -175,6 +175,20 @@ async fn malformed_body_returns_structured_400() {
 }
 
 #[tokio::test]
+async fn occupant_agent_rejects_an_invalid_count_before_calling_gemini() {
+    let (status, body) = call(
+        app(),
+        "POST",
+        "/api/agents/spawn_occupants",
+        Some(json!({ "count": 0 })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "invalid_count");
+}
+
+#[tokio::test]
 async fn hybrid_fire_route_rejects_a_malformed_request() {
     let (status, body) = call(
         app(),
@@ -214,6 +228,35 @@ async fn simulate_fire_returns_a_growing_timeline() {
         .collect();
     assert!(times.windows(2).all(|pair| pair[0] < pair[1]), "{times:?}");
     assert!(*times.last().expect("last") <= 30.0 + 1e-9);
+}
+
+#[tokio::test]
+async fn fire_timeline_moves_supplied_occupants() {
+    let (status, body) = call(
+        app(),
+        "POST",
+        "/api/fire/simulate",
+        Some(json!({
+            "object_id": "chair-1",
+            "duration_seconds": 5.0,
+            "occupants": [{
+                "id": "occupant-1",
+                "floor_id": "floor-1",
+                "position_m": { "x": 1.0, "y": 1.0, "z": 0.0 },
+                "walking_speed_m_per_s": 1.2,
+                "pre_movement_delay_seconds": 0.0
+            }]
+        })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let frames = body["results"]["frames"].as_array().expect("frames");
+    assert_eq!(frames[0]["agents"][0]["role"]["phase"], "unaware");
+    assert_ne!(
+        frames[0]["agents"][0]["position_m"],
+        frames.last().expect("last frame")["agents"][0]["position_m"]
+    );
 }
 
 #[tokio::test]

@@ -1,6 +1,7 @@
 //! Deterministic simulation lifecycle and renderer-facing state snapshots.
 
 mod agent;
+mod evacuation;
 mod grid;
 mod results;
 mod scenario;
@@ -14,6 +15,7 @@ pub use agent::{
     Agent, AgentFrame, AgentFrameRole, AgentRole, Exposure, FIREFIGHTER_RADIUS_M, FirefighterPhase,
     FirefighterState, OCCUPANT_RADIUS_M, OccupantPhase, OccupantState,
 };
+pub use evacuation::{Evacuation, EvacuationError, reachable_exit_cells};
 pub use grid::{
     GridBounds, GridBuildError, GridCell, GridCellKind, GridCoordinate, GridSummary, SimulationGrid,
 };
@@ -157,6 +159,11 @@ impl Simulation {
         self.config
     }
 
+    #[must_use]
+    pub const fn scene(&self) -> &Scene {
+        &self.scene
+    }
+
     /// Static floor grids are read separately from dynamic snapshots so the
     /// renderer does not receive unchanged geometry on every step.
     #[must_use]
@@ -167,6 +174,19 @@ impl Simulation {
     #[must_use]
     pub fn agents(&self) -> &[Agent] {
         &self.agents
+    }
+
+    /// Adds a batch of occupants to the run's initial state. The operation is
+    /// atomic: if any occupant is invalid, none of them are added.
+    pub fn spawn_occupants(
+        &mut self,
+        occupants: &[OccupantSpawn],
+    ) -> Result<Vec<AgentFrame>, SimulationError> {
+        let spawned = scenario::spawn_occupants(occupants, &self.grids, &self.agents)?;
+        let frames = spawned.iter().map(Agent::frame).collect();
+        self.initial_agents.extend(spawned.iter().cloned());
+        self.agents.extend(spawned);
+        Ok(frames)
     }
 
     #[must_use]

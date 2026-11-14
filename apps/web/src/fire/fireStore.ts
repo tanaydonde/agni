@@ -3,12 +3,15 @@
 // (see api.ts); nothing here feeds back into the simulation.
 
 import { create } from 'zustand'
+import { useMemo } from 'react'
 import { describeFireError, runFireSimulation } from './api'
-import { frameAtTime } from './frames'
-import type { SimulateFireResponse, SimulationFrame } from './types'
+import { agentsAtTime, frameAtTime } from './frames'
+import type { AgentFrame, SimulateFireResponse, SimulationFrame } from './types'
+
+const NO_AGENTS: AgentFrame[] = []
 
 /** Simulated seconds per real second. */
-export const PLAYBACK_RATE = 4
+export const PLAYBACK_RATE = 1
 /** Longest clock step per tick, so a backgrounded tab doesn't skip the fire. */
 const MAX_TICK_SECONDS = 0.1
 
@@ -87,5 +90,15 @@ export const useFireStore = create<FireState>()((set, get) => ({
 export function useFireFrame(): SimulationFrame | undefined {
   return useFireStore((state) =>
     state.run ? frameAtTime(state.run.results.frames, state.clockSeconds) : undefined,
+  )
+}
+
+/** Smooth positions between the one-second authoritative simulation frames. */
+export function useSimulationAgents(): AgentFrame[] {
+  const frames = useFireStore((state) => state.run?.results.frames)
+  const clockSeconds = useFireStore((state) => state.clockSeconds)
+  return useMemo(
+    () => (frames ? agentsAtTime(frames, clockSeconds) : NO_AGENTS),
+    [frames, clockSeconds],
   )
 }

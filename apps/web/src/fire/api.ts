@@ -1,15 +1,50 @@
 import { WorldApiError, WorldServerUnavailableError } from '../scene/api'
-import { SIMULATION_RESULTS_SCHEMA_VERSION, type SimulateFireResponse } from './types'
+import {
+  SIMULATION_RESULTS_SCHEMA_VERSION,
+  type SimulateFireResponse,
+  type SpawnOccupantsResponse,
+} from './types'
+
+export const DEFAULT_OCCUPANT_COUNT = 10
 
 /**
- * Ignites `objectId` and runs the surface-fire simulation on the world's
- * current scene. Resolves with the whole timeline.
+ * Generates a validated occupant layout, ignites `objectId`, and runs the
+ * hybrid fire simulation. Occupants remain stationary until movement exists.
  */
 export async function runFireSimulation(objectId: string): Promise<SimulateFireResponse> {
-  const response = await fetch('/api/fire/simulate/hybrid', {
+  const occupants = await spawnOccupants(DEFAULT_OCCUPANT_COUNT)
+  const run = await requestFireSimulation(objectId, occupants.occupants)
+  if (occupants.revision !== run.revision) {
+    throw new Error('The building changed while the scenario was being generated. Run it again.')
+  }
+  return run
+}
+
+async function spawnOccupants(count: number): Promise<SpawnOccupantsResponse> {
+  return requestJson<SpawnOccupantsResponse>('/api/agents/spawn_occupants', { count })
+}
+
+async function requestFireSimulation(
+  objectId: string,
+  occupants: SpawnOccupantsResponse['occupants'],
+): Promise<SimulateFireResponse> {
+  const run = await requestJson<SimulateFireResponse>('/api/fire/simulate/hybrid', {
+    object_id: objectId,
+    occupants,
+  })
+  if (run.results.schema_version !== SIMULATION_RESULTS_SCHEMA_VERSION) {
+    throw new Error(
+      `Fire results use schema v${run.results.schema_version}; this app reads v${SIMULATION_RESULTS_SCHEMA_VERSION}`,
+    )
+  }
+  return run
+}
+
+async function requestJson<T>(url: string, payload: unknown): Promise<T> {
+  const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ object_id: objectId }),
+    body: JSON.stringify(payload),
   }).catch(() => null)
   if (!response) throw new WorldServerUnavailableError()
   const body = await response.json().catch(() => null)
@@ -23,13 +58,7 @@ export async function runFireSimulation(objectId: string): Promise<SimulateFireR
     throw new WorldApiError(response.status, { code: 'unknown' })
   }
 
-  const run = body as SimulateFireResponse
-  if (run.results.schema_version !== SIMULATION_RESULTS_SCHEMA_VERSION) {
-    throw new Error(
-      `Fire results use schema v${run.results.schema_version}; this app reads v${SIMULATION_RESULTS_SCHEMA_VERSION}`,
-    )
-  }
-  return run
+  return body as T
 }
 
 /** A short sentence explaining why a fire run failed. */
@@ -52,6 +81,15 @@ export function describeFireError(error: unknown): string {
       case 'cfast_adapter_failed':
       case 'cfast_merge_failed':
         return `CFAST failed: ${String(error.body.message ?? 'unknown error')}`
+      case 'gemini_not_configured':
+        return 'Gemini is not configured on the world server'
+      case 'gemini_rate_limited':
+        return 'Gemini is rate limited; try again shortly'
+      case 'gemini_failed':
+      case 'occupant_generation_failed':
+        return `Generating occupants failed: ${String(error.body.message ?? 'unknown error')}`
+      case 'evacuation_failed':
+        return `Evacuation failed: ${String(error.body.message ?? 'unknown error')}`
       default:
         return `The simulation failed (${error.body.code})`
     }
