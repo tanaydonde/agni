@@ -3,7 +3,10 @@ use std::time::Duration;
 use crate::{
     MatterportError,
     convert::scene_from_response,
-    graphql::{GraphQlRequest, GraphQlResponse, MODEL_QUERY, Variables},
+    graphql::{
+        GraphQlRequest, GraphQlResponse, MESH_ASSETS_QUERY, MODEL_QUERY, MeshAssetsResponse,
+        Variables,
+    },
 };
 use tflop_world_core::Scene;
 
@@ -47,5 +50,69 @@ impl MatterportClient {
             .await?;
 
         scene_from_response(response, model_id)
+    }
+
+    /// Downloads the model's defurnished mesh: an untextured, Z-up OBJ of the
+    /// space with furniture removed. Returns `None` if the model has none.
+    pub async fn fetch_defurnished_mesh(
+        &self,
+        model_id: &str,
+    ) -> Result<Option<Vec<u8>>, MatterportError> {
+        let request = GraphQlRequest {
+            query: MESH_ASSETS_QUERY,
+            variables: Variables { id: model_id },
+        };
+
+        let response = self
+            .http
+            .post(MODEL_API_ENDPOINT)
+            .basic_auth(&self.token_id, Some(&self.token_secret))
+            .json(&request)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<MeshAssetsResponse>()
+            .await?;
+
+        if !response.errors.is_empty() {
+            let messages = response
+                .errors
+                .into_iter()
+                .map(|error| error.message)
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(MatterportError::GraphQl(messages));
+        }
+
+        let url = response
+            .data
+            .and_then(|data| data.model)
+            .ok_or_else(|| MatterportError::MissingModel(model_id.to_owned()))?
+            .assets
+            .into_iter()
+            .flat_map(|assets| assets.meshes)
+            .find(|mesh| {
+                mesh.filename
+                    .as_deref()
+                    .is_some_and(|name| name.starts_with("defurnished") && name.ends_with(".obj"))
+            })
+            .and_then(|mesh| mesh.url);
+        let Some(url) = url else {
+            return Ok(None);
+        };
+
+        // The signed URL is a bearer credential; keep it out of errors.
+        let bytes = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .map_err(reqwest::Error::without_url)?
+            .bytes()
+            .await
+            .map_err(reqwest::Error::without_url)?;
+
+        Ok(Some(bytes.to_vec()))
     }
 }

@@ -19,8 +19,13 @@ struct Args {
     model_id: String,
 
     /// Destination JSON file. Defaults to data/prepared-scenes/<model-id>.json.
+    /// The defurnished mesh is written beside it as <model-id>.obj.
     #[arg(long)]
     output: Option<PathBuf>,
+
+    /// Skip downloading Matterport's defurnished mesh.
+    #[arg(long)]
+    skip_mesh: bool,
 }
 
 #[tokio::main]
@@ -64,6 +69,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
         scene.floors.len(),
         output.display()
     );
+
+    if !args.skip_mesh {
+        let mesh_path = output.with_extension("obj");
+        match client.fetch_defurnished_mesh(&args.model_id).await? {
+            Some(obj) => {
+                fs::write(&mesh_path, obj)?;
+                println!("Saved defurnished mesh to {}", mesh_path.display());
+            }
+            None => println!("No defurnished mesh is available for {}", args.model_id),
+        }
+    }
 
     Ok(())
 }

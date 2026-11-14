@@ -1,0 +1,36 @@
+@import 'tailwindcss';
+
+/* Design tokens from the "Layout Sim App" design (shell 1a). Violet is reserved
+   for primary actions and selection. */
+@theme {
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, sans-serif;
+  --font-mono: ui-monospace, Menlo, monospace;
+
+  --color-ink: #1a1f36;
+  --color-ink-secondary: #4f566b;
+  --color-muted: #697386;
+  --color-placeholder: #a3acb9;
+  --color-canvas: #f6f8fa;
+  --color-hairline: #e3e8ee;
+  --color-hairline-soft: #eef1f5;
+  --color-control-border: #d5dbe1;
+  --color-accent: #635bff;
+  --color-accent-strong: #4b44d8;
+  --color-success: #0d7a4e;
+  --color-danger: #df1b41;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
