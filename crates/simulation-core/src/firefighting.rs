@@ -108,6 +108,8 @@ pub struct CrewReport {
     pub crew_id: String,
     pub phase: FirefighterPhase,
     pub memory: CrewMemory,
+    /// When the crew was called, if it has been.
+    pub called_at: Option<f64>,
 }
 
 #[derive(Debug)]
@@ -130,6 +132,8 @@ pub struct Firefighting {
     crowd: Crowd,
     /// Occupants carried out this frame, not yet reported.
     delivered: Vec<String>,
+    /// When the crews were called; they arrive their response time later.
+    called_at: Option<f64>,
     time_seconds: f64,
 }
 
@@ -173,7 +177,7 @@ impl Firefighting {
                 members,
                 floor_id: leader.floor_id.clone(),
                 entry_cell,
-                arrival_time_seconds: spawn.arrival_time_seconds,
+                response_seconds: spawn.arrival_time_seconds,
                 walking_speed_m_per_s: spawn.walking_speed_m_per_s,
                 plan: CrewPlan {
                     route: spawn.route.clone(),
@@ -212,8 +216,20 @@ impl Firefighting {
             true_hazards: HazardMap::default(),
             crowd: Crowd::new(CrowdConfig::default(), simulation_config.random_seed),
             delivered: Vec::new(),
+            called_at: Some(0.0),
             time_seconds: 0.0,
         })
+    }
+
+    /// Holds the crews until [`call`](Self::call): nobody has noticed the
+    /// fire yet.
+    pub(crate) fn await_call(&mut self) {
+        self.called_at = None;
+    }
+
+    /// Calls the crews at `time_seconds`, if they haven't been called yet.
+    pub(crate) fn call(&mut self, time_seconds: f64) {
+        self.called_at.get_or_insert(time_seconds);
     }
 
     /// Acts over `[current time, time_seconds]` given the fire as it stood at
@@ -343,6 +359,7 @@ impl Firefighting {
                 crew_id: crew.id.clone(),
                 phase: crew.phase,
                 memory: crew.plan.memory.clone(),
+                called_at: self.called_at,
             })
             .collect()
     }
@@ -365,8 +382,11 @@ impl Firefighting {
         let leader_cell = grid
             .world_to_cell(leader_position)
             .unwrap_or(crew.entry_cell);
+        let arrival_time = self
+            .called_at
+            .map_or(f64::INFINITY, |called| called + crew.response_seconds);
 
-        if start_time >= crew.arrival_time_seconds {
+        if start_time >= arrival_time {
             let observation = observe(
                 leader_position,
                 grid.cell(leader_cell)
@@ -396,7 +416,7 @@ impl Firefighting {
             .map_or(&[][..], Vec::as_slice);
         let context = Context {
             time_seconds: start_time,
-            arrival_time_seconds: crew.arrival_time_seconds,
+            arrival_time_seconds: arrival_time,
             leader_position,
             leader_cell,
             entry_cell: crew.entry_cell,
@@ -555,7 +575,8 @@ struct Crew {
     members: Vec<usize>,
     floor_id: String,
     entry_cell: GridCoordinate,
-    arrival_time_seconds: f64,
+    /// Seconds from the call to reaching the entry.
+    response_seconds: f64,
     walking_speed_m_per_s: f64,
     plan: CrewPlan,
     phase: FirefighterPhase,

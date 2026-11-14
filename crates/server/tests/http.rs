@@ -423,6 +423,7 @@ async fn a_firefighter_carries_injured_occupants_out() {
             "duration_seconds": 300.0,
             "injured_fraction": 1.0,
             "seed": 3,
+            "alarm": "immediate",
             "occupants": [{
                 "id": "occupant-1",
                 "floor_id": "floor-1",

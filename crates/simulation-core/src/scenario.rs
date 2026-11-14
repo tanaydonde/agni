@@ -88,7 +88,9 @@ pub struct CrewSpawn {
     /// first throughout. Accepts the old name `search_order`.
     #[serde(default, alias = "search_order")]
     pub route: Vec<String>,
-    /// Seconds after ignition when the crew reaches the entry.
+    /// Seconds from the crew being called to it reaching the entry. In a
+    /// [`Rehearsal`](crate::Rehearsal) with occupants the crew is called when
+    /// someone notices the fire and raises the alarm; otherwise at ignition.
     #[serde(default)]
     pub arrival_time_seconds: f64,
     #[serde(default = "default_member_count")]

@@ -74,6 +74,11 @@ impl Rehearsal {
     #[must_use]
     pub fn with_firefighting(mut self, mut firefighting: Firefighting) -> Self {
         firefighting.set_crowd_config(self.crowd.config());
+        // With people in the building, the crew is called when one of them
+        // notices the fire. With nobody to notice, it is called at ignition.
+        if self.evacuation.is_some() {
+            firefighting.await_call();
+        }
         self.firefighting = Some(firefighting);
         self
     }
@@ -152,6 +157,11 @@ impl Rehearsal {
                 .as_ref()
                 .map_or(&[][..], Firefighting::agents);
             evacuation.plan(fire.time_seconds, &fire.active_nodes, crews)?;
+            if let (Some(alarm), Some(firefighting)) =
+                (evacuation.alarm_raised_at(), &mut self.firefighting)
+            {
+                firefighting.call(alarm);
+            }
         }
         let mut groups = Vec::with_capacity(2);
         if let Some(evacuation) = &mut self.evacuation {

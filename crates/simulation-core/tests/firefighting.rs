@@ -582,6 +582,89 @@ fn the_fire_is_fought_before_a_rescue() {
 }
 
 #[test]
+fn the_crew_is_called_when_someone_notices_the_fire() {
+    let scene = scene_fixture(false);
+    let mut rehearsal = called_rehearsal(&scene, &[walker("watcher", 6.0, 5.0)], 5.0);
+    let mut frames = vec![rehearsal.ignite_object("chair-east").expect("ignites")];
+    frames.extend(rehearsal.run_until(300.0, 0.5).expect("run succeeds"));
+
+    let alarm = rehearsal
+        .evacuation()
+        .and_then(|evacuation| evacuation.alarm_raised_at())
+        .expect("the watcher notices the fire");
+    assert!(alarm > 0.0, "a just-lit chair isn't noticed at once");
+    assert_eq!(report(&rehearsal).called_at, Some(alarm));
+    let entered = frames
+        .iter()
+        .find(|frame| phase(firefighter(frame, LEADER)) != FirefighterPhase::Staging)
+        .map(|frame| frame.fire.time_seconds)
+        .expect("the crew comes in");
+    // It arrives its response time after the call, acting from the next step.
+    assert!(
+        (alarm + 5.0..=alarm + 6.0).contains(&entered),
+        "called at {alarm} s, came in at {entered} s"
+    );
+}
+
+#[test]
+fn a_fire_nobody_has_noticed_calls_nobody() {
+    let scene = scene_fixture(false);
+    // The only person is two rooms away from the fire.
+    let mut rehearsal = called_rehearsal(&scene, &[walker("away", 1.0, 5.0)], 0.0);
+    let mut frames = vec![rehearsal.ignite_object("chair-east").expect("ignites")];
+    frames.extend(rehearsal.run_until(10.0, 0.5).expect("run succeeds"));
+
+    assert_eq!(report(&rehearsal).called_at, None);
+    assert!(
+        frames
+            .iter()
+            .all(|frame| phase(firefighter(frame, LEADER)) == FirefighterPhase::Staging)
+    );
+}
+
+/// A one-firefighter crew that responds `response_seconds` after the alarm
+/// raised by `occupants`.
+fn called_rehearsal(
+    scene: &Scene,
+    occupants: &[OccupantSpawn],
+    response_seconds: f64,
+) -> Rehearsal {
+    let fire = SurfaceFireWorld::from_scene(
+        scene,
+        &FireMaterialCatalog::default(),
+        SurfaceFireConfig::default(),
+    )
+    .expect("fire world builds");
+    // Noticed early, so the test doesn't hang on how fast the fire grows.
+    let evacuation = Evacuation::new(scene, occupants, SimulationConfig::default())
+        .expect("evacuation builds")
+        .with_alarm(tflop_simulation_core::AlarmConfig::Detected {
+            notice_hrr_kw: 5.0,
+            same_room_seconds: 2.0,
+            seconds_per_metre: 0.2,
+        });
+    let crew = Firefighting::new(
+        scene,
+        &[CrewSpawn {
+            member_count: 1,
+            arrival_time_seconds: response_seconds,
+            ..crew(&["east"])
+        }],
+        SimulationConfig::default(),
+        FirefightingConfig::default(),
+    )
+    .expect("crew is valid");
+    Rehearsal::new(fire, Some(evacuation)).with_firefighting(crew)
+}
+
+fn walker(id: &str, x: f64, y: f64) -> OccupantSpawn {
+    OccupantSpawn {
+        injured: false,
+        ..injured(id, x, y)
+    }
+}
+
+#[test]
 fn injured_people_never_move_on_their_own() {
     let scene = scene_fixture(false);
     let fire = SurfaceFireWorld::from_scene(
@@ -615,8 +698,10 @@ fn rescue_rehearsal(scene: &Scene, route: &[&str], occupants: &[OccupantSpawn]) 
         SurfaceFireConfig::default(),
     )
     .expect("fire world builds");
-    let evacuation =
-        Evacuation::new(scene, occupants, SimulationConfig::default()).expect("evacuation builds");
+    // Everyone knows at once, so the crew is called at ignition.
+    let evacuation = Evacuation::new(scene, occupants, SimulationConfig::default())
+        .expect("evacuation builds")
+        .with_alarm(tflop_simulation_core::AlarmConfig::Immediate);
     let crew = Firefighting::new(
         scene,
         &[CrewSpawn {
