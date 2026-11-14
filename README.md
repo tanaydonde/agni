@@ -8,6 +8,7 @@ apps/
 └── web/                React + Three.js editor (Vite)
 crates/
 ├── matterport/         Matterport API and normalization boundary
+├── server/             HTTP server exposing the world API (cargo run -p tflop-server)
 └── world-core/         Canonical scene types and world rules
 data/
 ├── fixtures/           Small sanitized test inputs
@@ -23,16 +24,30 @@ cargo test --workspace
 
 ## Run the web app
 
+The Rust world server owns the scene; the web app reads and edits it through
+`/api/world/*`, which Vite proxies to `TFLOP_SERVER_ADDR` (default
+`127.0.0.1:3000`). Import the scene first (below), then in two terminals:
+
 ```bash
-pnpm install
-pnpm --filter web dev
+cargo run -p tflop-server -- --scene data/prepared-scenes/<model-id>.json
+pnpm install && pnpm --filter web dev
 ```
 
-In development, the app loads `data/prepared-scenes/<id>.json` through
-`GET /api/scenes/<id>` (the route the Rust server will provide). It shows
-the `MATTERPORT_MODEL_ID` from `.env` by default (only that key is read; the
-credentials never reach the browser). Set `VITE_SCENE_ID` to load another
-prepared scene. Run the importer below first.
+Edits live in the server's memory; restarting it reloads the file. The
+defurnished mesh is still served by Vite from
+`data/prepared-scenes/<model-id>.obj`.
+
+### Placing furniture
+
+- Drag an item from the Furniture panel into the view. It follows the floor
+  under the cursor and is added where you release it.
+- Click the view to fly (Esc releases). Aim the crosshair at furniture and
+  click to select it; click empty space to deselect.
+- Press on the red (X) or green (Y) arrow and move to slide along that axis,
+  or on the blue square to move freely across the floor. Del removes it.
+
+Furniture always stands on the floor: the world snaps every object's
+`z` to its floor's elevation and rejects tilted rotations.
 
 ## Import a Matterport scene
 

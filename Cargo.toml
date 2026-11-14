@@ -2,6 +2,7 @@
 members = [
     "apps/import-scene",
     "crates/matterport",
+    "crates/server",
     "crates/world-core",
 ]
 resolver = "3"

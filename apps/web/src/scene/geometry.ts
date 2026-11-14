@@ -130,7 +130,7 @@ export function wallPieces(
 }
 
 /** Builds renderable geometry for one floor. */
-export function buildFloorGeometry(floor: Floor): FloorGeometry {
+export function buildFloorGeometry(floor: Pick<Floor, 'elevation_m' | 'rooms'>): FloorGeometry {
   const floorZ = floor.elevation_m ?? 0
   const roomOutlines = floor.rooms
     .map((room) => chainLoops(room.boundary))

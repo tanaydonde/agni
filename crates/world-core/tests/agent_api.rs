@@ -1,7 +1,8 @@
 use tflop_world_core::{
-    AddObjectRequest, ApplyEditsRequest, Dimensions3, EditCommand, Floor, FurnitureAsset, Mobility,
-    MoveObjectRequest, Quaternion, RemoveObjectRequest, RotateObjectRequest, SCENE_SCHEMA_VERSION,
-    Scene, SceneSource, SetObjectTransformRequest, Transform3, Vec3, World, WorldApiError,
+    AddObjectRequest, ApplyEditsRequest, Dimensions3, EditCommand, Floor, FurnitureAsset,
+    FurnitureObject, Mobility, MoveObjectRequest, Quaternion, RemoveObjectRequest,
+    RotateObjectRequest, SCENE_SCHEMA_VERSION, Scene, SceneSource, SetObjectTransformRequest,
+    Transform3, Vec3, World, WorldApiError,
 };
 
 #[test]
@@ -219,6 +220,105 @@ fn validates_layout_and_serializes_tagged_commands() {
     );
 }
 
+#[test]
+fn snaps_objects_to_the_floor_on_add_and_move() {
+    let mut world = test_world();
+    let mut request = add_request(0, "chair-1", Mobility::Movable);
+    request.position_m.z = 5.0;
+    world.add_object(request).expect("add should work");
+    assert_eq!(object_z(&world), FLOOR_Z);
+
+    world
+        .move_object(MoveObjectRequest {
+            expected_revision: 1,
+            object_id: "chair-1".to_owned(),
+            position_m: Vec3 {
+                x: 1.0,
+                y: 2.0,
+                z: -3.0,
+            },
+        })
+        .expect("move should work");
+    assert_eq!(object_z(&world), FLOOR_Z);
+    assert!(world.validate_layout().expect("validation runs").valid);
+}
+
+#[test]
+fn rejects_tilted_rotations() {
+    let mut world = test_world();
+    world
+        .add_object(add_request(0, "chair-1", Mobility::Movable))
+        .expect("add should work");
+
+    let half = std::f64::consts::FRAC_1_SQRT_2;
+    let error = world
+        .set_object_transform(SetObjectTransformRequest {
+            expected_revision: 1,
+            object_id: "chair-1".to_owned(),
+            transform: Transform3 {
+                position_m: origin(),
+                // 90 degrees about X: the chair would lie on its back.
+                rotation: Quaternion {
+                    x: half,
+                    y: 0.0,
+                    z: 0.0,
+                    w: half,
+                },
+                scale: Vec3 {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                },
+            },
+        })
+        .expect_err("tilted furniture must be rejected");
+    assert!(matches!(error, WorldApiError::InvalidRequest { .. }));
+    assert_eq!(world.get_scene().revision, 1);
+}
+
+#[test]
+fn validate_layout_reports_floating_objects() {
+    let mut scene = test_world().get_scene().scene;
+    scene.floors[0].objects.push(FurnitureObject {
+        id: "chair-1".to_owned(),
+        asset_id: "chair-basic".to_owned(),
+        transform: Transform3 {
+            position_m: Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: FLOOR_Z + 1.0,
+            },
+            rotation: Quaternion::IDENTITY,
+            scale: Vec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+        },
+        mobility: Mobility::Movable,
+    });
+
+    let report = World::new(scene)
+        .validate_layout()
+        .expect("validation runs");
+    assert!(!report.valid);
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.path.ends_with("transform.position_m.z"))
+    );
+}
+
+const FLOOR_Z: f64 = -0.03;
+
+fn object_z(world: &World) -> f64 {
+    world.get_scene().scene.floors[0].objects[0]
+        .transform
+        .position_m
+        .z
+}
+
 fn add_request(revision: u64, object_id: &str, mobility: Mobility) -> AddObjectRequest {
     AddObjectRequest {
         expected_revision: revision,
@@ -253,7 +353,7 @@ fn test_world() -> World {
         floors: vec![Floor {
             id: "floor-1".to_owned(),
             label: Some("Floor 1".to_owned()),
-            elevation_m: Some(0.0),
+            elevation_m: Some(FLOOR_Z),
             rooms: vec![],
             objects: vec![],
         }],

@@ -1,46 +1,47 @@
 import { Canvas } from '@react-three/fiber'
 import { useMemo, useRef, useState, type ReactNode } from 'react'
-import { SceneNotFoundError, sceneMeshUrl, useScene, useSceneMeshAvailable } from '../scene/api'
+import { WorldServerUnavailableError, sceneMeshUrl, useSceneMeshAvailable, useWorld } from '../scene/api'
 import { CameraController } from '../scene/CameraController'
+import { useEditorStore } from '../scene/editorStore'
+import { Furniture } from '../scene/Furniture'
 import { buildFloorGeometry } from '../scene/geometry'
+import { MoveGizmo } from '../scene/MoveGizmo'
+import { PlacementController } from '../scene/PlacementController'
 import { SceneModel } from '../scene/SceneModel'
-import type { Floor } from '../scene/types'
+import { SelectionController } from '../scene/SelectionController'
+import type { Floor, Scene } from '../scene/types'
 
 interface SceneViewportProps {
+  /** Scene the dev setup expects; only used in setup instructions. */
   sceneId: string
 }
 
 /**
- * The 3D scene viewport. Renders the prepared scene's first floor with rooms,
- * using Matterport's defurnished mesh when it has been imported.
+ * The 3D scene viewport. Renders the Rust world's first floor with rooms and
+ * furniture, using Matterport's defurnished mesh when it has been imported.
  */
 export function SceneViewport({ sceneId }: SceneViewportProps) {
-  const { data: scene, error, isPending } = useScene(sceneId)
-  const { data: meshAvailable } = useSceneMeshAvailable(sceneId)
-
-  if (!sceneId) {
-    return (
-      <ViewportFrame>
-        <ViewportMessage>
-          No scene selected. Set <code className="font-mono">MATTERPORT_MODEL_ID</code> in the
-          repo-root <code className="font-mono">.env</code>.
-        </ViewportMessage>
-      </ViewportFrame>
-    )
-  }
-
+  const { data: world, error, isPending } = useWorld()
+  const scene = world?.scene
+  const { data: meshAvailable } = useSceneMeshAvailable(scene?.id ?? '')
   const floor = scene?.floors.find((candidate) => candidate.rooms.length > 0)
+  const scenePath = `data/prepared-scenes/${sceneId || '<model-id>'}.json`
 
   return (
     <ViewportFrame>
-      {floor ? (
-        <SceneCanvas floor={floor} meshUrl={meshAvailable ? sceneMeshUrl(sceneId) : undefined} />
+      {scene && floor ? (
+        <SceneCanvas
+          scene={scene}
+          floor={floor}
+          meshUrl={meshAvailable ? sceneMeshUrl(scene.id) : undefined}
+        />
       ) : isPending ? (
         <ViewportMessage>Loading scene…</ViewportMessage>
-      ) : error instanceof SceneNotFoundError ? (
+      ) : error instanceof WorldServerUnavailableError ? (
         <ViewportMessage>
-          No prepared scene for <code className="font-mono">{sceneId}</code>. From the repo root, run{' '}
-          <code className="font-mono">cargo run -p import-scene</code>
+          The world server isn&apos;t running. From the repo root, run{' '}
+          <code className="font-mono">cargo run -p tflop-server -- --scene {scenePath}</code>{' '}
+          (import the scene first with <code className="font-mono">cargo run -p import-scene</code>).
         </ViewportMessage>
       ) : error ? (
         <ViewportMessage>{error.message}</ViewportMessage>
@@ -55,10 +56,13 @@ export function SceneViewport({ sceneId }: SceneViewportProps) {
  * The canvas plus its controls. Clicking captures the pointer for flying
  * around; Esc gives it back.
  */
-function SceneCanvas({ floor, meshUrl }: { floor: Floor; meshUrl?: string }) {
+function SceneCanvas({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; meshUrl?: string }) {
   const focusTarget = useRef<HTMLDivElement>(null)
   const [active, setActive] = useState(false)
-  const geometry = useMemo(() => buildFloorGeometry(floor), [floor])
+  // Depend on the room data only: furniture edits replace `floor` but must
+  // not rebuild the room or reset the camera.
+  const { elevation_m, rooms } = floor
+  const geometry = useMemo(() => buildFloorGeometry({ elevation_m, rooms }), [elevation_m, rooms])
 
   return (
     <div
@@ -71,7 +75,11 @@ function SceneCanvas({ floor, meshUrl }: { floor: Floor; meshUrl?: string }) {
         <hemisphereLight args={['#ffffff', '#d5dbe1', 1.6]} />
         <directionalLight position={[8, 14, 6]} intensity={1.4} />
         <SceneModel geometry={geometry} meshUrl={meshUrl} />
+        <Furniture floor={floor} assets={scene.assets} />
+        <MoveGizmo floor={floor} />
         <CameraController element={focusTarget} geometry={geometry} onActiveChange={setActive} />
+        <SelectionController element={focusTarget} floor={floor} />
+        <PlacementController scene={scene} floor={floor} />
       </Canvas>
       {active && (
         <>
@@ -87,12 +95,17 @@ function SceneCanvas({ floor, meshUrl }: { floor: Floor; meshUrl?: string }) {
   )
 }
 
-/** Marks the middle of the view, which pinch and orbit aim at. */
+/**
+ * Marks the middle of the view, which clicks, pinch, and orbit aim at. During
+ * a gizmo drag it follows the virtual cursor instead.
+ */
 function Crosshair() {
+  const offset = useEditorStore((state) => state.cursorOffset)
   return (
     <div
       aria-hidden
-      className="pointer-events-none absolute top-1/2 left-1/2 size-1.5 -translate-1/2 rounded-full bg-white ring-1 ring-ink/60"
+      style={{ left: `calc(50% + ${offset.x}px)`, top: `calc(50% + ${offset.y}px)` }}
+      className="pointer-events-none absolute size-1.5 -translate-1/2 rounded-full bg-white ring-1 ring-ink/60"
     />
   )
 }
@@ -106,6 +119,9 @@ const CONTROLS: [keys: string[], action: string][] = [
   [['Space', 'Move'], 'Pan'],
   [['⌥', 'Move'], 'Orbit'],
   [['F'], 'Reset view'],
+  [['Click'], 'Select furniture'],
+  [['Drag', 'Arrow'], 'Move along floor'],
+  [['Del'], 'Delete selected'],
   [['Esc'], 'Release cursor'],
 ]
 
@@ -113,7 +129,7 @@ function ControlsHint({ active }: { active: boolean }) {
   if (!active) {
     return (
       <div className="pointer-events-none absolute bottom-3 left-3 rounded-md border border-hairline bg-white px-2.5 py-1.5 text-xs text-ink-secondary">
-        Click to explore · Esc to release
+        Click to explore · Esc to release · Drag furniture in from the panel
       </div>
     )
   }

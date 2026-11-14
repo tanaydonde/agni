@@ -74,6 +74,13 @@ Successful mutations return:
 snapshot. Angles in the agent-facing API use degrees around the canonical Z
 axis; Rust will convert them to normalized quaternions internally.
 
+Furniture always stands on the floor. The asset origin is the bottom center,
+so the world sets `position_m.z` to the floor's `elevation_m` on every add and
+move; any `z` you send is ignored. `set_object_transform` rejects rotations
+with an X or Y component (`invalid_request` at `transform.rotation`), so
+furniture stays upright. `validate_layout` reports objects that are off the
+floor or tilted.
+
 Edits currently validate IDs, asset and floor references, transforms, mobility,
 and revisions. `validate_layout` runs the full structural scene validator.
 Room containment, furniture overlap, wall collision, and door-clearance checks

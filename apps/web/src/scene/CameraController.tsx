@@ -12,6 +12,7 @@ import {
   wheelPixels,
   worldPerPixel,
 } from './cameraMath'
+import { useEditorStore } from './editorStore'
 import type { FloorGeometry } from './geometry'
 
 /** Radians turned per pixel of pointer movement. */
@@ -119,7 +120,8 @@ export function CameraController({ element, geometry, onActiveChange }: CameraCo
 
     const onPointerMove = (event: PointerEvent) => {
       const p = pose.current
-      if (!p || !isActive()) return
+      // During a gizmo drag the pointer moves the object, not the view.
+      if (!p || !isActive() || useEditorStore.getState().drag) return
       const dx = event.movementX
       const dy = event.movementY
 

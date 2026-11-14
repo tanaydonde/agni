@@ -201,6 +201,11 @@ impl World {
             .position(|floor| floor.id == floor_id)
             .ok_or(WorldApiError::FloorNotFound { floor_id })?;
         let rotation = z_rotation(rotation_z_degrees)?;
+        // Furniture always stands on the floor: its origin is the bottom center.
+        let position_m = Vec3 {
+            z: self.scene.floors[floor_index].floor_z(),
+            ..position_m
+        };
         let transform = Transform3 {
             position_m,
             rotation,
@@ -254,11 +259,20 @@ impl World {
     fn set_object_transform_unversioned(
         &mut self,
         object_id: String,
-        transform: Transform3,
+        mut transform: Transform3,
     ) -> WorldApiResult<String> {
         validate_transform(&transform)?;
+        if !transform.rotation.is_yaw_only() {
+            return Err(invalid_request(
+                "transform.rotation",
+                "furniture must stay upright; only rotation about the Z axis is allowed",
+            ));
+        }
         let location = self.location(&object_id)?;
-        let object = &mut self.scene.floors[location.floor_index].objects[location.object_index];
+        let floor = &mut self.scene.floors[location.floor_index];
+        // Snap to the floor surface whatever height was requested.
+        transform.position_m.z = floor.floor_z();
+        let object = &mut floor.objects[location.object_index];
         if object.mobility == Mobility::Fixed {
             return Err(WorldApiError::ObjectFixed { object_id });
         }

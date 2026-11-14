@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { ChatMessage } from './chat'
 import { ActionBar } from './components/ActionBar'
+import { AssetPalette } from './components/AssetPalette'
 import { ChatPanel } from './components/ChatPanel'
 import { SceneViewport } from './components/SceneViewport'
 
@@ -17,6 +18,7 @@ export default function App() {
       <SceneViewport sceneId={__SCENE_ID__} />
       <aside className="flex w-[400px] flex-none flex-col gap-3">
         <ActionBar canRunSimulation={false} />
+        <AssetPalette />
         <ChatPanel messages={messages} onSend={handleSend} />
       </aside>
     </main>
