@@ -50,6 +50,12 @@ const response: SimulateFireResponse = {
 
 afterEach(() => vi.unstubAllGlobals())
 
+describe('DEFAULT_CREW', () => {
+  it('is one firefighter arriving 10 s after ignition', () => {
+    expect(DEFAULT_CREW).toEqual({ id: 'engine-1', member_count: 1, arrival_time_seconds: 10 })
+  })
+})
+
 describe('runFireSimulation', () => {
   it('asks for the chosen number and layout of occupants', async () => {
     const fetch = vi.fn((url: string) =>

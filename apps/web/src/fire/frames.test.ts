@@ -6,6 +6,7 @@ import {
   heldUpCount,
   isShownAgent,
   occupantCounts,
+  rescueCounts,
 } from './frames'
 import type { SimulationFrame } from './types'
 
@@ -55,6 +56,27 @@ describe('agentsAtTime', () => {
   })
 })
 
+describe('rescueCounts', () => {
+  it('counts injured occupants and those carried out', () => {
+    const waiting = {
+      ...agent(0),
+      role: { type: 'occupant' as const, phase: 'injured' as const, injured: true },
+    }
+    const out = {
+      ...agent(1),
+      id: 'occupant-2',
+      role: { type: 'occupant' as const, phase: 'exited' as const, injured: true },
+    }
+    const walkedOut = {
+      ...agent(2),
+      id: 'occupant-3',
+      role: { type: 'occupant' as const, phase: 'exited' as const },
+    }
+
+    expect(rescueCounts([waiting, out, walkedOut, agent(3)])).toEqual({ rescued: 1, injured: 2 })
+  })
+})
+
 describe('heldUpCount', () => {
   it('counts people queued or squeezing who are still inside', () => {
     const walking = { ...agent(0), movement: 'walking' as const }
@@ -89,7 +111,7 @@ describe('occupantCounts', () => {
     const firefighter = {
       ...agent(2),
       id: 'engine-1/1',
-      role: { type: 'firefighter' as const, crew_id: 'engine-1', phase: 'searching' as const },
+      role: { type: 'firefighter' as const, crew_id: 'engine-1', phase: 'suppressing' as const },
     }
 
     expect(occupantCounts([inside, exited, firefighter])).toEqual({ inside: 1, exited: 1 })

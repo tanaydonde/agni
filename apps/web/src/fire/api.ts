@@ -17,13 +17,13 @@ export interface ScenarioOptions {
   layout: OccupantLayout
 }
 
-/** One firefighter who arrives 30 s after ignition at the first exterior exit. */
-export const DEFAULT_CREW: CrewSpawn = { id: 'engine-1', member_count: 1, arrival_time_seconds: 30 }
+/** One firefighter who arrives 10 s after ignition at the first exterior exit. */
+export const DEFAULT_CREW: CrewSpawn = { id: 'engine-1', member_count: 1, arrival_time_seconds: 10 }
 
 /**
  * Generates a validated occupant layout, ignites `objectId`, and runs the
  * hybrid fire simulation with occupants evacuating and the default crew
- * searching for and fighting the fire.
+ * looking for the fire, fighting it, and carrying out anyone injured.
  */
 export async function runFireSimulation(
   objectId: string,
