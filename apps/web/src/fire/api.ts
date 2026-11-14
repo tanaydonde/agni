@@ -1,12 +1,21 @@
 import { WorldApiError, WorldServerUnavailableError } from '../scene/api'
 import {
   type CrewSpawn,
+  type OccupantLayout,
   SIMULATION_RESULTS_SCHEMA_VERSION,
   type SimulateFireResponse,
   type SpawnOccupantsResponse,
 } from './types'
 
-export const DEFAULT_OCCUPANT_COUNT = 10
+export const DEFAULT_OCCUPANT_COUNT = 50
+export const OCCUPANT_COUNTS = [10, 50, 100, 200] as const
+/** Crowded by default, so a run shows people queuing at doors. */
+export const DEFAULT_OCCUPANT_LAYOUT: OccupantLayout = 'crowded'
+
+export interface ScenarioOptions {
+  occupantCount: number
+  layout: OccupantLayout
+}
 
 /** One firefighter who arrives 30 s after ignition at the first exterior exit. */
 export const DEFAULT_CREW: CrewSpawn = { id: 'engine-1', member_count: 1, arrival_time_seconds: 30 }
@@ -16,8 +25,14 @@ export const DEFAULT_CREW: CrewSpawn = { id: 'engine-1', member_count: 1, arriva
  * hybrid fire simulation with occupants evacuating and the default crew
  * searching for and fighting the fire.
  */
-export async function runFireSimulation(objectId: string): Promise<SimulateFireResponse> {
-  const occupants = await spawnOccupants(DEFAULT_OCCUPANT_COUNT)
+export async function runFireSimulation(
+  objectId: string,
+  { occupantCount, layout }: ScenarioOptions = {
+    occupantCount: DEFAULT_OCCUPANT_COUNT,
+    layout: DEFAULT_OCCUPANT_LAYOUT,
+  },
+): Promise<SimulateFireResponse> {
+  const occupants = await spawnOccupants(occupantCount, layout)
   const run = await requestFireSimulation(objectId, occupants.occupants)
   if (occupants.revision !== run.revision) {
     throw new Error('The building changed while the scenario was being generated. Run it again.')
@@ -25,8 +40,11 @@ export async function runFireSimulation(objectId: string): Promise<SimulateFireR
   return run
 }
 
-async function spawnOccupants(count: number): Promise<SpawnOccupantsResponse> {
-  return requestJson<SpawnOccupantsResponse>('/api/agents/spawn_occupants', { count })
+async function spawnOccupants(
+  count: number,
+  layout: OccupantLayout,
+): Promise<SpawnOccupantsResponse> {
+  return requestJson<SpawnOccupantsResponse>('/api/agents/spawn_occupants', { count, layout })
 }
 
 async function requestFireSimulation(

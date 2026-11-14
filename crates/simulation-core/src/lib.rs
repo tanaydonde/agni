@@ -1,7 +1,9 @@
 //! Deterministic simulation lifecycle and renderer-facing state snapshots.
 
 mod agent;
+mod crowd;
 mod evacuation;
+mod exit_field;
 mod firefighting;
 mod grid;
 mod nav;
@@ -16,8 +18,9 @@ use thiserror::Error;
 
 pub use agent::{
     Agent, AgentFrame, AgentFrameRole, AgentRole, Exposure, FIREFIGHTER_RADIUS_M, FirefighterPhase,
-    FirefighterState, OCCUPANT_RADIUS_M, OccupantPhase, OccupantState,
+    FirefighterState, Movement, OCCUPANT_RADIUS_M, OccupantPhase, OccupantState,
 };
+pub use crowd::{CROWD_GIVE_M, CrowdConfig, CrowdConfigError, SINGLE_FILE_MAX_WIDTH_M};
 pub use evacuation::{Evacuation, EvacuationError, reachable_exit_cells};
 pub use firefighting::{
     CrewMemory, CrewReport, Firefighting, FirefightingConfig, FirefightingError,

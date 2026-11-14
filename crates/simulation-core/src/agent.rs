@@ -7,7 +7,7 @@
 //! [`Agent`] type so movement, collision avoidance, and exposure can treat
 //! every body the same way; only decision-making branches on [`AgentRole`].
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use tflop_world_core::Vec3;
 
 /// Body radius used for collision avoidance.
@@ -26,6 +26,8 @@ pub struct Agent {
     pub velocity_m_per_s: Vec3,
     pub radius_m: f64,
     pub exposure: Exposure,
+    /// How the agent moved through the crowd during the last step.
+    pub movement: Movement,
     pub role: AgentRole,
 }
 
@@ -56,6 +58,7 @@ impl Agent {
             velocity_m_per_s: self.velocity_m_per_s,
             radius_m: self.radius_m,
             exposure: self.exposure,
+            movement: self.movement,
             role: match &self.role {
                 AgentRole::Occupant(state) => AgentFrameRole::Occupant { phase: state.phase },
                 AgentRole::Firefighter(state) => AgentFrameRole::Firefighter {
@@ -88,6 +91,23 @@ impl Exposure {
     pub fn is_incapacitating(self) -> bool {
         self.heat >= 1.0 || self.toxic_gas >= 1.0
     }
+}
+
+/// How an agent moved through the crowd during the last step, so playback
+/// can show where people are held up.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Movement {
+    /// Not trying to move: waiting to leave, searching, spraying, or out of
+    /// the run.
+    #[default]
+    Stopped,
+    Walking,
+    /// Trying to move but held up by people in the way.
+    Queued,
+    /// Pressing past someone, in a doorway or hallway too narrow to pass
+    /// side by side.
+    Squeezing,
 }
 
 /// What kind of agent this is, with the state only that role needs.
@@ -156,10 +176,17 @@ pub enum FirefighterPhase {
 pub struct AgentFrame {
     pub id: String,
     pub floor_id: String,
+    /// Written to the millimetre: a timeline of hundreds of people would
+    /// otherwise spend most of its size on digits nobody can see.
+    #[serde(serialize_with = "to_the_millimetre")]
     pub position_m: Vec3,
+    #[serde(serialize_with = "to_the_millimetre")]
     pub velocity_m_per_s: Vec3,
     pub radius_m: f64,
     pub exposure: Exposure,
+    /// Absent in frames written before crowd movement existed.
+    #[serde(default)]
+    pub movement: Movement,
     pub role: AgentFrameRole,
 }
 
@@ -173,4 +200,14 @@ pub enum AgentFrameRole {
         crew_id: String,
         phase: FirefighterPhase,
     },
+}
+
+fn to_the_millimetre<S: Serializer>(value: &Vec3, serializer: S) -> Result<S::Ok, S::Error> {
+    let round = |component: f64| (component * 1000.0).round() / 1000.0;
+    Vec3 {
+        x: round(value.x),
+        y: round(value.y),
+        z: round(value.z),
+    }
+    .serialize(serializer)
 }

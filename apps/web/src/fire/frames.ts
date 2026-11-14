@@ -76,6 +76,15 @@ export function agentsAtTime(frames: SimulationFrame[], seconds: number): AgentF
   })
 }
 
+/** How many people inside are held up: queued, or squeezing past someone. */
+export function heldUpCount(agents: AgentFrame[]): number {
+  return agents.filter(
+    (agent) =>
+      agent.role.phase !== 'exited' &&
+      (agent.movement === 'queued' || agent.movement === 'squeezing'),
+  ).length
+}
+
 export function occupantCounts(agents: AgentFrame[]): { inside: number; exited: number } {
   let inside = 0
   let exited = 0

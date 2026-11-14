@@ -13,6 +13,8 @@ export default function App() {
   const selectedObjectId = useEditorStore((state) => state.selectedObjectId)
   const fireLoading = useFireStore((state) => state.status === 'loading')
   const startFire = useFireStore((state) => state.start)
+  const scenario = useFireStore((state) => state.scenario)
+  const setScenario = useFireStore((state) => state.setScenario)
 
   const handleSend = (text: string) => {
     setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: 'user', text }])
@@ -25,6 +27,8 @@ export default function App() {
         <ActionBar
           canRunSimulation={selectedObjectId !== null && !fireLoading}
           onRunSimulation={() => selectedObjectId && void startFire(selectedObjectId)}
+          scenario={scenario}
+          onScenarioChange={setScenario}
         />
         <AssetPalette />
         <ChatPanel messages={messages} onSend={handleSend} />

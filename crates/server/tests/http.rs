@@ -189,6 +189,56 @@ async fn occupant_agent_rejects_an_invalid_count_before_calling_gemini() {
 }
 
 #[tokio::test]
+async fn a_crowded_layout_spawns_without_gemini_and_queues_at_the_door() {
+    let (status, spawned) = call(
+        app(),
+        "POST",
+        "/api/agents/spawn_occupants",
+        Some(json!({ "count": 20, "layout": "crowded" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{spawned}");
+    let occupants = spawned["occupants"].as_array().expect("occupants");
+    assert_eq!(occupants.len(), 20);
+    let (_, again) = call(
+        app(),
+        "POST",
+        "/api/agents/spawn_occupants",
+        Some(json!({ "count": 20, "layout": "crowded" })),
+    )
+    .await;
+    assert_eq!(
+        spawned["occupants"], again["occupants"],
+        "crowded layouts repeat"
+    );
+
+    let (status, body) = call(
+        app(),
+        "POST",
+        "/api/fire/simulate",
+        Some(json!({
+            "object_id": "chair-1",
+            "duration_seconds": 60.0,
+            "occupants": occupants,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let frames = body["results"]["frames"].as_array().expect("frames");
+    assert_eq!(
+        frames[1]["time_seconds"], 0.5,
+        "half-second frames by default"
+    );
+    let movements = frames
+        .iter()
+        .flat_map(|frame| frame["agents"].as_array().expect("agents"))
+        .map(|agent| agent["movement"].as_str().expect("movement").to_owned())
+        .collect::<std::collections::HashSet<_>>();
+    assert!(movements.contains("walking"), "{movements:?}");
+    assert!(movements.contains("queued"), "{movements:?}");
+}
+
+#[tokio::test]
 async fn hybrid_fire_route_rejects_a_malformed_request() {
     let (status, body) = call(
         app(),

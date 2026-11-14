@@ -9,7 +9,9 @@ use tflop_world_core::{
 };
 use thiserror::Error;
 
-use crate::{CfastFire, CfastFuel, CfastRoomFire, CfastScenario, HeatReleasePoint};
+use crate::{
+    CFAST_MAX_CURVE_POINTS, CfastFire, CfastFuel, CfastRoomFire, CfastScenario, HeatReleasePoint,
+};
 
 const CFAST_INPUT_VERSION: u32 = 7700;
 const POSITION_EPSILON_M: f64 = 1.0e-6;
@@ -604,6 +606,12 @@ fn validate_curve(
         return Err(invalid(
             "fire.heat_release_curve",
             "must start at zero seconds",
+        ));
+    }
+    if curve.len() > CFAST_MAX_CURVE_POINTS {
+        return Err(invalid(
+            "fire.heat_release_curve",
+            "has more points than CFAST can read (200)",
         ));
     }
     let mut previous_time = -1.0;

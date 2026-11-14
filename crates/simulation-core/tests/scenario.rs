@@ -76,6 +76,7 @@ fn snapshot_serializes_agents_for_the_frontend() {
             "velocity_m_per_s": { "x": 0.0, "y": 0.0, "z": 0.0 },
             "radius_m": 0.25,
             "exposure": { "heat": 0.0, "toxic_gas": 0.0 },
+            "movement": "stopped",
             "role": { "type": "occupant", "phase": "unaware" }
         })
     );

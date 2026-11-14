@@ -170,21 +170,57 @@ pub(crate) fn exit_targets(
     body_radius_m: f64,
 ) -> Result<HashMap<String, Vec<GridCoordinate>>, OpeningTopologyError> {
     let mut exits = HashMap::<String, Vec<GridCoordinate>>::new();
-    for exit in exterior_exits(scene)? {
-        let Some(grid) = grids.iter().find(|grid| grid.floor_id == exit.floor_id) else {
-            continue;
-        };
-        if let Some(target) =
-            nearest_walkable_cell(grid, exit.center_m, &exit.room_a_id, body_radius_m)
-        {
-            exits.entry(exit.floor_id).or_default().push(target);
-        }
+    for target in exit_target_list(scene, grids, body_radius_m)? {
+        exits.entry(target.floor_id).or_default().push(target.cell);
     }
     for targets in exits.values_mut() {
         targets.sort_by_key(|target| (target.row, target.column));
         targets.dedup();
     }
     Ok(exits)
+}
+
+/// One exterior exit's walkable approach cell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExitTarget {
+    /// `OpeningConnection` ID of the exit.
+    pub exit_id: String,
+    pub floor_id: String,
+    pub cell: GridCoordinate,
+}
+
+/// Every exterior exit with a walkable approach cell for a body of
+/// `body_radius_m`, sorted by exit ID.
+pub(crate) fn exit_target_list(
+    scene: &Scene,
+    grids: &[SimulationGrid],
+    body_radius_m: f64,
+) -> Result<Vec<ExitTarget>, OpeningTopologyError> {
+    let mut targets = Vec::new();
+    for exit in exterior_exits(scene)? {
+        let Some(grid) = grids.iter().find(|grid| grid.floor_id == exit.floor_id) else {
+            continue;
+        };
+        if let Some(cell) =
+            nearest_walkable_cell(grid, exit.center_m, &exit.room_a_id, body_radius_m)
+        {
+            targets.push(ExitTarget {
+                exit_id: exit.id,
+                floor_id: exit.floor_id,
+                cell,
+            });
+        }
+    }
+    targets.sort_by(|left, right| left.exit_id.cmp(&right.exit_id));
+    Ok(targets)
+}
+
+/// Whether a body of `body_radius_m` fits centered on each cell, row-major.
+pub(crate) fn body_walkable_cells(grid: &SimulationGrid, body_radius_m: f64) -> Vec<bool> {
+    grid.cells()
+        .iter()
+        .map(|cell| grid.circle_is_walkable(cell.center_m, body_radius_m))
+        .collect()
 }
 
 /// Body-walkable cell of `room_id` nearest `center_m`, within the exit search
@@ -343,54 +379,6 @@ pub(crate) fn neighbors(grid: &SimulationGrid, coordinate: GridCoordinate) -> Ve
         });
     }
     neighbors
-}
-
-/// Moves up to `distance_m` along `path` (whose first cell is the current
-/// one). Returns the new position and whether it ended on one of `targets`.
-pub(crate) fn advance_along_path(
-    mut position: Vec3,
-    path: &[GridCoordinate],
-    grid: &SimulationGrid,
-    mut distance_m: f64,
-    targets: &[GridCoordinate],
-) -> (Vec3, bool) {
-    for coordinate in path.iter().skip(1) {
-        let Some(target) = grid.cell_center(*coordinate) else {
-            break;
-        };
-        let distance = distance_2d(position, target);
-        if distance > distance_m {
-            let fraction = distance_m / distance;
-            position.x += (target.x - position.x) * fraction;
-            position.y += (target.y - position.y) * fraction;
-            return (position, false);
-        }
-        position = target;
-        distance_m -= distance;
-    }
-    let coordinate = grid.world_to_cell(position);
-    (
-        position,
-        coordinate.is_some_and(|cell| targets.contains(&cell)),
-    )
-}
-
-/// Whether moving from `start` to `end` passes within `radius` of `center`.
-pub(crate) fn segment_overlaps_circle(start: Vec3, end: Vec3, center: Vec3, radius: f64) -> bool {
-    let dx = end.x - start.x;
-    let dy = end.y - start.y;
-    let length_squared = dx * dx + dy * dy;
-    let fraction = if length_squared == 0.0 {
-        0.0
-    } else {
-        (((center.x - start.x) * dx + (center.y - start.y) * dy) / length_squared).clamp(0.0, 1.0)
-    };
-    let closest = Vec3 {
-        x: start.x + dx * fraction,
-        y: start.y + dy * fraction,
-        z: start.z,
-    };
-    distance_2d(closest, center) < radius
 }
 
 pub(crate) fn distance_2d(left: Vec3, right: Vec3) -> f64 {

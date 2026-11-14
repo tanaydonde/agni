@@ -11,7 +11,7 @@ POST /api/fire/simulate/hybrid
 {
   "object_id": "sofa-1",
   "duration_seconds": 180,
-  "step_seconds": 1,
+  "step_seconds": 0.5,
   "occupants": [/* OccupantSpawn records from /api/agents/spawn_occupants */],
   "crews": [{ "id": "engine-1", "member_count": 2, "arrival_time_seconds": 30 }]
 }
@@ -43,13 +43,45 @@ The final payload is `SimulationResults`. Choose a frame using
 - `frame.fires`: CFAST's room-level representation of the Rust heat output.
 - `frame.agents`: occupants advanced by the Rust evacuation engine. It honors
   pre-movement delay and walking speed, routes to exterior doors/passages,
-  replans around fire, and uses `rerouting` when no safe path is available.
+  replans around fire and crowds, and uses `rerouting` when fire makes it
+  change exit or no safe path is available. Nobody walks into burning
+  cells. Occupants and firefighters move through one
+  shared crowd (see "Crowds" below), and each agent's `movement` says how:
+  `stopped`, `walking`, `queued` (held up by people in the way), or
+  `squeezing` (pressing past someone). The web app tints queued blobs red and
+  squeezing blobs amber.
   Firefighters follow the occupants in the same array (`role.type ===
   'firefighter'`, IDs `{crew_id}/{n}`, `/1` leads). A crew doesn't know where
   the fire is: it stages at its entry until `arrival_time_seconds`, searches
   room by room (`advancing`, `searching`), fights fire it sees or feels nearby
   (`suppressing`), then leaves (`withdrawing`, `exited`). Put-out cells appear
   in `surface_fire` as `extinguished`.
+
+### Crowds
+
+Every body (occupant or firefighter) is a circle that moves in 0.1 s
+sub-steps; frames default to 0.5 s.
+
+- Doors (and a door-wide chute half a metre either side) and hallways
+  narrower than 1.8 m are **single file**: nobody walks abreast or overtakes
+  there. People meeting head-on, or someone standing in the way, squeeze
+  past each other slowly.
+- In open rooms people step around each other, press together a little
+  (`CROWD_GIVE_M`), and whoever is closer to their goal goes first and may
+  shove others aside, so crowds drain through a door instead of wedging.
+  Through a 0.9 m door that comes to roughly 1.2 to 1.4 people per second.
+- Firefighters outrank occupants: they usually win a contest for space (they
+  give way 20% of the time, by seeded roll), but are always slowed by
+  squeezing past people and by walking against an evacuating crowd.
+- Each occupant is given a random exit (evenly among the exits they can
+  reach, repeatable per seed), so people don't all head for the nearest
+  door. If fire cuts their exit off they switch, for good, to the nearest
+  exit they can still reach (`rerouting`). Routes avoid crowded cells.
+
+`POST /api/agents/spawn_occupants` takes `{ "count": 1..200, "layout":
+"spread" | "crowded" }`. `spread` (the default) has Gemini place people;
+`crowded` packs them into the largest rooms without Gemini, with hurried
+walking speeds, so queues reliably form.
 
 The Rust-only simulator currently returns `SurfaceFireFrame`, where the same
 cell array is named `active_nodes`. When the CFAST adapter is complete,

@@ -4,7 +4,7 @@ use tflop_simulation_core::{SURFACE_FIRE_SCHEMA_VERSION, SurfaceFireFrame, Surfa
 use tflop_world_core::Vec3;
 use thiserror::Error;
 
-use crate::{CfastFire, CfastFuel, CfastRoomFire, HeatReleasePoint};
+use crate::{CFAST_MAX_CURVE_POINTS, CfastFire, CfastFuel, CfastRoomFire, HeatReleasePoint};
 
 const HRR_EPSILON_KW: f64 = 1.0e-6;
 const DEFAULT_MINIMUM_FIRE_AREA_M2: f64 = 0.01;
@@ -124,9 +124,41 @@ fn build_room_fire(
             position_m: weighted_position,
             area_m2: peak_area_m2.max(config.minimum_fire_area_m2),
             fuel: config.fuel,
-            heat_release_curve: curve,
+            heat_release_curve: thin_curve(curve, CFAST_MAX_CURVE_POINTS),
         },
     }
+}
+
+/// Keeps a heat-release curve within `max_points`, as CFAST requires. The
+/// first and last points stay; the rest are split into equal runs, and each
+/// run keeps its hottest point, so peaks survive thinning.
+fn thin_curve(curve: Vec<HeatReleasePoint>, max_points: usize) -> Vec<HeatReleasePoint> {
+    if curve.len() <= max_points || max_points < 3 {
+        return curve;
+    }
+    let interior = &curve[1..curve.len() - 1];
+    let runs = max_points - 2;
+    let mut thinned = Vec::with_capacity(max_points);
+    thinned.push(curve[0]);
+    for run in 0..runs {
+        let start = run * interior.len() / runs;
+        let end = (run + 1) * interior.len() / runs;
+        if let Some(hottest) = interior[start..end]
+            .iter()
+            .copied()
+            .reduce(|hottest, point| {
+                if point.hrr_kw > hottest.hrr_kw {
+                    point
+                } else {
+                    hottest
+                }
+            })
+        {
+            thinned.push(hottest);
+        }
+    }
+    thinned.push(curve[curve.len() - 1]);
+    thinned
 }
 
 fn validate_config(config: SurfaceFireAdapterConfig) -> Result<(), SurfaceFireAdapterError> {

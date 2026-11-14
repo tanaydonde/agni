@@ -1,6 +1,6 @@
 use tflop_simulation_core::{
     AgentFrame, AgentFrameRole, CombustionState, Exposure, FireConditions, GasLayerConditions,
-    GridCoordinate, OccupantPhase, OpeningConditions, RoomConditions,
+    GridCoordinate, Movement, OccupantPhase, OpeningConditions, RoomConditions,
     SIMULATION_RESULTS_SCHEMA_VERSION, SimulationEngine, SimulationFrame, SimulationResults,
     SurfaceFireNodeFrame, SurfaceFireNodeSource,
 };
@@ -99,6 +99,7 @@ fn validates_agent_frames() {
             heat: -0.1,
             toxic_gas: 0.0,
         },
+        movement: Movement::Walking,
         role: AgentFrameRole::Occupant {
             phase: OccupantPhase::MovingToExit,
         },

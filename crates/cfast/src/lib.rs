@@ -19,7 +19,8 @@ pub use runner::{
     BUNDLED_CFAST_BIN, CFAST_SUPPORTED_VERSION, CfastRunError, CfastRunner, resolve_cfast_bin,
 };
 pub use scenario::{
-    CfastFire, CfastFuel, CfastOpeningState, CfastRoomFire, CfastScenario, HeatReleasePoint,
+    CFAST_MAX_CURVE_POINTS, CfastFire, CfastFuel, CfastOpeningState, CfastRoomFire, CfastScenario,
+    HeatReleasePoint,
 };
 pub use surface_adapter::{
     CfastSurfaceFireTimeline, SurfaceFireAdapterConfig, SurfaceFireAdapterError,

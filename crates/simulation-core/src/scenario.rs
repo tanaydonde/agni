@@ -12,14 +12,15 @@ use tflop_world_core::{
 use crate::{
     agent::{
         Agent, AgentRole, Exposure, FIREFIGHTER_RADIUS_M, FirefighterPhase, FirefighterState,
-        OCCUPANT_RADIUS_M, OccupantPhase, OccupantState,
+        Movement, OCCUPANT_RADIUS_M, OccupantPhase, OccupantState,
     },
     grid::SimulationGrid,
     nav::nearest_walkable_cell,
 };
 
 pub const SCENARIO_SCHEMA_VERSION: u32 = 1;
-pub const DEFAULT_OCCUPANT_WALKING_SPEED_M_PER_S: f64 = 1.2;
+/// A hurried walk: people evacuating move faster than they stroll.
+pub const DEFAULT_OCCUPANT_WALKING_SPEED_M_PER_S: f64 = 1.4;
 pub const DEFAULT_FIREFIGHTER_WALKING_SPEED_M_PER_S: f64 = 1.0;
 pub const MAX_CREW_MEMBERS: u32 = 8;
 
@@ -326,6 +327,7 @@ fn create_crews(
                 velocity_m_per_s: ZERO,
                 radius_m: FIREFIGHTER_RADIUS_M,
                 exposure: Exposure::NONE,
+                movement: Movement::Stopped,
                 role: AgentRole::Firefighter(FirefighterState {
                     crew_id: crew.id.clone(),
                     phase: FirefighterPhase::Staging,
@@ -419,6 +421,7 @@ fn create_occupants(
             velocity_m_per_s: ZERO,
             radius_m: OCCUPANT_RADIUS_M,
             exposure: Exposure::NONE,
+            movement: Movement::Stopped,
             role: AgentRole::Occupant(OccupantState {
                 phase: OccupantPhase::Unaware,
                 walking_speed_m_per_s: occupant.walking_speed_m_per_s,

@@ -1,8 +1,10 @@
 //! One deterministic run in which the fire and every agent advance together,
 //! one frame at a time.
 //!
-//! Each step decides, acts, advances the fire, then moves agents against the
-//! fire as it now stands. Running everything in one loop, rather than
+//! Each step, firefighters decide and spray against the fire as it stood,
+//! the fire advances, occupants decide against the fire as it now stands,
+//! and then one [`Crowd`] moves every body together, so occupants and crews
+//! block, queue behind, and squeeze past each other. Running everything in one loop, rather than
 //! replaying agents over a finished fire timeline, is what lets agents change
 //! the fire (firefighters suppressing it). The loop needs no renderer, so the
 //! same code serves a single interactive run and many Monte Carlo samples.
@@ -10,9 +12,9 @@
 use thiserror::Error;
 
 use crate::{
-    AgentFrame, CombustionState, Evacuation, EvacuationError, Firefighting, FirefightingError,
-    SimulationFrame, Suppression, SurfaceFireError, SurfaceFireFrame, SurfaceFireNodeFrame,
-    SurfaceFireWorld,
+    AgentFrame, CombustionState, CrowdConfig, CrowdConfigError, Evacuation, EvacuationError,
+    Firefighting, FirefightingError, SimulationFrame, Suppression, SurfaceFireError,
+    SurfaceFireFrame, SurfaceFireNodeFrame, SurfaceFireWorld, crowd::Crowd,
 };
 
 #[derive(Debug)]
@@ -20,6 +22,7 @@ pub struct Rehearsal {
     fire: SurfaceFireWorld,
     evacuation: Option<Evacuation>,
     firefighting: Option<Firefighting>,
+    crowd: Crowd,
     fire_active: bool,
     /// Fire as of the last recorded frame: what firefighters act on next.
     last_fire: Vec<SurfaceFireNodeFrame>,
@@ -54,10 +57,12 @@ impl Rehearsal {
     /// fire-only runs use the same loop.
     #[must_use]
     pub fn new(fire: SurfaceFireWorld, evacuation: Option<Evacuation>) -> Self {
+        let seed = evacuation.as_ref().map_or(0, Evacuation::crowd_seed);
         Self {
             fire,
             evacuation,
             firefighting: None,
+            crowd: Crowd::new(CrowdConfig::default(), seed),
             fire_active: false,
             last_fire: Vec::new(),
         }
@@ -67,9 +72,29 @@ impl Rehearsal {
     /// the previous frame, and their water is applied before the fire
     /// advances.
     #[must_use]
-    pub fn with_firefighting(mut self, firefighting: Firefighting) -> Self {
+    pub fn with_firefighting(mut self, mut firefighting: Firefighting) -> Self {
+        firefighting.set_crowd_config(self.crowd.config());
         self.firefighting = Some(firefighting);
         self
+    }
+
+    /// Changes how bodies push through each other and how strongly crowds
+    /// steer occupants to other exits.
+    pub fn with_crowd_config(mut self, config: CrowdConfig) -> Result<Self, RehearsalError> {
+        config.validate()?;
+        self.crowd = Crowd::new(config, self.crowd.seed());
+        if let Some(evacuation) = &mut self.evacuation {
+            evacuation.set_crowd_config(config);
+        }
+        if let Some(firefighting) = &mut self.firefighting {
+            firefighting.set_crowd_config(config);
+        }
+        Ok(self)
+    }
+
+    #[must_use]
+    pub const fn evacuation(&self) -> Option<&Evacuation> {
+        self.evacuation.as_ref()
     }
 
     #[must_use]
@@ -105,10 +130,10 @@ impl Rehearsal {
         for suppression in suppressions {
             suppression.validate()?;
         }
+        let time_seconds = self.fire.time_seconds() + delta_seconds;
         let mut water = Vec::new();
         if let Some(firefighting) = &mut self.firefighting {
-            water = firefighting
-                .advance_to(self.fire.time_seconds() + delta_seconds, &self.last_fire)?;
+            water = firefighting.plan(time_seconds, &self.last_fire)?.0;
             for suppression in &water {
                 suppression.validate()?;
             }
@@ -117,6 +142,29 @@ impl Rehearsal {
             self.fire.suppress(suppression, delta_seconds)?;
         }
         let fire = self.fire.step(delta_seconds)?;
+
+        if let Some(evacuation) = &mut self.evacuation {
+            let crews = self
+                .firefighting
+                .as_ref()
+                .map_or(&[][..], Firefighting::agents);
+            evacuation.plan(fire.time_seconds, &fire.active_nodes, crews)?;
+        }
+        let mut groups = Vec::with_capacity(2);
+        if let Some(evacuation) = &mut self.evacuation {
+            groups.push(evacuation.crowd_group());
+        }
+        if let Some(firefighting) = &mut self.firefighting {
+            groups.push(firefighting.crowd_group());
+        }
+        self.crowd.step(&mut groups, delta_seconds);
+        drop(groups);
+        if let Some(evacuation) = &mut self.evacuation {
+            evacuation.finish(fire.time_seconds);
+        }
+        if let Some(firefighting) = &mut self.firefighting {
+            firefighting.finish(fire.time_seconds);
+        }
         self.record(fire)
     }
 
@@ -161,10 +209,10 @@ impl Rehearsal {
             .active_nodes
             .iter()
             .any(|node| node.state == CombustionState::Burning);
-        let mut agents = match &mut self.evacuation {
-            Some(evacuation) => evacuation.advance_to(fire.time_seconds, &fire.active_nodes)?,
-            None => Vec::new(),
-        };
+        let mut agents = self
+            .evacuation
+            .as_ref()
+            .map_or_else(Vec::new, Evacuation::frames);
         if let Some(firefighting) = &self.firefighting {
             agents.extend(firefighting.frames());
         }
@@ -181,6 +229,8 @@ pub enum RehearsalError {
     Evacuation(#[from] EvacuationError),
     #[error(transparent)]
     Firefighting(#[from] FirefightingError),
+    #[error(transparent)]
+    CrowdConfig(#[from] CrowdConfigError),
     #[error("step_seconds must be finite and greater than zero, got {step_seconds}")]
     InvalidStep { step_seconds: f64 },
 }
