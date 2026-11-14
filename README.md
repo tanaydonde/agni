@@ -137,3 +137,22 @@ vertical gap (a chandelier over a table) are ignored, and footprints that fill
 their rectangle poorly (an L-shaped sofa) are split into several boxes. Each
 box is drawn as the catalog asset closest to it in size, whatever the
 furniture actually is; the measured box is always the object's size.
+
+## Furniture models
+
+The model files are not in Git (some licenses don't allow redistributing
+them); download each one from its link in `assets/furniture/CREDITS.md`.
+Downloaded models go, untouched, in `assets/furniture/source/`, named as in
+`assets/furniture/models.json`. Give each
+one an entry in `assets/furniture/models.json` with its real-world size: a
+`scale` when the units are known (`0.01` for centimetres) or a `height_m`
+when they aren't, plus `yaw_degrees` if its front doesn't face +Z. Then:
+
+```bash
+pnpm --filter web normalize-furniture        # all models, or name model ids
+```
+
+This writes `apps/web/public/models/furniture/<id>.glb` in metres, Y-up,
+with the long side along X and the footprint centred on the origin at floor
+level, and regenerates `assets/furniture/CREDITS.md` from each model's
+embedded author and license.
