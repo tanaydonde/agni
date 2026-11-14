@@ -6,8 +6,8 @@ use std::{
 };
 
 use tflop_cfast::{
-    CfastFire, CfastFuel, CfastOpeningState, CfastRunner, CfastScenario, HeatReleasePoint,
-    prepare_cfast_scene,
+    CfastFire, CfastFuel, CfastOpeningState, CfastRoomFire, CfastRunner, CfastScenario,
+    HeatReleasePoint, prepare_cfast_scene,
 };
 use tflop_world_core::{Scene, Vec3, resolve_opening_connections};
 
@@ -68,30 +68,33 @@ fn main() -> Result<(), Box<dyn Error>> {
                 open_fraction: 1.0,
             })
             .collect(),
-        fire: CfastFire {
-            id: "trial-fire".to_owned(),
-            position_m: Vec3 {
-                x: fire_x.parse()?,
-                y: fire_y.parse()?,
-                z: 0.0,
+        fires: vec![CfastRoomFire {
+            room_id: room_id.clone(),
+            fire: CfastFire {
+                id: "trial-fire".to_owned(),
+                position_m: Vec3 {
+                    x: fire_x.parse()?,
+                    y: fire_y.parse()?,
+                    z: 0.0,
+                },
+                area_m2: 0.3,
+                fuel: CfastFuel::default(),
+                heat_release_curve: vec![
+                    HeatReleasePoint {
+                        time_seconds: 0.0,
+                        hrr_kw: 0.0,
+                    },
+                    HeatReleasePoint {
+                        time_seconds: 60.0,
+                        hrr_kw: 300.0,
+                    },
+                    HeatReleasePoint {
+                        time_seconds: 120.0,
+                        hrr_kw: 300.0,
+                    },
+                ],
             },
-            area_m2: 0.3,
-            fuel: CfastFuel::default(),
-            heat_release_curve: vec![
-                HeatReleasePoint {
-                    time_seconds: 0.0,
-                    hrr_kw: 0.0,
-                },
-                HeatReleasePoint {
-                    time_seconds: 60.0,
-                    hrr_kw: 300.0,
-                },
-                HeatReleasePoint {
-                    time_seconds: 120.0,
-                    hrr_kw: 300.0,
-                },
-            ],
-        },
+        }],
     };
 
     let results = CfastRunner::new(cfast_path)?.run_all_rooms(&scene, &scenario)?;

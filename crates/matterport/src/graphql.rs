@@ -34,6 +34,13 @@ query MeshAssets($id: ID!) {
     assets {
       meshes { filename url }
     }
+    views(types: ["matterport.model.defurnished"]) {
+      model {
+        assets {
+          meshes { filename url }
+        }
+      }
+    }
   }
 }
 "#;
@@ -94,6 +101,18 @@ pub(crate) struct MeshAssetsData {
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct MeshAssetsModel {
+    pub assets: Option<ModelAssets>,
+    #[serde(default)]
+    pub views: Vec<ModelView>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ModelView {
+    pub model: Option<ViewModel>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ViewModel {
     pub assets: Option<ModelAssets>,
 }
 

@@ -1,6 +1,6 @@
 use tflop_cfast::{
-    CfastFire, CfastFuel, CfastOpeningState, CfastParseError, CfastScenario, HeatReleasePoint,
-    parse_cfast_results,
+    CfastFire, CfastFuel, CfastOpeningState, CfastParseError, CfastRoomFire, CfastScenario,
+    HeatReleasePoint, parse_cfast_results,
 };
 use tflop_world_core::{
     BoundaryEdge, BoundaryKind, Floor, Opening, OpeningKind, Room, SCENE_SCHEMA_VERSION, Scene,
@@ -112,6 +112,37 @@ fn parses_conditions_for_every_compartment_in_the_output() {
 }
 
 #[test]
+fn parses_every_fire_in_a_multi_room_scenario() {
+    let mut scene = scene_fixture();
+    let mut second_room = scene.floors[0].rooms[0].clone();
+    second_room.id = "room-2".to_owned();
+    second_room.boundary[0].id = "edge-2".to_owned();
+    second_room.boundary[0].openings.clear();
+    scene.floors[0].rooms.push(second_room);
+    let mut scenario = scenario_fixture();
+    scenario.fires.push(CfastRoomFire {
+        room_id: "room-2".to_owned(),
+        fire: CfastFire {
+            id: "fire-2".to_owned(),
+            position_m: point(2.0, 2.0),
+            area_m2: 0.2,
+            fuel: CfastFuel::default(),
+            heat_release_curve: scenario.fires[0].fire.heat_release_curve.clone(),
+        },
+    });
+    let compartments = append_second_fire(&append_second_room(COMPARTMENTS_CSV));
+
+    let results = parse_cfast_results(&scene, &scenario, "7.7.7", &compartments, VENTS_CSV)
+        .expect("both fires should parse");
+
+    let fires = &results.frames[1].fires;
+    assert_eq!(fires.len(), 2);
+    assert_eq!(fires[1].fire_id, "fire-2");
+    assert_eq!(fires[1].room_id, "room-2");
+    assert_eq!(fires[1].actual_hrr_kw, 50.0);
+}
+
+#[test]
 fn parses_conditions_for_every_vent_in_the_output() {
     let mut scene = scene_fixture();
     scene.floors[0].rooms[0].boundary[0].openings.push(Opening {
@@ -168,6 +199,23 @@ fn append_second_room(input: &str) -> String {
         .join("\n")
 }
 
+fn append_second_fire(input: &str) -> String {
+    let additions = [
+        "IGN_2,PYROL_2,HRR_E2,HRR_2,HRRC_2,FLHGT_2",
+        "Ignition,Pyrolysis,Expected HRR,Actual HRR,Convective HRR,Flame Height",
+        "fire-2,fire-2,fire-2,fire-2,fire-2,fire-2",
+        ",kg/s,W,W,W,m",
+        "0,0,0,0,0,0",
+        "1,0.002,50000,50000,32500,0.6",
+    ];
+    input
+        .lines()
+        .zip(additions)
+        .map(|(line, addition)| format!("{line},{addition}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn scenario_fixture() -> CfastScenario {
     CfastScenario {
         id: "scenario-1".to_owned(),
@@ -183,22 +231,25 @@ fn scenario_fixture() -> CfastScenario {
             opening_id: "door-1".to_owned(),
             open_fraction: 1.0,
         }],
-        fire: CfastFire {
-            id: "fire-1".to_owned(),
-            position_m: point(2.0, 2.0),
-            area_m2: 0.3,
-            fuel: CfastFuel::default(),
-            heat_release_curve: vec![
-                HeatReleasePoint {
-                    time_seconds: 0.0,
-                    hrr_kw: 0.0,
-                },
-                HeatReleasePoint {
-                    time_seconds: 1.0,
-                    hrr_kw: 75.0,
-                },
-            ],
-        },
+        fires: vec![CfastRoomFire {
+            room_id: "room-1".to_owned(),
+            fire: CfastFire {
+                id: "fire-1".to_owned(),
+                position_m: point(2.0, 2.0),
+                area_m2: 0.3,
+                fuel: CfastFuel::default(),
+                heat_release_curve: vec![
+                    HeatReleasePoint {
+                        time_seconds: 0.0,
+                        hrr_kw: 0.0,
+                    },
+                    HeatReleasePoint {
+                        time_seconds: 1.0,
+                        hrr_kw: 75.0,
+                    },
+                ],
+            },
+        }],
     }
 }
 

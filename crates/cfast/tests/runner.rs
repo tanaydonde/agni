@@ -1,5 +1,6 @@
 use tflop_cfast::{
-    CfastFire, CfastFuel, CfastOpeningState, CfastRunner, CfastScenario, HeatReleasePoint,
+    CfastFire, CfastFuel, CfastOpeningState, CfastRoomFire, CfastRunner, CfastScenario,
+    HeatReleasePoint,
 };
 use tflop_world_core::{
     BoundaryEdge, BoundaryKind, Floor, Opening, OpeningKind, Room, RoomDimensions,
@@ -51,6 +52,39 @@ fn runs_and_parses_multiple_compartments() {
 
 #[test]
 #[ignore = "requires an external CFAST 7.7.7 executable"]
+fn runs_and_parses_simultaneous_fires_in_multiple_rooms() {
+    let executable = std::env::var("CFAST_BIN").expect("CFAST_BIN must point to CFAST 7.7.7");
+    let runner = CfastRunner::new(executable).expect("CFAST executable should resolve");
+    let mut scenario = scenario_fixture();
+    let mut second_curve = scenario.fires[0].fire.heat_release_curve.clone();
+    for point in &mut second_curve {
+        point.hrr_kw *= 0.5;
+    }
+    scenario.fires.push(CfastRoomFire {
+        room_id: "Second Room".to_owned(),
+        fire: CfastFire {
+            id: "Second Fire".to_owned(),
+            position_m: point(8.5, 2.0),
+            area_m2: 0.2,
+            fuel: CfastFuel::default(),
+            heat_release_curve: second_curve,
+        },
+    });
+
+    let results = runner
+        .run_all_rooms(&two_room_scene(), &scenario)
+        .expect("multi-fire CFAST should run and parse");
+
+    let last = results.frames.last().expect("frames exist");
+    assert_eq!(last.fires.len(), 2);
+    assert_eq!(last.fires[0].fire_id, "Demo Fire");
+    assert_eq!(last.fires[1].fire_id, "Second Fire");
+    assert!((last.fires[0].actual_hrr_kw - 300.0).abs() < 0.01);
+    assert!((last.fires[1].actual_hrr_kw - 150.0).abs() < 0.01);
+}
+
+#[test]
+#[ignore = "requires an external CFAST 7.7.7 executable"]
 fn spreads_fire_conditions_through_an_open_interior_door() {
     let executable = std::env::var("CFAST_BIN").expect("CFAST_BIN must point to CFAST 7.7.7");
     let runner = CfastRunner::new(executable).expect("CFAST executable should resolve");
@@ -86,30 +120,33 @@ fn scenario_fixture() -> CfastScenario {
             opening_id: "Exterior Door".to_owned(),
             open_fraction: 1.0,
         }],
-        fire: CfastFire {
-            id: "Demo Fire".to_owned(),
-            position_m: point(2.5, 2.0),
-            area_m2: 0.3,
-            fuel: CfastFuel::default(),
-            heat_release_curve: vec![
-                HeatReleasePoint {
-                    time_seconds: 0.0,
-                    hrr_kw: 0.0,
-                },
-                HeatReleasePoint {
-                    time_seconds: 30.0,
-                    hrr_kw: 75.0,
-                },
-                HeatReleasePoint {
-                    time_seconds: 60.0,
-                    hrr_kw: 300.0,
-                },
-                HeatReleasePoint {
-                    time_seconds: 120.0,
-                    hrr_kw: 300.0,
-                },
-            ],
-        },
+        fires: vec![CfastRoomFire {
+            room_id: "Demo Room".to_owned(),
+            fire: CfastFire {
+                id: "Demo Fire".to_owned(),
+                position_m: point(2.5, 2.0),
+                area_m2: 0.3,
+                fuel: CfastFuel::default(),
+                heat_release_curve: vec![
+                    HeatReleasePoint {
+                        time_seconds: 0.0,
+                        hrr_kw: 0.0,
+                    },
+                    HeatReleasePoint {
+                        time_seconds: 30.0,
+                        hrr_kw: 75.0,
+                    },
+                    HeatReleasePoint {
+                        time_seconds: 60.0,
+                        hrr_kw: 300.0,
+                    },
+                    HeatReleasePoint {
+                        time_seconds: 120.0,
+                        hrr_kw: 300.0,
+                    },
+                ],
+            },
+        }],
     }
 }
 

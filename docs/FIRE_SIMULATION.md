@@ -45,6 +45,55 @@ ignition time, heat-release rate, temperature estimate, and remaining fuel.
 `room_heat_release` aggregates the current fire output for the future CFAST
 coupling step.
 
+## Rust timeline to CFAST fires
+
+After collecting the complete sequence of `SurfaceFireFrame`s, convert it into
+room-level CFAST inputs:
+
+```rust
+let cfast_timeline = adapt_surface_fire_for_cfast(
+    &surface_frames,
+    SurfaceFireAdapterConfig::default(),
+)?;
+```
+
+`CfastSurfaceFireTimeline.room_fires` contains one `CfastRoomFire` for every
+room that burns at any point. Each fire has:
+
+- an HRR curve containing one point per Rust frame;
+- a fixed HRR-weighted position representing the spatial cells over the run;
+- the largest simultaneous burning-cell area observed in that room; and
+- the configured CFAST fuel chemistry.
+
+The adapter verifies that frame times are ordered, scene IDs match, node IDs
+are unique, and every reported room HRR equals the sum of its spatial cells.
+Assign its output to a scenario and run the all-room solver:
+
+```rust
+scenario.duration_seconds = cfast_timeline.duration_seconds;
+scenario.fires = cfast_timeline.room_fires;
+let cfast_results = runner.run_all_rooms(&scene, &scenario)?;
+```
+
+The exporter writes every room fire into one CFAST input, and the parser maps
+every resulting fire record back to its canonical room ID. The remaining
+coupling call produces the frontend timeline:
+
+```rust
+let results = merge_cfast_with_surface_fire(
+    &scene,
+    &cfast_results,
+    &surface_frames,
+)?;
+```
+
+The merged timeline retains every Rust timestamp and copies its active spatial
+cells into `frames[*].surface_fire`. If CFAST output is coarser, room, fire,
+gas, and opening values are linearly interpolated. Discrete ignition state
+uses the last solver observation until the next CFAST frame. The completed
+result is validated against the canonical scene before it reaches the
+frontend.
+
 ## Combined results
 
 The versioned `SimulationResults.frames[*].surface_fire` field uses the same

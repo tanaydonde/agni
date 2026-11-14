@@ -58,7 +58,8 @@ impl MatterportClient {
     }
 
     /// Downloads the model's defurnished mesh: an untextured, Z-up OBJ of the
-    /// space with furniture removed. Returns `None` if the model has none.
+    /// space with furniture removed. Supports both legacy direct assets and
+    /// the newer defurnished-view model. Returns `None` if neither exists.
     pub async fn fetch_defurnished_mesh(
         &self,
         model_id: &str,
@@ -89,10 +90,11 @@ impl MatterportClient {
             return Err(MatterportError::GraphQl(messages));
         }
 
-        let url = response
+        let model = response
             .data
             .and_then(|data| data.model)
-            .ok_or_else(|| MatterportError::MissingModel(model_id.to_owned()))?
+            .ok_or_else(|| MatterportError::MissingModel(model_id.to_owned()))?;
+        let direct_url = model
             .assets
             .into_iter()
             .flat_map(|assets| assets.meshes)
@@ -102,6 +104,19 @@ impl MatterportClient {
                     .is_some_and(|name| name.starts_with("defurnished") && name.ends_with(".obj"))
             })
             .and_then(|mesh| mesh.url);
+        let view_url = model
+            .views
+            .into_iter()
+            .filter_map(|view| view.model)
+            .filter_map(|model| model.assets)
+            .flat_map(|assets| assets.meshes)
+            .find(|mesh| {
+                mesh.filename
+                    .as_deref()
+                    .is_some_and(|name| name.to_ascii_lowercase().ends_with(".obj"))
+            })
+            .and_then(|mesh| mesh.url);
+        let url = direct_url.or(view_url);
         let Some(url) = url else {
             return Ok(None);
         };
