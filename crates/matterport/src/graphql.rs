@@ -28,6 +28,45 @@ query ImportModel($id: ID!) {
 }
 "#;
 
+pub(crate) const MESH_ASSETS_QUERY: &str = r#"
+query MeshAssets($id: ID!) {
+  model(id: $id) {
+    assets {
+      meshes { filename url }
+    }
+  }
+}
+"#;
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct MeshAssetsResponse {
+    pub data: Option<MeshAssetsData>,
+    #[serde(default)]
+    pub errors: Vec<GraphQlError>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct MeshAssetsData {
+    pub model: Option<MeshAssetsModel>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct MeshAssetsModel {
+    pub assets: Option<ModelAssets>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ModelAssets {
+    #[serde(default)]
+    pub meshes: Vec<MeshAsset>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct MeshAsset {
+    pub filename: Option<String>,
+    pub url: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct GraphQlRequest<'a> {
     pub query: &'a str,

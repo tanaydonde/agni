@@ -15,3 +15,7 @@ __pycache__/
 /data/prepared-scenes/*.jpg
 /data/prepared-scenes/*.png
 /data/prepared-scenes/*.xyz
+
+# Node / web build output
+node_modules/
+dist/
