@@ -1,8 +1,15 @@
 //! Canonical scene types and world rules shared by every tflop component.
 
+mod agent_api;
 mod model;
 mod validation;
 
+pub use agent_api::{
+    AddObjectRequest, ApplyEditsRequest, EditCommand, EditResponse, GetSceneResponse,
+    ListAssetsResponse, MoveObjectRequest, RemoveObjectRequest, RotateObjectRequest,
+    SetObjectTransformRequest, ValidateLayoutResponse, ValidationIssue, World, WorldApiError,
+    WorldApiResult,
+};
 pub use model::{
     BoundaryEdge, BoundaryKind, Dimensions3, Floor, FurnitureAsset, FurnitureObject, Mobility,
     Opening, OpeningKind, Quaternion, Room, RoomClassification, RoomDimensions,
