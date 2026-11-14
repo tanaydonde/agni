@@ -63,7 +63,9 @@ The final payload is `SimulationResults`. Choose a frame using
   lays them on the floor, and carries them over the firefighter's shoulder.
   Firefighters follow the occupants in the same array (`role.type ===
   'firefighter'`, IDs `{crew_id}/{n}`, `/1` leads). A crew doesn't know where
-  the fire is: it stages at its entry until `arrival_time_seconds`, then walks
+  the fire is: it stages outside until it is called (when the occupants'
+  alarm is raised; at ignition if nobody is in the building), arrives
+  `arrival_time_seconds` after the call, then walks
   into the rooms on its `route` in order without stopping (`advancing`, at
   1.5 m/s until it knows of fire), sees whatever is in a room once inside it,
   and enters the remaining rooms nearest first. Fire it sees or feels nearby

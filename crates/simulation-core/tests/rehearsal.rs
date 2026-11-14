@@ -27,7 +27,7 @@ fn matches_replaying_occupants_over_a_finished_fire() {
     let mut evacuation = Evacuation::new(&scene, &occupants, SimulationConfig::default())
         .expect("evacuation builds")
         .with_alarm(AlarmConfig::Immediate);
-    let mut fire_frames = vec![fire.ignite_object("chair-1").expect("chair ignites")];
+    let mut fire_frames = vec![fire.start_fire("chair-1").expect("chair ignites")];
     for _ in 0..8 {
         fire_frames.push(fire.step(1.0).expect("fire steps"));
     }

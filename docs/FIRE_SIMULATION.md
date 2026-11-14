@@ -36,7 +36,20 @@ data model already stores material state per cell for future mixed materials.
 
 Each combustible floor patch is identified by `floor_id` and grid coordinate.
 Nearby nodes exchange heat, ignite after reaching their material threshold,
-consume fuel, and become `burned_out`.
+consume fuel, and become `burned_out`. Two more paths make fires spread the
+way room fires do:
+
+- Burning furniture radiates onto floor cells within
+  `furniture_floor_radiation_m` (1 m) in its room, so a burning sofa lights
+  the carpet around it, and furniture within `furniture_radiation_range_m`
+  (2.5 m) heats other furniture.
+- `room_heat_fraction` (2%) of every burning node's output heats the whole
+  room it is in, shared over the room's unburnt fuel by area, as hot smoke
+  under the ceiling does. It never crosses walls. With it, a sofa fire takes
+  over a 4 x 4 m carpeted room in about a minute.
+
+`start_fire` (what a rehearsal uses) lights a small patch of an object: the
+cell `ignite_object` lights plus the cells beside it on the same layer.
 
 `SurfaceFireFrame.active_nodes` contains only heating, burning, or burned-out
 nodes. Every entry includes its world position, dimensions, optional

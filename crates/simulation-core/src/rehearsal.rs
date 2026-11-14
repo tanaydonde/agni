@@ -107,9 +107,11 @@ impl Rehearsal {
         self.firefighting.as_ref()
     }
 
-    /// Ignites an object without advancing time and records the frame.
+    /// Starts a fire on an object (a small patch of it, see
+    /// [`SurfaceFireWorld::start_fire`]) without advancing time and records
+    /// the frame.
     pub fn ignite_object(&mut self, object_id: &str) -> Result<RehearsalFrame, RehearsalError> {
-        let fire = self.fire.ignite_object(object_id)?;
+        let fire = self.fire.start_fire(object_id)?;
         self.record(fire)
     }
 

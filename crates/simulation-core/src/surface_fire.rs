@@ -145,10 +145,30 @@ pub struct SurfaceFireConfig {
     /// sofa takes about 20 seconds.
     #[serde(default = "default_knockdown_seconds")]
     pub suppression_knockdown_seconds: f64,
+    /// Share of every burning node's output that heats the whole room it is
+    /// in, as hot smoke gathering under the ceiling does. Spread over the
+    /// room's unburnt fuel by area, it is what lets a room fire take over
+    /// the whole room.
+    #[serde(default = "default_room_heat_fraction")]
+    pub room_heat_fraction: f64,
+    /// Burning furniture heats floor within this distance of it, so a
+    /// burning sofa lights the carpet around it.
+    #[serde(default = "default_furniture_floor_radiation_m")]
+    pub furniture_floor_radiation_m: f64,
 }
 
 const fn default_knockdown_seconds() -> f64 {
     30.0
+}
+
+/// With this share a sofa fire takes over a 4 x 4 m carpeted room in about
+/// a minute; much more and the whole room flashes over at once.
+const fn default_room_heat_fraction() -> f64 {
+    0.02
+}
+
+const fn default_furniture_floor_radiation_m() -> f64 {
+    1.0
 }
 
 impl Default for SurfaceFireConfig {
@@ -156,8 +176,10 @@ impl Default for SurfaceFireConfig {
         Self {
             cell_size_m: 0.5,
             ambient_temperature_c: 20.0,
-            furniture_radiation_range_m: 1.5,
+            furniture_radiation_range_m: 2.5,
             suppression_knockdown_seconds: default_knockdown_seconds(),
+            room_heat_fraction: default_room_heat_fraction(),
+            furniture_floor_radiation_m: default_furniture_floor_radiation_m(),
         }
     }
 }
@@ -321,6 +343,9 @@ pub struct SurfaceFireWorld {
     nodes: Vec<SurfaceFireNode>,
     node_indices: HashMap<String, usize>,
     connections: Vec<Vec<HeatConnection>>,
+    /// Index of each node's room, for room-wide heat.
+    node_rooms: Vec<usize>,
+    room_count: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -476,6 +501,25 @@ impl SurfaceFireWorld {
             &mut connections,
             &mut connected_pairs,
         );
+        connect_furniture_to_nearby_floor(
+            &grids,
+            &nodes,
+            &floor_nodes,
+            &furniture_nodes,
+            config.furniture_floor_radiation_m,
+            &mut connections,
+            &mut connected_pairs,
+        );
+
+        let mut rooms = HashMap::<&str, usize>::new();
+        let node_rooms = nodes
+            .iter()
+            .map(|node| {
+                let next = rooms.len();
+                *rooms.entry(node.room_id.as_str()).or_insert(next)
+            })
+            .collect::<Vec<_>>();
+        let room_count = rooms.len();
 
         let node_indices = nodes
             .iter()
@@ -489,6 +533,8 @@ impl SurfaceFireWorld {
             nodes,
             node_indices,
             connections,
+            node_rooms,
+            room_count,
         })
     }
 
@@ -533,8 +579,43 @@ impl SurfaceFireWorld {
         Ok(self.snapshot())
     }
 
+    /// Ignites one bottom cell near the center of an object.
     pub fn ignite_object(&mut self, object_id: &str) -> Result<SurfaceFireFrame, SurfaceFireError> {
         self.ignite_node(&object_node_id(object_id))
+    }
+
+    /// Starts a fire on an object: the cell [`ignite_object`](Self::ignite_object)
+    /// lights plus the cells beside it on the same layer, so a fire starts as
+    /// a small patch rather than one cell.
+    pub fn start_fire(&mut self, object_id: &str) -> Result<SurfaceFireFrame, SurfaceFireError> {
+        let node_id = object_node_id(object_id);
+        self.ignite_node(&node_id)?;
+        let index = self.node_indices[&node_id];
+        let Some(seed_cell) = self.nodes[index].furniture_cell else {
+            return Ok(self.snapshot());
+        };
+        let beside = self.connections[index]
+            .iter()
+            .map(|connection| connection.neighbor)
+            .filter(|&neighbor| {
+                self.nodes[neighbor].source == self.nodes[index].source
+                    && self.nodes[neighbor]
+                        .furniture_cell
+                        .is_some_and(|cell| cell.layer == seed_cell.layer)
+            })
+            .collect::<Vec<_>>();
+        for neighbor in beside {
+            let node = &mut self.nodes[neighbor];
+            if matches!(
+                node.state,
+                CombustionState::Unignited | CombustionState::Heating
+            ) {
+                node.state = CombustionState::Burning;
+                node.ignition_time_seconds = Some(self.time_seconds);
+                node.absorbed_heat_kj = ignition_energy(node);
+            }
+        }
+        Ok(self.snapshot())
     }
 
     /// Ignites one exact cell in a furniture object's local grid.
@@ -681,6 +762,36 @@ impl SurfaceFireWorld {
             for connection in &self.connections[index] {
                 incoming_heat_kw[connection.neighbor] +=
                     transferable_kw * connection.weight / weight_sum;
+            }
+        }
+
+        // Hot smoke heats everything in the room that isn't burning yet.
+        let mut room_heat_kw = vec![0.0; self.room_count];
+        let mut room_fuel_area_m2 = vec![0.0; self.room_count];
+        for (index, node) in self.nodes.iter().enumerate() {
+            let room = self.node_rooms[index];
+            match node.state {
+                CombustionState::Burning => {
+                    room_heat_kw[room] += current_hrr_kw(node) * self.config.room_heat_fraction;
+                }
+                CombustionState::Unignited
+                | CombustionState::Heating
+                | CombustionState::Extinguished
+                    if node.material.combustible =>
+                {
+                    room_fuel_area_m2[room] += node.area_m2;
+                }
+                _ => {}
+            }
+        }
+        for (index, node) in self.nodes.iter().enumerate() {
+            let room = self.node_rooms[index];
+            if node.state != CombustionState::Burning
+                && node.material.combustible
+                && room_fuel_area_m2[room] > 0.0
+            {
+                incoming_heat_kw[index] +=
+                    room_heat_kw[room] * node.area_m2 / room_fuel_area_m2[room];
             }
         }
 
@@ -887,6 +998,69 @@ fn connect_furniture_to_floor(
             };
             if let Some(&floor_node) = floor_nodes.get(&(floor.id.clone(), coordinate)) {
                 connect(connections, connected_pairs, floor_node, object_node, 1.5);
+            }
+        }
+    }
+}
+
+/// Connects every exposed furniture cell to the floor cells of its room
+/// within `range_m`, weighted by how close they are, so burning furniture
+/// lights the floor around it.
+fn connect_furniture_to_nearby_floor(
+    grids: &[(&tflop_world_core::Floor, SimulationGrid)],
+    nodes: &[SurfaceFireNode],
+    floor_nodes: &HashMap<(String, GridCoordinate), usize>,
+    furniture_nodes: &HashMap<String, Vec<usize>>,
+    range_m: f64,
+    connections: &mut [Vec<HeatConnection>],
+    connected_pairs: &mut HashSet<(usize, usize)>,
+) {
+    if range_m <= 0.0 {
+        return;
+    }
+    for indices in furniture_nodes.values() {
+        for &object_node in indices {
+            let node = &nodes[object_node];
+            if !is_exposed_furniture_cell(node) {
+                continue;
+            }
+            let Some((floor, grid)) = grids.iter().find(|(floor, _)| floor.id == node.floor_id)
+            else {
+                continue;
+            };
+            let Some(center) = grid.world_to_cell(node.position_m) else {
+                continue;
+            };
+            let span = ((range_m + node.dimensions_m.width_m.max(node.dimensions_m.depth_m))
+                / grid.cell_size_m)
+                .ceil() as i64;
+            for row in -span..=span {
+                for column in -span..=span {
+                    let (Ok(column), Ok(row)) = (
+                        u32::try_from(i64::from(center.column) + column),
+                        u32::try_from(i64::from(center.row) + row),
+                    ) else {
+                        continue;
+                    };
+                    let Some(&floor_node) =
+                        floor_nodes.get(&(floor.id.clone(), GridCoordinate { column, row }))
+                    else {
+                        continue;
+                    };
+                    if nodes[floor_node].room_id != node.room_id {
+                        continue;
+                    }
+                    let gap = node_gap_m(node, &nodes[floor_node]);
+                    if gap <= range_m {
+                        connect(
+                            connections,
+                            connected_pairs,
+                            floor_node,
+                            object_node,
+                            1.0 / (1.0 + gap),
+                        );
+                    }
+                }
             }
         }
     }
@@ -1181,6 +1355,16 @@ fn validate_config(config: SurfaceFireConfig) -> Result<(), SurfaceFireError> {
     {
         return Err(SurfaceFireError::InvalidConfig {
             field: "suppression_knockdown_seconds",
+        });
+    }
+    if !(0.0..=1.0).contains(&config.room_heat_fraction) {
+        return Err(SurfaceFireError::InvalidConfig {
+            field: "room_heat_fraction",
+        });
+    }
+    if !config.furniture_floor_radiation_m.is_finite() || config.furniture_floor_radiation_m < 0.0 {
+        return Err(SurfaceFireError::InvalidConfig {
+            field: "furniture_floor_radiation_m",
         });
     }
     Ok(())
