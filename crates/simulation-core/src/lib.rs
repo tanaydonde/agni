@@ -1,13 +1,19 @@
 //! Deterministic simulation lifecycle and renderer-facing state snapshots.
 
+mod agent;
 mod grid;
 mod results;
+mod scenario;
 mod surface_fire;
 
 use serde::{Deserialize, Serialize};
-use tflop_world_core::{Scene, SceneValidationErrors, Vec3};
+use tflop_world_core::{OpeningTopologyError, Scene, SceneValidationErrors, Vec3};
 use thiserror::Error;
 
+pub use agent::{
+    Agent, AgentFrame, AgentFrameRole, AgentRole, Exposure, FIREFIGHTER_RADIUS_M, FirefighterPhase,
+    FirefighterState, OCCUPANT_RADIUS_M, OccupantPhase, OccupantState,
+};
 pub use grid::{
     GridBounds, GridBuildError, GridCell, GridCellKind, GridCoordinate, GridSummary, SimulationGrid,
 };
@@ -15,6 +21,11 @@ pub use results::{
     FireConditions, GasLayerConditions, OpeningConditions, ResultsValidationError,
     ResultsValidationErrors, RoomConditions, SIMULATION_RESULTS_SCHEMA_VERSION, SimulationEngine,
     SimulationFrame, SimulationResults,
+};
+pub use scenario::{
+    CrewSpawn, DEFAULT_FIREFIGHTER_WALKING_SPEED_M_PER_S, DEFAULT_OCCUPANT_WALKING_SPEED_M_PER_S,
+    MAX_CREW_MEMBERS, OccupantSpawn, SCENARIO_SCHEMA_VERSION, Scenario, ScenarioValidationError,
+    ScenarioValidationErrors, exterior_exits,
 };
 pub use surface_fire::{
     CombustionState, FURNITURE_FIRE_CELL_SIZE_M, FireMaterialCatalog, FireMaterialProfile,
@@ -53,11 +64,14 @@ pub struct Simulation {
     status: SimulationStatus,
     fires: Vec<FireState>,
     smoke: Vec<SmokeState>,
-    people: Vec<PersonState>,
+    agents: Vec<Agent>,
+    /// Agents as spawned, so `reset` can restore them.
+    initial_agents: Vec<Agent>,
 }
 
 impl Simulation {
-    /// Creates a simulation at time zero from a structurally valid scene.
+    /// Creates a simulation at time zero from a structurally valid scene, with
+    /// no agents.
     pub fn new(scene: Scene, config: SimulationConfig) -> Result<Self, SimulationError> {
         scene.validate()?;
         if !config.grid_cell_size_m.is_finite() || config.grid_cell_size_m <= 0.0 {
@@ -79,12 +93,32 @@ impl Simulation {
             status: SimulationStatus::Ready,
             fires: Vec::new(),
             smoke: Vec::new(),
-            people: Vec::new(),
+            agents: Vec::new(),
+            initial_agents: Vec::new(),
         })
     }
 
+    /// Creates a simulation at time zero with the scenario's occupants and
+    /// crews spawned. Reports every scenario problem at once.
+    pub fn from_scenario(
+        scene: Scene,
+        scenario: &Scenario,
+        config: SimulationConfig,
+    ) -> Result<Self, SimulationError> {
+        let mut simulation = Self::new(scene, config)?;
+        let exits = if scenario.crews.is_empty() {
+            Vec::new()
+        } else {
+            exterior_exits(&simulation.scene)?
+        };
+        let agents = scenario.spawn_agents(&simulation.scene, &simulation.grids, &exits)?;
+        simulation.initial_agents.clone_from(&agents);
+        simulation.agents = agents;
+        Ok(simulation)
+    }
+
     /// Advances simulation time and returns the state the renderer should show.
-    /// Fire, smoke, and occupant updates will be added behind this method.
+    /// Fire, smoke, and agent updates will be added behind this method.
     pub fn step(&mut self, delta_seconds: f64) -> Result<SimulationSnapshot, SimulationError> {
         if !delta_seconds.is_finite() || delta_seconds <= 0.0 {
             return Err(SimulationError::InvalidDeltaSeconds { delta_seconds });
@@ -104,7 +138,7 @@ impl Simulation {
             status: self.status,
             fires: self.fires.clone(),
             smoke: self.smoke.clone(),
-            people: self.people.clone(),
+            agents: self.agents.iter().map(Agent::frame).collect(),
         }
     }
 
@@ -114,7 +148,7 @@ impl Simulation {
         self.status = SimulationStatus::Ready;
         self.fires.clear();
         self.smoke.clear();
-        self.people.clear();
+        self.agents.clone_from(&self.initial_agents);
         self.snapshot()
     }
 
@@ -131,6 +165,11 @@ impl Simulation {
     }
 
     #[must_use]
+    pub fn agents(&self) -> &[Agent] {
+        &self.agents
+    }
+
+    #[must_use]
     pub fn grid(&self, floor_id: &str) -> Option<&SimulationGrid> {
         self.grids.iter().find(|grid| grid.floor_id == floor_id)
     }
@@ -144,7 +183,7 @@ pub struct SimulationSnapshot {
     pub status: SimulationStatus,
     pub fires: Vec<FireState>,
     pub smoke: Vec<SmokeState>,
-    pub people: Vec<PersonState>,
+    pub agents: Vec<AgentFrame>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,27 +208,16 @@ pub struct SmokeState {
     pub concentration: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PersonState {
-    pub id: String,
-    pub position_m: Vec3,
-    pub status: PersonStatus,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PersonStatus {
-    Evacuating,
-    Escaped,
-    Incapacitated,
-}
-
 #[derive(Debug, Error)]
 pub enum SimulationError {
     #[error(transparent)]
     InvalidScene(#[from] SceneValidationErrors),
     #[error(transparent)]
     GridBuild(#[from] GridBuildError),
+    #[error(transparent)]
+    InvalidScenario(#[from] ScenarioValidationErrors),
+    #[error(transparent)]
+    OpeningTopology(#[from] OpeningTopologyError),
     #[error("delta_seconds must be finite and greater than zero, got {delta_seconds}")]
     InvalidDeltaSeconds { delta_seconds: f64 },
 }

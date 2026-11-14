@@ -14,7 +14,7 @@ fn starts_ready_with_an_empty_snapshot() {
             status: SimulationStatus::Ready,
             fires: vec![],
             smoke: vec![],
-            people: vec![],
+            agents: vec![],
         }
     );
 }
@@ -69,7 +69,7 @@ fn snapshot_serializes_for_the_frontend() {
             "status": "ready",
             "fires": [],
             "smoke": [],
-            "people": []
+            "agents": []
         })
     );
 }

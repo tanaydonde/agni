@@ -8,6 +8,7 @@ const frame = (time_seconds: number): SimulationFrame => ({
   rooms: [],
   fires: [],
   openings: [],
+  agents: [],
 })
 
 const frames = [frame(0), frame(1), frame(2.5), frame(4)]

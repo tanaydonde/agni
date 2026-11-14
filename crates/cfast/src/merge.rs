@@ -34,6 +34,7 @@ pub fn merge_cfast_with_surface_fire(
                 fires: conditions.fires,
                 openings: conditions.openings,
                 surface_fire: surface.active_nodes.clone(),
+                agents: Vec::new(),
             })
         })
         .collect::<Result<Vec<_>, CfastMergeError>>()?;
@@ -114,6 +115,7 @@ fn conditions_at_time(
         fires: interpolate_fires(&lower.fires, &upper.fires, fraction, time_seconds)?,
         openings: interpolate_openings(&lower.openings, &upper.openings, fraction, time_seconds)?,
         surface_fire: Vec::new(),
+        agents: Vec::new(),
     })
 }
 

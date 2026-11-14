@@ -1,7 +1,8 @@
 use tflop_simulation_core::{
-    CombustionState, FireConditions, GasLayerConditions, GridCoordinate, OpeningConditions,
-    RoomConditions, SIMULATION_RESULTS_SCHEMA_VERSION, SimulationEngine, SimulationFrame,
-    SimulationResults, SurfaceFireNodeFrame, SurfaceFireNodeSource,
+    AgentFrame, AgentFrameRole, CombustionState, Exposure, FireConditions, GasLayerConditions,
+    GridCoordinate, OccupantPhase, OpeningConditions, RoomConditions,
+    SIMULATION_RESULTS_SCHEMA_VERSION, SimulationEngine, SimulationFrame, SimulationResults,
+    SurfaceFireNodeFrame, SurfaceFireNodeSource,
 };
 use tflop_world_core::{
     BoundaryEdge, BoundaryKind, Dimensions3, Floor, Opening, OpeningKind, Room,
@@ -85,6 +86,47 @@ fn verifies_result_ids_against_the_physical_scene() {
     ));
 }
 
+#[test]
+fn validates_agent_frames() {
+    let mut results = results_fixture();
+    let agent = AgentFrame {
+        id: "occupant-1".to_owned(),
+        floor_id: "floor-9".to_owned(),
+        position_m: point(f64::NAN, 1.0),
+        velocity_m_per_s: point(0.0, 0.0),
+        radius_m: 0.25,
+        exposure: Exposure {
+            heat: -0.1,
+            toxic_gas: 0.0,
+        },
+        role: AgentFrameRole::Occupant {
+            phase: OccupantPhase::MovingToExit,
+        },
+    };
+    results.frames[0].agents = vec![agent.clone(), agent];
+
+    let errors = results
+        .validate_against_scene(&scene_fixture())
+        .expect_err("invalid agents should fail");
+
+    assert!(has_error(&errors.0, "frames[0].agents[1].id", "unique"));
+    assert!(has_error(
+        &errors.0,
+        "frames[0].agents[0].position_m.x",
+        "finite"
+    ));
+    assert!(has_error(
+        &errors.0,
+        "frames[0].agents[0].exposure.heat",
+        "nonnegative"
+    ));
+    assert!(has_error(
+        &errors.0,
+        "frames[0].agents[0].floor_id",
+        "physical scene"
+    ));
+}
+
 fn has_error(
     errors: &[tflop_simulation_core::ResultsValidationError],
     path: &str,
@@ -162,6 +204,7 @@ fn results_fixture() -> SimulationResults {
                 heat_release_rate_kw: 45.0,
                 fuel_remaining_fraction: 0.8,
             }],
+            agents: vec![],
         }],
     }
 }

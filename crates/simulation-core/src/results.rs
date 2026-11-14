@@ -3,7 +3,10 @@ use std::{collections::HashSet, error::Error, fmt};
 use serde::{Deserialize, Serialize};
 use tflop_world_core::Scene;
 
-use crate::surface_fire::{SurfaceFireNodeFrame, SurfaceFireNodeSource};
+use crate::{
+    agent::AgentFrame,
+    surface_fire::{SurfaceFireNodeFrame, SurfaceFireNodeSource},
+};
 
 pub const SIMULATION_RESULTS_SCHEMA_VERSION: u32 = 1;
 
@@ -33,6 +36,9 @@ pub struct SimulationFrame {
     /// Spatial floor and furniture combustion state for renderer placement.
     #[serde(default)]
     pub surface_fire: Vec<SurfaceFireNodeFrame>,
+    /// Occupants and firefighters. Empty for fire-only runs.
+    #[serde(default)]
+    pub agents: Vec<AgentFrame>,
 }
 
 /// CFAST-style two-layer conditions mapped back to a `world-core` room ID.
@@ -189,6 +195,15 @@ impl SimulationResults {
                     );
                 }
             }
+            for (agent_index, agent) in frame.agents.iter().enumerate() {
+                if !floor_ids.contains(agent.floor_id.as_str()) {
+                    push_error(
+                        &format!("frames[{frame_index}].agents[{agent_index}].floor_id"),
+                        "floor ID does not exist in the physical scene",
+                        &mut errors,
+                    );
+                }
+            }
             for (node_index, node) in frame.surface_fire.iter().enumerate() {
                 let path = format!("frames[{frame_index}].surface_fire[{node_index}]");
                 if !room_ids.contains(node.room_id.as_str()) {
@@ -316,6 +331,32 @@ fn validate_frame(frame: &SimulationFrame, path: &str, errors: &mut Vec<ResultsV
         validate_percentage_fraction(
             opening.opening_fraction,
             &format!("{opening_path}.opening_fraction"),
+            errors,
+        );
+    }
+
+    let mut agent_ids = HashSet::new();
+    for (index, agent) in frame.agents.iter().enumerate() {
+        let agent_path = format!("{path}.agents[{index}]");
+        require_unique_id(&agent.id, &agent_path, &mut agent_ids, errors);
+        require_nonempty(&agent.floor_id, &format!("{agent_path}.floor_id"), errors);
+        for (field, vector) in [
+            ("position_m", agent.position_m),
+            ("velocity_m_per_s", agent.velocity_m_per_s),
+        ] {
+            for (axis, value) in [("x", vector.x), ("y", vector.y), ("z", vector.z)] {
+                validate_finite(value, &format!("{agent_path}.{field}.{axis}"), errors);
+            }
+        }
+        validate_nonnegative(agent.radius_m, &format!("{agent_path}.radius_m"), errors);
+        validate_nonnegative(
+            agent.exposure.heat,
+            &format!("{agent_path}.exposure.heat"),
+            errors,
+        );
+        validate_nonnegative(
+            agent.exposure.toxic_gas,
+            &format!("{agent_path}.exposure.toxic_gas"),
             errors,
         );
     }

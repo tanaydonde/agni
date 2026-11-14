@@ -23,6 +23,7 @@ const frame = (nodes: SurfaceFireNode[]): SimulationFrame => ({
   rooms: [],
   fires: [],
   openings: [],
+  agents: [],
 })
 
 const sofa = {
