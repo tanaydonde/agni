@@ -801,7 +801,7 @@ fn fight_known_fire(plan: &mut CrewPlan, context: &Context<'_>) -> Option<Action
         if room.floor_id != floor_id {
             continue;
         }
-        for &cell in &room.cells {
+        for &cell in &room.spray_cells {
             let Some(center) = context.grid.cell_center(cell) else {
                 continue;
             };
@@ -1080,6 +1080,10 @@ struct RoomInfo {
     /// fits on and can reach from an entry, sorted. Standing on any of them
     /// is being in the room.
     cells: Vec<GridCoordinate>,
+    /// `cells` plus the room's doorways, sorted: everywhere a firefighter
+    /// can spray the room's fire from. A room that is alight wall to wall
+    /// is fought from its doorway.
+    spray_cells: Vec<GridCoordinate>,
 }
 
 /// Indexes every room in the scene. A room's planning cells are the body
@@ -1102,6 +1106,7 @@ fn index_rooms(
                     RoomInfo {
                         floor_id: floor.id.clone(),
                         cells: Vec::new(),
+                        spray_cells: Vec::new(),
                     },
                 )
             })
@@ -1117,6 +1122,11 @@ fn index_rooms(
             if !usable {
                 continue;
             }
+            for room_id in &cell.room_ids {
+                if let Some(room) = rooms.get_mut(room_id) {
+                    room.spray_cells.push(cell.coordinate);
+                }
+            }
             // Doorway cells belong to two rooms; walking in means standing
             // on one that belongs to this room alone.
             if let [room_id] = cell.room_ids.as_slice()
@@ -1128,6 +1138,7 @@ fn index_rooms(
     }
     for room in rooms.values_mut() {
         room.cells.sort_by_key(|cell| (cell.row, cell.column));
+        room.spray_cells.sort_by_key(|cell| (cell.row, cell.column));
     }
     rooms
 }
