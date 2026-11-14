@@ -19,7 +19,8 @@ use crate::{
 };
 
 pub const SCENARIO_SCHEMA_VERSION: u32 = 1;
-pub const DEFAULT_OCCUPANT_WALKING_SPEED_M_PER_S: f64 = 1.2;
+/// A hurried walk: people evacuating move faster than they stroll.
+pub const DEFAULT_OCCUPANT_WALKING_SPEED_M_PER_S: f64 = 1.4;
 pub const DEFAULT_FIREFIGHTER_WALKING_SPEED_M_PER_S: f64 = 1.0;
 pub const MAX_CREW_MEMBERS: u32 = 8;
 

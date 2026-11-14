@@ -7,7 +7,7 @@
 //! [`Agent`] type so movement, collision avoidance, and exposure can treat
 //! every body the same way; only decision-making branches on [`AgentRole`].
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use tflop_world_core::Vec3;
 
 /// Body radius used for collision avoidance.
@@ -176,7 +176,11 @@ pub enum FirefighterPhase {
 pub struct AgentFrame {
     pub id: String,
     pub floor_id: String,
+    /// Written to the millimetre: a timeline of hundreds of people would
+    /// otherwise spend most of its size on digits nobody can see.
+    #[serde(serialize_with = "to_the_millimetre")]
     pub position_m: Vec3,
+    #[serde(serialize_with = "to_the_millimetre")]
     pub velocity_m_per_s: Vec3,
     pub radius_m: f64,
     pub exposure: Exposure,
@@ -196,4 +200,14 @@ pub enum AgentFrameRole {
         crew_id: String,
         phase: FirefighterPhase,
     },
+}
+
+fn to_the_millimetre<S: Serializer>(value: &Vec3, serializer: S) -> Result<S::Ok, S::Error> {
+    let round = |component: f64| (component * 1000.0).round() / 1000.0;
+    Vec3 {
+        x: round(value.x),
+        y: round(value.y),
+        z: round(value.z),
+    }
+    .serialize(serializer)
 }

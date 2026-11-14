@@ -1,5 +1,8 @@
-//! Gemini-backed occupant placement. Gemini only proposes tool arguments;
-//! simulation-core remains the authority that accepts or rejects them.
+//! Occupant placement. The default `spread` layout is Gemini-backed: Gemini
+//! only proposes tool arguments, and simulation-core remains the authority
+//! that accepts or rejects them. The `crowded` layout packs people into the
+//! largest rooms deterministically, without Gemini, so a demo or test can
+//! count on queues at the doors.
 
 use std::time::Duration;
 use std::{env, future::Future, pin::Pin};
@@ -13,8 +16,9 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tflop_simulation_core::{
-    AgentFrame, GridCoordinate, OCCUPANT_RADIUS_M, OccupantSpawn, ScenarioValidationErrors,
-    Simulation, SimulationConfig, SimulationError, reachable_exit_cells,
+    AgentFrame, DEFAULT_OCCUPANT_WALKING_SPEED_M_PER_S, GridCoordinate, OCCUPANT_RADIUS_M,
+    OccupantSpawn, ScenarioValidationErrors, Simulation, SimulationConfig, SimulationError,
+    reachable_exit_cells,
 };
 use tflop_world_core::Vec3;
 
@@ -24,10 +28,29 @@ const DEFAULT_GEMINI_MODEL: &str = "gemini-3.5-flash-lite";
 const MAX_ATTEMPTS: usize = 3;
 const MAX_OCCUPANTS: usize = 200;
 const MAX_SPAWN_SITES_FOR_MODEL: usize = 2_000;
+/// Hurried evacuation walking speeds, for crowded layouts and the prompt.
+const MIN_HURRIED_SPEED_M_PER_S: f64 = 1.2;
+const MAX_HURRIED_SPEED_M_PER_S: f64 = 1.8;
+/// Crowded layouts start everyone moving within this long, so they meet at
+/// the doors together.
+const MAX_CROWDED_DELAY_SECONDS: f64 = 15.0;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct SpawnOccupantsRequest {
     count: usize,
+    #[serde(default)]
+    layout: OccupantLayout,
+}
+
+/// How occupants are placed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum OccupantLayout {
+    /// Gemini spreads people plausibly across rooms.
+    #[default]
+    Spread,
+    /// Packed into the largest rooms first, without Gemini.
+    Crowded,
 }
 
 #[derive(Debug, Serialize)]
@@ -90,6 +113,18 @@ pub(crate) async fn spawn_occupants(
         Ok(simulation) => simulation,
         Err(error) => return error_response(AgentError::Simulation(error.to_string())),
     };
+    if request.layout == OccupantLayout::Crowded {
+        return match spawn_crowded(&mut simulation, request.count) {
+            Ok(generated) => Json(SpawnOccupantsResponse {
+                revision: snapshot.revision,
+                attempts: generated.attempts,
+                occupants: generated.occupants,
+                agents: generated.agents,
+            })
+            .into_response(),
+            Err(error) => error_response(error),
+        };
+    }
     let provider = match GeminiProvider::from_env() {
         Ok(provider) => provider,
         Err(error) => return error_response(error),
@@ -166,6 +201,87 @@ async fn generate_and_spawn<P: OccupantProposalProvider>(
         attempts: MAX_ATTEMPTS,
         last_failure,
     })
+}
+
+/// Packs `count` occupants into the rooms with the most spawn sites, each
+/// room filled from its middle outward before the next, with hurried speeds
+/// and short pre-movement delays.
+fn spawn_crowded(
+    simulation: &mut Simulation,
+    count: usize,
+) -> Result<GeneratedOccupants, AgentError> {
+    let sites = build_spawn_sites(simulation, count)?;
+    let mut rooms = Vec::<(String, Vec<SpawnSite>)>::new();
+    for site in sites {
+        let room_id = site.room_ids.first().cloned().unwrap_or_default();
+        match rooms.iter_mut().find(|(id, _)| *id == room_id) {
+            Some((_, room_sites)) => room_sites.push(site),
+            None => rooms.push((room_id, vec![site])),
+        }
+    }
+    rooms.sort_by(|left, right| right.1.len().cmp(&left.1.len()).then(left.0.cmp(&right.0)));
+
+    let mut chosen = Vec::with_capacity(count);
+    for (_, mut room_sites) in rooms {
+        let center = centroid(&room_sites);
+        room_sites.sort_by(|left, right| {
+            planar_distance(left.position_m, center)
+                .total_cmp(&planar_distance(right.position_m, center))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        chosen.extend(room_sites.into_iter().take(count - chosen.len()));
+        if chosen.len() == count {
+            break;
+        }
+    }
+
+    let occupants = chosen
+        .into_iter()
+        .enumerate()
+        .map(|(index, site)| {
+            let number = index as u64 + 1;
+            OccupantSpawn {
+                id: format!("occupant-{number}"),
+                floor_id: site.floor_id,
+                position_m: site.position_m,
+                walking_speed_m_per_s: MIN_HURRIED_SPEED_M_PER_S
+                    + (MAX_HURRIED_SPEED_M_PER_S - MIN_HURRIED_SPEED_M_PER_S) * unit(number, 1),
+                pre_movement_delay_seconds: MAX_CROWDED_DELAY_SECONDS * unit(number, 2),
+            }
+        })
+        .collect::<Vec<_>>();
+    let agents = simulation
+        .spawn_occupants(&occupants)
+        .map_err(|error| AgentError::Simulation(error.to_string()))?;
+    Ok(GeneratedOccupants {
+        attempts: 0,
+        occupants,
+        agents,
+    })
+}
+
+fn centroid(sites: &[SpawnSite]) -> Vec3 {
+    let count = sites.len().max(1) as f64;
+    Vec3 {
+        x: sites.iter().map(|site| site.position_m.x).sum::<f64>() / count,
+        y: sites.iter().map(|site| site.position_m.y).sum::<f64>() / count,
+        z: 0.0,
+    }
+}
+
+fn planar_distance(left: Vec3, right: Vec3) -> f64 {
+    (left.x - right.x).hypot(left.y - right.y)
+}
+
+/// A repeatable number in `[0, 1)` for an occupant and a purpose.
+fn unit(number: u64, purpose: u64) -> f64 {
+    let mut z = number
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(purpose);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    (z >> 11) as f64 / (1_u64 << 53) as f64
 }
 
 fn build_spawn_sites(
@@ -270,9 +386,11 @@ impl GeminiProvider {
         let sites_json = serde_json::to_string(&request.spawn_sites)
             .expect("spawn sites contain only serializable values");
         let prompt = format!(
-            "Place exactly {count} plausible occupants in this building for the beginning of a fire evacuation training scenario. Select {count} DISTINCT spawn_site_id values from the verified catalog below; never invent or alter a site ID. Spread people naturally across rooms rather than clustering them. Give every occupant a unique stable ID occupant-1 through occupant-{count}. Use realistic walking speeds and varied nonnegative pre-movement delays. This is attempt {attempt} of {MAX_ATTEMPTS}. {retry}\n\nVerified spawn-site catalog JSON:\n{sites}",
+            "Place exactly {count} plausible occupants in this building for the beginning of a fire evacuation training scenario. Select {count} DISTINCT spawn_site_id values from the verified catalog below; never invent or alter a site ID. Spread people naturally across rooms rather than clustering them. Give every occupant a unique stable ID occupant-1 through occupant-{count}. Use hurried evacuation walking speeds between {min_speed} and {max_speed} m/s and varied nonnegative pre-movement delays. This is attempt {attempt} of {MAX_ATTEMPTS}. {retry}\n\nVerified spawn-site catalog JSON:\n{sites}",
             count = request.count,
             attempt = request.attempt,
+            min_speed = MIN_HURRIED_SPEED_M_PER_S,
+            max_speed = MAX_HURRIED_SPEED_M_PER_S,
             sites = sites_json,
         );
 
@@ -420,7 +538,7 @@ struct ProposedOccupant {
 }
 
 const fn default_walking_speed() -> f64 {
-    1.2
+    DEFAULT_OCCUPANT_WALKING_SPEED_M_PER_S
 }
 
 #[derive(Debug)]
@@ -644,6 +762,48 @@ mod tests {
                 assert!(dx * dx + dy * dy >= 4.0 * OCCUPANT_RADIUS_M * OCCUPANT_RADIUS_M);
             }
         }
+    }
+
+    #[test]
+    fn crowded_layouts_are_dense_repeatable_and_hurried() {
+        let mut first = simulation();
+        let generated = spawn_crowded(&mut first, 12).expect("crowded layout spawns");
+        assert_eq!(generated.occupants.len(), 12);
+        assert_eq!(first.agents().len(), 12);
+        let again = spawn_crowded(&mut simulation(), 12).expect("crowded layout spawns");
+        assert_eq!(generated.occupants, again.occupants);
+        for occupant in &generated.occupants {
+            assert!(
+                (MIN_HURRIED_SPEED_M_PER_S..MAX_HURRIED_SPEED_M_PER_S)
+                    .contains(&occupant.walking_speed_m_per_s)
+            );
+            assert!(
+                (0.0..MAX_CROWDED_DELAY_SECONDS).contains(&occupant.pre_movement_delay_seconds)
+            );
+        }
+        // Packed from the middle of a room outward: nobody is far from the
+        // rest.
+        let center = Vec3 {
+            x: generated
+                .occupants
+                .iter()
+                .map(|o| o.position_m.x)
+                .sum::<f64>()
+                / 12.0,
+            y: generated
+                .occupants
+                .iter()
+                .map(|o| o.position_m.y)
+                .sum::<f64>()
+                / 12.0,
+            z: 0.0,
+        };
+        assert!(
+            generated
+                .occupants
+                .iter()
+                .all(|occupant| planar_distance(occupant.position_m, center) < 2.0)
+        );
     }
 
     fn simulation() -> Simulation {

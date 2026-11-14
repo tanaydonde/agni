@@ -27,7 +27,8 @@ use crate::{SharedWorld, decode, lock};
 
 const DEFAULT_DURATION_SECONDS: f64 = 180.0;
 const MAX_DURATION_SECONDS: f64 = 600.0;
-const DEFAULT_STEP_SECONDS: f64 = 1.0;
+/// Half-second frames keep crowd movement smooth in playback.
+const DEFAULT_STEP_SECONDS: f64 = 0.5;
 const MIN_STEP_SECONDS: f64 = 0.1;
 const CFAST_OUTPUT_INTERVAL_SECONDS: f64 = 5.0;
 
