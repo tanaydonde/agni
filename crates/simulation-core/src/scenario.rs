@@ -15,6 +15,7 @@ use crate::{
         OCCUPANT_RADIUS_M, OccupantPhase, OccupantState,
     },
     grid::SimulationGrid,
+    nav::nearest_walkable_cell,
 };
 
 pub const SCENARIO_SCHEMA_VERSION: u32 = 1;
@@ -52,13 +53,19 @@ pub struct OccupantSpawn {
 }
 
 /// One firefighter crew. Members are spawned as agents `"{id}/1"`,
-/// `"{id}/2"`, ... at the entry opening.
+/// `"{id}/2"`, ... just inside the entry opening.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CrewSpawn {
     pub id: String,
     /// An exterior door or passage (see [`exterior_exits`]). Either the
-    /// connection ID or any of its source opening IDs is accepted.
-    pub entry_opening_id: String,
+    /// connection ID or any of its source opening IDs is accepted. When
+    /// absent, the first usable exterior exit by ID is used.
+    #[serde(default)]
+    pub entry_opening_id: Option<String>,
+    /// Rooms to search first, in order. Rooms not listed are searched
+    /// afterwards, nearest first. Empty means nearest first throughout.
+    #[serde(default)]
+    pub search_order: Vec<String>,
     /// Seconds after ignition when the crew reaches the entry.
     #[serde(default)]
     pub arrival_time_seconds: f64,
@@ -110,44 +117,7 @@ impl Scenario {
         let mut agent_ids = HashSet::new();
         validate_occupants_into(&self.occupants, &mut agent_ids, errors);
 
-        let mut crew_ids = HashSet::new();
-        for (index, crew) in self.crews.iter().enumerate() {
-            let path = format!("crews[{index}]");
-            require_unique(&crew.id, &format!("{path}.id"), &mut crew_ids, errors);
-            require_nonempty(
-                &crew.entry_opening_id,
-                &format!("{path}.entry_opening_id"),
-                errors,
-            );
-            require_nonnegative(
-                crew.arrival_time_seconds,
-                &format!("{path}.arrival_time_seconds"),
-                errors,
-            );
-            require_positive(
-                crew.walking_speed_m_per_s,
-                &format!("{path}.walking_speed_m_per_s"),
-                errors,
-            );
-            if crew.member_count == 0 || crew.member_count > MAX_CREW_MEMBERS {
-                push_error(
-                    &format!("{path}.member_count"),
-                    &format!("crew must have between 1 and {MAX_CREW_MEMBERS} members"),
-                    errors,
-                );
-                continue;
-            }
-            for member in 1..=crew.member_count {
-                let id = firefighter_id(&crew.id, member);
-                if !agent_ids.insert(id.clone()) {
-                    push_error(
-                        &format!("{path}.id"),
-                        &format!("firefighter ID {id} collides with another agent"),
-                        errors,
-                    );
-                }
-            }
-        }
+        validate_crews_into(&self.crews, &mut agent_ids, errors);
     }
 
     /// Validates the scenario against the scene it runs in and creates the
@@ -183,47 +153,7 @@ impl Scenario {
 
         let mut agents = create_occupants(&self.occupants, grids, &[], &mut errors);
 
-        for (index, crew) in self.crews.iter().enumerate() {
-            let path = format!("crews[{index}]");
-            let entry = exits.iter().find(|exit| {
-                exit.id == crew.entry_opening_id
-                    || exit.source_opening_ids.contains(&crew.entry_opening_id)
-            });
-            let Some(entry) = entry else {
-                push_error(
-                    &format!("{path}.entry_opening_id"),
-                    "opening is not an exterior door or passage",
-                    &mut errors,
-                );
-                continue;
-            };
-            let Some(grid) = grids.iter().find(|grid| grid.floor_id == entry.floor_id) else {
-                push_error(
-                    &format!("{path}.entry_opening_id"),
-                    "opening floor has no simulation grid",
-                    &mut errors,
-                );
-                continue;
-            };
-            for member in 1..=crew.member_count.min(MAX_CREW_MEMBERS) {
-                agents.push(Agent {
-                    id: firefighter_id(&crew.id, member),
-                    floor_id: entry.floor_id.clone(),
-                    position_m: on_floor(entry.center_m, grid),
-                    velocity_m_per_s: ZERO,
-                    radius_m: FIREFIGHTER_RADIUS_M,
-                    exposure: Exposure::NONE,
-                    role: AgentRole::Firefighter(FirefighterState {
-                        crew_id: crew.id.clone(),
-                        phase: FirefighterPhase::Staging,
-                        walking_speed_m_per_s: crew.walking_speed_m_per_s,
-                        entry_opening_id: entry.id.clone(),
-                        arrival_time_seconds: crew.arrival_time_seconds,
-                        target_fire_node_id: None,
-                    }),
-                });
-            }
-        }
+        agents.extend(create_crews(&self.crews, scene, grids, exits, &mut errors));
 
         finish(errors).map(|()| agents)
     }
@@ -244,6 +174,170 @@ pub(crate) fn spawn_occupants(
     validate_occupants_into(occupants, &mut agent_ids, &mut errors);
     let agents = create_occupants(occupants, grids, existing_agents, &mut errors);
     finish(errors).map(|()| agents)
+}
+
+/// Validates and constructs a batch of crews without mutating a simulation.
+/// Existing agents participate in ID collision checks.
+pub(crate) fn spawn_crews(
+    crews: &[CrewSpawn],
+    scene: &Scene,
+    grids: &[SimulationGrid],
+    exits: &[OpeningConnection],
+    existing_agents: &[Agent],
+) -> Result<Vec<Agent>, ScenarioValidationErrors> {
+    let mut errors = Vec::new();
+    let mut agent_ids = existing_agents
+        .iter()
+        .map(|agent| agent.id.clone())
+        .collect();
+    validate_crews_into(crews, &mut agent_ids, &mut errors);
+    let agents = create_crews(crews, scene, grids, exits, &mut errors);
+    finish(errors).map(|()| agents)
+}
+
+fn validate_crews_into(
+    crews: &[CrewSpawn],
+    agent_ids: &mut HashSet<String>,
+    errors: &mut Vec<ScenarioValidationError>,
+) {
+    let mut crew_ids = HashSet::new();
+    for (index, crew) in crews.iter().enumerate() {
+        let path = format!("crews[{index}]");
+        require_unique(&crew.id, &format!("{path}.id"), &mut crew_ids, errors);
+        if let Some(entry_opening_id) = &crew.entry_opening_id {
+            require_nonempty(
+                entry_opening_id,
+                &format!("{path}.entry_opening_id"),
+                errors,
+            );
+        }
+        let mut room_ids = HashSet::new();
+        for (room_index, room_id) in crew.search_order.iter().enumerate() {
+            require_unique(
+                room_id,
+                &format!("{path}.search_order[{room_index}]"),
+                &mut room_ids,
+                errors,
+            );
+        }
+        require_nonnegative(
+            crew.arrival_time_seconds,
+            &format!("{path}.arrival_time_seconds"),
+            errors,
+        );
+        require_positive(
+            crew.walking_speed_m_per_s,
+            &format!("{path}.walking_speed_m_per_s"),
+            errors,
+        );
+        if crew.member_count == 0 || crew.member_count > MAX_CREW_MEMBERS {
+            push_error(
+                &format!("{path}.member_count"),
+                &format!("crew must have between 1 and {MAX_CREW_MEMBERS} members"),
+                errors,
+            );
+            continue;
+        }
+        for member in 1..=crew.member_count {
+            let id = firefighter_id(&crew.id, member);
+            if !agent_ids.insert(id.clone()) {
+                push_error(
+                    &format!("{path}.id"),
+                    &format!("firefighter ID {id} collides with another agent"),
+                    errors,
+                );
+            }
+        }
+    }
+}
+
+/// Places each crew just inside its entry, on the nearest cell a body fits.
+fn create_crews(
+    crews: &[CrewSpawn],
+    scene: &Scene,
+    grids: &[SimulationGrid],
+    exits: &[OpeningConnection],
+    errors: &mut Vec<ScenarioValidationError>,
+) -> Vec<Agent> {
+    let mut sorted_exits = exits.iter().collect::<Vec<_>>();
+    sorted_exits.sort_by(|left, right| left.id.cmp(&right.id));
+    let approach = |exit: &OpeningConnection| {
+        let grid = grids.iter().find(|grid| grid.floor_id == exit.floor_id)?;
+        let cell = nearest_walkable_cell(grid, exit.center_m, &exit.room_a_id, OCCUPANT_RADIUS_M)?;
+        Some((grid, cell))
+    };
+
+    let mut agents = Vec::new();
+    for (index, crew) in crews.iter().enumerate() {
+        let path = format!("crews[{index}]");
+        let entry = match &crew.entry_opening_id {
+            Some(entry_id) => sorted_exits
+                .iter()
+                .copied()
+                .find(|exit| exit.id == *entry_id || exit.source_opening_ids.contains(entry_id)),
+            None => sorted_exits
+                .iter()
+                .copied()
+                .find(|exit| approach(exit).is_some()),
+        };
+        let Some(entry) = entry else {
+            push_error(
+                &format!("{path}.entry_opening_id"),
+                "opening is not an exterior door or passage",
+                errors,
+            );
+            continue;
+        };
+        let Some((grid, cell)) = approach(entry) else {
+            push_error(
+                &format!("{path}.entry_opening_id"),
+                "entry has no walkable cell inside it",
+                errors,
+            );
+            continue;
+        };
+        for (room_index, room_id) in crew.search_order.iter().enumerate() {
+            let floor = scene
+                .floors
+                .iter()
+                .find(|floor| floor.rooms.iter().any(|room| room.id == *room_id));
+            match floor {
+                None => push_error(
+                    &format!("{path}.search_order[{room_index}]"),
+                    "room does not exist in the scene",
+                    errors,
+                ),
+                Some(floor) if floor.id != entry.floor_id => push_error(
+                    &format!("{path}.search_order[{room_index}]"),
+                    "room is not on the crew's entry floor",
+                    errors,
+                ),
+                Some(_) => {}
+            }
+        }
+        let Some(position_m) = grid.cell_center(cell) else {
+            continue;
+        };
+        for member in 1..=crew.member_count.min(MAX_CREW_MEMBERS) {
+            agents.push(Agent {
+                id: firefighter_id(&crew.id, member),
+                floor_id: entry.floor_id.clone(),
+                position_m: on_floor(position_m, grid),
+                velocity_m_per_s: ZERO,
+                radius_m: FIREFIGHTER_RADIUS_M,
+                exposure: Exposure::NONE,
+                role: AgentRole::Firefighter(FirefighterState {
+                    crew_id: crew.id.clone(),
+                    phase: FirefighterPhase::Staging,
+                    walking_speed_m_per_s: crew.walking_speed_m_per_s,
+                    entry_opening_id: entry.id.clone(),
+                    arrival_time_seconds: crew.arrival_time_seconds,
+                    target_fire_node_id: None,
+                }),
+            });
+        }
+    }
+    agents
 }
 
 const ZERO: Vec3 = Vec3 {

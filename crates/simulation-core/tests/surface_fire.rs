@@ -1,5 +1,5 @@
 use tflop_simulation_core::{
-    CombustionState, FireMaterialCatalog, FireMaterialProfile, FurnitureFireMaterial,
+    CombustionState, FireMaterialCatalog, FireMaterialProfile, FurnitureFireMaterial, Suppression,
     SurfaceFireConfig, SurfaceFireError, SurfaceFireNodeSource, SurfaceFireWorld,
 };
 use tflop_world_core::{
@@ -347,6 +347,186 @@ fn furniture_heat_does_not_jump_through_a_room_boundary() {
         world.node("object:chair-2").expect("second chair").state,
         CombustionState::Unignited
     );
+}
+
+#[test]
+fn suppression_puts_out_burning_nodes_in_reach() {
+    let scene = scene_with_chairs(&[("chair-1", 1.5, 2.0)]);
+    let mut world =
+        SurfaceFireWorld::from_scene(&scene, &fast_catalog(false), SurfaceFireConfig::default())
+            .expect("surface world should build");
+    world.ignite_object("chair-1").expect("chair ignites");
+
+    let outcome = world
+        .suppress(&nozzle("room-1", 1.0, 2.0, 2.0, 2_000.0), 1.0)
+        .expect("suppression applies");
+
+    assert_eq!(outcome.burning_reached, 1);
+    assert_eq!(outcome.extinguished_node_ids, ["object:chair-1"]);
+    let frame = world.snapshot();
+    let chair = frame
+        .active_nodes
+        .iter()
+        .find(|node| node.id == "object:chair-1")
+        .expect("extinguished chair stays visible");
+    assert_eq!(chair.state, CombustionState::Extinguished);
+    assert_eq!(chair.heat_release_rate_kw, 0.0);
+    assert!(chair.fuel_remaining_fraction > 0.0);
+    assert!(
+        frame
+            .room_heat_release
+            .iter()
+            .all(|room| room.heat_release_rate_kw == 0.0)
+    );
+}
+
+#[test]
+fn knockdown_takes_longer_than_one_step_when_cooling_barely_beats_the_fire() {
+    let scene = scene_with_chairs(&[("chair-1", 1.5, 2.0)]);
+    let mut world =
+        SurfaceFireWorld::from_scene(&scene, &fast_catalog(false), SurfaceFireConfig::default())
+            .expect("surface world should build");
+    let hrr_kw = world
+        .ignite_object("chair-1")
+        .expect("chair ignites")
+        .active_nodes[0]
+        .heat_release_rate_kw;
+    // The default knockdown needs three seconds' worth of the fire's output.
+    let barely_enough = nozzle("room-1", 1.5, 1.5, 1.0, hrr_kw * 1.01);
+
+    for _ in 0..2 {
+        let outcome = world.suppress(&barely_enough, 1.0).expect("applies");
+        assert!(outcome.extinguished_node_ids.is_empty());
+    }
+    let outcome = world.suppress(&barely_enough, 1.0).expect("applies");
+    assert_eq!(outcome.extinguished_node_ids, ["object:chair-1"]);
+}
+
+#[test]
+fn stream_stops_at_walls_and_at_its_reach() {
+    let scene = scene_with_chairs(&[("chair-1", 1.5, 2.0)]);
+    let mut world =
+        SurfaceFireWorld::from_scene(&scene, &fast_catalog(false), SurfaceFireConfig::default())
+            .expect("surface world should build");
+    world.ignite_object("chair-1").expect("chair ignites");
+
+    for suppression in [
+        nozzle("room-2", 1.5, 2.0, 5.0, 2_000.0),
+        nozzle("room-1", 3.5, 3.5, 1.0, 2_000.0),
+    ] {
+        let outcome = world.suppress(&suppression, 1.0).expect("applies");
+        assert_eq!(outcome.burning_reached, 0);
+    }
+    assert_eq!(
+        world.node("object:chair-1").expect("chair").state,
+        CombustionState::Burning
+    );
+}
+
+#[test]
+fn extinguished_furniture_reignites_from_a_neighboring_fire() {
+    let scene = scene_with_chairs(&[("chair-1", 1.5, 2.0), ("chair-2", 2.5, 2.0)]);
+    let mut world =
+        SurfaceFireWorld::from_scene(&scene, &fast_catalog(false), SurfaceFireConfig::default())
+            .expect("surface world should build");
+    world.ignite_object("chair-1").expect("chair-1 ignites");
+    world.ignite_object("chair-2").expect("chair-2 ignites");
+
+    world
+        .suppress(&nozzle("room-1", 1.5, 2.0, 0.3, 2_000.0), 1.0)
+        .expect("only chair-1 is in reach");
+    assert_eq!(
+        world.node("object:chair-2").expect("chair-2").state,
+        CombustionState::Burning
+    );
+    world.step(1.0).expect("step succeeds");
+
+    let chair = world.node("object:chair-1").expect("chair-1");
+    assert_eq!(chair.state, CombustionState::Burning);
+    assert_eq!(chair.ignition_time_seconds, Some(1.0));
+}
+
+#[test]
+fn extinguished_furniture_stays_out_without_heat() {
+    let scene = scene_with_chairs(&[("chair-1", 1.5, 2.0)]);
+    let mut world =
+        SurfaceFireWorld::from_scene(&scene, &fast_catalog(false), SurfaceFireConfig::default())
+            .expect("surface world should build");
+    world.ignite_object("chair-1").expect("chair ignites");
+    world
+        .suppress(&nozzle("room-1", 1.5, 2.0, 1.0, 2_000.0), 1.0)
+        .expect("applies");
+
+    for _ in 0..5 {
+        world.step(1.0).expect("step succeeds");
+    }
+
+    assert_eq!(
+        world.node("object:chair-1").expect("chair").state,
+        CombustionState::Extinguished
+    );
+}
+
+#[test]
+fn stream_cools_heating_furniture_when_no_flames_are_in_reach() {
+    let scene = scene_with_chairs(&[("chair-1", 1.5, 2.0), ("chair-2", 2.5, 2.0)]);
+    let mut catalog = fast_catalog(false);
+    catalog.furniture[0].material.ignition_energy_kj_per_m2 = 1.0e6;
+    let mut world = SurfaceFireWorld::from_scene(&scene, &catalog, SurfaceFireConfig::default())
+        .expect("surface world should build");
+    world.ignite_object("chair-1").expect("chair ignites");
+    world.step(1.0).expect("step succeeds");
+    assert_eq!(
+        world.node("object:chair-2").expect("chair-2").state,
+        CombustionState::Heating
+    );
+
+    let outcome = world
+        .suppress(&nozzle("room-1", 2.5, 2.0, 0.3, 2_000.0), 1.0)
+        .expect("applies");
+
+    assert_eq!(outcome.burning_reached, 0);
+    let chair = world.node("object:chair-2").expect("chair-2");
+    assert_eq!(chair.state, CombustionState::Unignited);
+    assert_eq!(chair.absorbed_heat_kj, 0.0);
+}
+
+#[test]
+fn rejects_invalid_suppression_without_changing_the_fire() {
+    let scene = scene_with_chairs(&[("chair-1", 1.5, 2.0)]);
+    let mut world =
+        SurfaceFireWorld::from_scene(&scene, &fast_catalog(false), SurfaceFireConfig::default())
+            .expect("surface world should build");
+    world.ignite_object("chair-1").expect("chair ignites");
+
+    for (suppression, field) in [
+        (nozzle("", 1.5, 2.0, 1.0, 2_000.0), "room_id"),
+        (nozzle("room-1", f64::NAN, 2.0, 1.0, 2_000.0), "position_m"),
+        (nozzle("room-1", 1.5, 2.0, 0.0, 2_000.0), "reach_m"),
+        (nozzle("room-1", 1.5, 2.0, 1.0, -1.0), "cooling_kw"),
+    ] {
+        assert!(matches!(
+            world.suppress(&suppression, 1.0),
+            Err(SurfaceFireError::InvalidSuppression { field: actual }) if actual == field
+        ));
+    }
+    assert!(matches!(
+        world.suppress(&nozzle("room-1", 1.5, 2.0, 1.0, 2_000.0), 0.0),
+        Err(SurfaceFireError::InvalidDeltaSeconds { .. })
+    ));
+    assert_eq!(
+        world.node("object:chair-1").expect("chair").state,
+        CombustionState::Burning
+    );
+}
+
+fn nozzle(room_id: &str, x: f64, y: f64, reach_m: f64, cooling_kw: f64) -> Suppression {
+    Suppression {
+        room_id: room_id.to_owned(),
+        position_m: point(x, y),
+        reach_m,
+        cooling_kw,
+    }
 }
 
 fn fast_catalog(combustible_floor: bool) -> FireMaterialCatalog {

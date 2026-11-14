@@ -12,18 +12,23 @@ POST /api/fire/simulate/hybrid
   "object_id": "sofa-1",
   "duration_seconds": 180,
   "step_seconds": 1,
-  "occupants": [/* OccupantSpawn records from /api/agents/spawn_occupants */]
+  "occupants": [/* OccupantSpawn records from /api/agents/spawn_occupants */],
+  "crews": [{ "id": "engine-1", "member_count": 2, "arrival_time_seconds": 30 }]
 }
 → { "revision": 4, "excluded_object_ids": [], "results": SimulationResults }
 ```
 
-It ignites the object, runs the surface fire on a snapshot of the current scene,
-feeds the resulting room heat-release curves through CFAST, and returns the
-merged timeline. The server uses the CFAST 7.7.7 solver that `cargo build`
+It ignites the object, advances the surface fire, occupants, and firefighter
+crews together frame by frame on a snapshot of the current scene (crews' water
+changes how the fire spreads), feeds the resulting room heat-release curves
+through CFAST, and returns the merged timeline. A crew may also give
+`entry_opening_id` (default: the first exterior exit) and `search_order` (room
+IDs to search first; the rest are searched nearest first). The server uses the CFAST 7.7.7 solver that `cargo build`
 compiles from `crates/cfast/vendor/` (this needs `gfortran`), or the
 executable in `CFAST_BIN` if that is set. Objects that don't stand inside a room are left out of the run and
 listed in `excluded_object_ids`. Errors: 404 `object_not_found`, 422
-`object_outside_rooms`, `object_not_combustible`, or `simulation_failed`; 503
+`object_outside_rooms`, `object_not_combustible`, `simulation_failed`,
+`evacuation_failed`, or `firefighting_failed` (an invalid crew); 503
 `cfast_not_configured`; and 502 `cfast_failed`. The web app's placeholder
 renderer is `apps/web/src/scene/SurfaceFire.tsx`.
 
@@ -39,6 +44,12 @@ The final payload is `SimulationResults`. Choose a frame using
 - `frame.agents`: occupants advanced by the Rust evacuation engine. It honors
   pre-movement delay and walking speed, routes to exterior doors/passages,
   replans around fire, and uses `rerouting` when no safe path is available.
+  Firefighters follow the occupants in the same array (`role.type ===
+  'firefighter'`, IDs `{crew_id}/{n}`, `/1` leads). A crew doesn't know where
+  the fire is: it stages at its entry until `arrival_time_seconds`, searches
+  room by room (`advancing`, `searching`), fights fire it sees or feels nearby
+  (`suppressing`), then leaves (`withdrawing`, `exited`). Put-out cells appear
+  in `surface_fire` as `extinguished`.
 
 The Rust-only simulator currently returns `SurfaceFireFrame`, where the same
 cell array is named `active_nodes`. When the CFAST adapter is complete,
@@ -72,6 +83,7 @@ export type CombustionState =
   | 'heating'
   | 'burning'
   | 'burned_out'
+  | 'extinguished' // put out by suppression with fuel left; can reignite
 
 export type SurfaceFireSource =
   | {

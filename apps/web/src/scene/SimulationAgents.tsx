@@ -2,22 +2,24 @@ import { useThree } from '@react-three/fiber'
 import { useEffect, useMemo } from 'react'
 import * as THREE from 'three'
 import { useSimulationAgents } from '../fire/fireStore'
+import { AGENT_COLORS, isShownAgent } from '../fire/frames'
 import { Z_UP_TO_Y_UP } from './placement'
 import type { Floor } from './types'
 
 const BODY_HEIGHT_M = 1.7
 const UNIT_SPHERE = new THREE.SphereGeometry(1, 16, 12)
-const WHITE = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 0.8 })
+const MATERIALS = {
+  occupant: new THREE.MeshStandardMaterial({ color: AGENT_COLORS.occupant, roughness: 0.8 }),
+  firefighter: new THREE.MeshStandardMaterial({ color: AGENT_COLORS.firefighter, roughness: 0.8 }),
+}
 const noRaycast = () => {}
 
-/** Stationary simulation agents, drawn as white upright ovals. */
+/** Simulation agents as upright ovals: occupants white, firefighters orange. */
 export function SimulationAgents({ floor }: { floor: Floor }) {
   const simulationAgents = useSimulationAgents()
   const agents = useMemo(
     () =>
-      simulationAgents.filter(
-        (agent) => agent.floor_id === floor.id && agent.role.type === 'occupant' && agent.role.phase !== 'exited',
-      ),
+      simulationAgents.filter((agent) => isShownAgent(agent, floor.id)),
     [simulationAgents, floor.id],
   )
   const invalidate = useThree((state) => state.invalidate)
@@ -30,7 +32,7 @@ export function SimulationAgents({ floor }: { floor: Floor }) {
           key={agent.id}
           name={agent.id}
           geometry={UNIT_SPHERE}
-          material={WHITE}
+          material={MATERIALS[agent.role.type]}
           position={[
             agent.position_m.x,
             agent.position_m.y,

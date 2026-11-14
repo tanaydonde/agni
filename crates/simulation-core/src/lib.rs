@@ -2,7 +2,10 @@
 
 mod agent;
 mod evacuation;
+mod firefighting;
 mod grid;
+mod nav;
+mod rehearsal;
 mod results;
 mod scenario;
 mod surface_fire;
@@ -16,9 +19,13 @@ pub use agent::{
     FirefighterState, OCCUPANT_RADIUS_M, OccupantPhase, OccupantState,
 };
 pub use evacuation::{Evacuation, EvacuationError, reachable_exit_cells};
+pub use firefighting::{
+    CrewMemory, CrewReport, Firefighting, FirefightingConfig, FirefightingError,
+};
 pub use grid::{
     GridBounds, GridBuildError, GridCell, GridCellKind, GridCoordinate, GridSummary, SimulationGrid,
 };
+pub use rehearsal::{Rehearsal, RehearsalError, RehearsalFrame};
 pub use results::{
     FireConditions, GasLayerConditions, OpeningConditions, ResultsValidationError,
     ResultsValidationErrors, RoomConditions, SIMULATION_RESULTS_SCHEMA_VERSION, SimulationEngine,
@@ -30,8 +37,9 @@ pub use scenario::{
     ScenarioValidationErrors, exterior_exits,
 };
 pub use surface_fire::{
-    CombustionState, FURNITURE_FIRE_CELL_SIZE_M, FireMaterialCatalog, FireMaterialProfile,
-    FurnitureFireCell, FurnitureFireMaterial, RoomHeatRelease, SURFACE_FIRE_SCHEMA_VERSION,
+    CombustionState, DEFAULT_NOZZLE_COOLING_KW, DEFAULT_NOZZLE_REACH_M, FURNITURE_FIRE_CELL_SIZE_M,
+    FireMaterialCatalog, FireMaterialProfile, FurnitureFireCell, FurnitureFireMaterial,
+    RoomHeatRelease, SURFACE_FIRE_SCHEMA_VERSION, Suppression, SuppressionOutcome,
     SurfaceFireConfig, SurfaceFireError, SurfaceFireFrame, SurfaceFireNode, SurfaceFireNodeFrame,
     SurfaceFireNodeSource, SurfaceFireWorld,
 };

@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { occupantCounts } from '../fire/frames'
+import { crewStatus, occupantCounts } from '../fire/frames'
 import { endSeconds, useFireStore, useSimulationAgents } from '../fire/fireStore'
 import { useWorld } from '../scene/api'
 
@@ -11,6 +11,7 @@ export function FireControls() {
   const { status, objectId, run, clockSeconds, error, play, pause, restart, clear } = useFireStore()
   const agents = useSimulationAgents()
   const counts = occupantCounts(agents)
+  const crew = crewStatus(agents)
   const revision = useWorld().data?.revision
 
   // Furniture moved since the run: its fire would float in the wrong place.
@@ -28,13 +29,14 @@ export function FireControls() {
     >
       <span aria-hidden className="size-2 rounded-full bg-[#ff6a1a]" />
       {status === 'loading' ? (
-        <span>Generating occupants and simulating fire at {objectId}…</span>
+        <span>Generating occupants and simulating fire and crew at {objectId}…</span>
       ) : status === 'error' ? (
         <span className="text-danger">{error}</span>
       ) : (
         <>
           <span className="font-medium text-ink">
             Inside {counts.inside} · Exited {counts.exited}
+            {crew && ` · ${crew}`}
           </span>
           <span className="font-mono text-ink tabular-nums">
             {Math.floor(clockSeconds)} s / {Math.floor(endSeconds(run))} s

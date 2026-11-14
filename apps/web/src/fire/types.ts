@@ -24,7 +24,8 @@ export interface SimulationFrame {
   agents: AgentFrame[]
 }
 
-export type CombustionState = 'unignited' | 'heating' | 'burning' | 'burned_out'
+/** `extinguished`: put out by suppression with fuel left; it can reignite. */
+export type CombustionState = 'unignited' | 'heating' | 'burning' | 'burned_out' | 'extinguished'
 
 export type SurfaceFireSource =
   | { type: 'floor_cell'; floor_id: string; coordinate: { column: number; row: number } }
@@ -139,6 +140,22 @@ export interface SimulateFireResponse {
   /** Objects left out because they don't stand inside a room. */
   excluded_object_ids: string[]
   results: SimulationResults
+}
+
+/**
+ * A firefighter crew sent with a fire run (crates/simulation-core `CrewSpawn`).
+ * The crew moves as one unit: `{id}/1` leads, the rest follow.
+ */
+export interface CrewSpawn {
+  id: string
+  /** Exterior door or passage to enter by. Omitted: the first exterior exit. */
+  entry_opening_id?: string
+  /** Rooms to search first, in order; the rest are searched nearest first. */
+  search_order?: string[]
+  /** Seconds after ignition when the crew reaches the entry. */
+  arrival_time_seconds?: number
+  member_count: number
+  walking_speed_m_per_s?: number
 }
 
 /** `POST /api/agents/spawn_occupants` (crates/server/src/occupant_agent.rs). */

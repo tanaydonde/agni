@@ -1,5 +1,6 @@
 import { WorldApiError, WorldServerUnavailableError } from '../scene/api'
 import {
+  type CrewSpawn,
   SIMULATION_RESULTS_SCHEMA_VERSION,
   type SimulateFireResponse,
   type SpawnOccupantsResponse,
@@ -7,9 +8,13 @@ import {
 
 export const DEFAULT_OCCUPANT_COUNT = 10
 
+/** Two firefighters who arrive 30 s after ignition at the first exterior exit. */
+export const DEFAULT_CREW: CrewSpawn = { id: 'engine-1', member_count: 2, arrival_time_seconds: 30 }
+
 /**
  * Generates a validated occupant layout, ignites `objectId`, and runs the
- * hybrid fire simulation. Occupants remain stationary until movement exists.
+ * hybrid fire simulation with occupants evacuating and the default crew
+ * searching for and fighting the fire.
  */
 export async function runFireSimulation(objectId: string): Promise<SimulateFireResponse> {
   const occupants = await spawnOccupants(DEFAULT_OCCUPANT_COUNT)
@@ -31,6 +36,7 @@ async function requestFireSimulation(
   const run = await requestJson<SimulateFireResponse>('/api/fire/simulate/hybrid', {
     object_id: objectId,
     occupants,
+    crews: [DEFAULT_CREW],
   })
   if (run.results.schema_version !== SIMULATION_RESULTS_SCHEMA_VERSION) {
     throw new Error(
@@ -72,6 +78,8 @@ export function describeFireError(error: unknown): string {
         return "That item isn't inside a room, so it can't burn"
       case 'object_not_combustible':
         return "That item doesn't burn"
+      case 'firefighting_failed':
+        return `The crew couldn't be placed: ${String(error.body.message ?? 'unknown error')}`
       case 'simulation_failed':
         return `The simulation failed: ${String(error.body.message ?? 'unknown error')}`
       case 'cfast_not_configured':

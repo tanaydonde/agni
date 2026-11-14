@@ -231,6 +231,79 @@ async fn simulate_fire_returns_a_growing_timeline() {
 }
 
 #[tokio::test]
+async fn a_crew_finds_the_fire_puts_it_out_and_leaves() {
+    let (status, body) = call(
+        app(),
+        "POST",
+        "/api/fire/simulate",
+        Some(json!({
+            "object_id": "chair-1",
+            "duration_seconds": 300.0,
+            "crews": [{ "id": "engine-1", "member_count": 2, "arrival_time_seconds": 5.0 }]
+        })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let frames = body["results"]["frames"].as_array().expect("frames");
+    let phases = |id: &str| {
+        frames
+            .iter()
+            .map(|frame| {
+                let agent = frame["agents"]
+                    .as_array()
+                    .expect("agents")
+                    .iter()
+                    .find(|agent| agent["id"] == id)
+                    .expect("firefighter in every frame");
+                assert_eq!(agent["role"]["type"], "firefighter");
+                assert_eq!(agent["role"]["crew_id"], "engine-1");
+                agent["role"]["phase"].as_str().expect("phase").to_owned()
+            })
+            .collect::<Vec<_>>()
+    };
+    let leader = phases("engine-1/1");
+    assert_eq!(phases("engine-1/2").len(), leader.len());
+    assert_eq!(leader.first().map(String::as_str), Some("staging"));
+    assert!(
+        leader.iter().any(|phase| phase == "suppressing"),
+        "{leader:?}"
+    );
+    assert_eq!(leader.last().map(String::as_str), Some("exited"));
+
+    let last = frames.last().expect("last frame");
+    assert!(
+        last["time_seconds"].as_f64().expect("time") < 300.0,
+        "the run settles early"
+    );
+    let states = last["surface_fire"]
+        .as_array()
+        .expect("nodes")
+        .iter()
+        .map(|node| node["state"].as_str().expect("state"))
+        .collect::<Vec<_>>();
+    assert!(states.contains(&"extinguished"), "{states:?}");
+    assert!(!states.contains(&"burning"), "{states:?}");
+}
+
+#[tokio::test]
+async fn an_invalid_crew_is_rejected_before_simulating() {
+    let (status, body) = call(
+        app(),
+        "POST",
+        "/api/fire/simulate",
+        Some(json!({
+            "object_id": "chair-1",
+            "crews": [{ "id": "engine-1", "member_count": 2, "search_order": ["attic"] }]
+        })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["code"], "firefighting_failed");
+}
+
+#[tokio::test]
 async fn fire_timeline_moves_supplied_occupants() {
     let (status, body) = call(
         app(),

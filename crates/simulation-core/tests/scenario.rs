@@ -40,7 +40,12 @@ fn spawns_occupants_and_crew_members() {
 
     let firefighter = &agents[1];
     assert_eq!(firefighter.floor_id, "floor-1");
-    assert_eq!(firefighter.position_m, position(2.0, 0.0));
+    // Spawned on the walkable cell just inside the door, not on the wall line.
+    let door = position(2.0, 0.0);
+    let grid = SimulationGrid::from_scene(&scene_fixture(), "floor-1", 0.25).expect("grid");
+    assert!(grid.circle_is_walkable(firefighter.position_m, 0.25));
+    assert!(firefighter.position_m.y > door.y);
+    assert!((firefighter.position_m.x - door.x).hypot(firefighter.position_m.y - door.y) <= 1.5);
     let AgentRole::Firefighter(state) = &firefighter.role else {
         panic!("second agent should be a firefighter");
     };
@@ -200,6 +205,21 @@ fn deserializes_with_defaults() {
 }
 
 #[test]
+fn crew_without_an_entry_uses_the_first_exterior_exit() {
+    let mut scenario = scenario_fixture();
+    scenario.crews[0].entry_opening_id = None;
+
+    let simulation =
+        Simulation::from_scenario(scene_fixture(), &scenario, SimulationConfig::default())
+            .expect("scenario should be valid");
+
+    let AgentRole::Firefighter(state) = &simulation.agents()[1].role else {
+        panic!("second agent should be a firefighter");
+    };
+    assert_eq!(state.entry_opening_id, "door-1");
+}
+
+#[test]
 fn reports_every_scenario_problem() {
     let mut scenario = scenario_fixture();
     scenario.scene_id = "other-scene".to_owned();
@@ -214,6 +234,14 @@ fn reports_every_scenario_problem() {
     scenario.crews = vec![
         crew("not-an-exit", "door-9", 2),
         crew("empty-crew", "door-1", 0),
+        CrewSpawn {
+            search_order: vec![
+                "room-9".to_owned(),
+                "room-1".to_owned(),
+                "room-1".to_owned(),
+            ],
+            ..crew("bad-order", "door-1", 1)
+        },
     ];
 
     let Err(SimulationError::InvalidScenario(errors)) =
@@ -232,6 +260,8 @@ fn reports_every_scenario_problem() {
         ("occupants[3].id", "unique"),
         ("crews[0].entry_opening_id", "exterior door"),
         ("crews[1].member_count", "between 1 and"),
+        ("crews[2].search_order[0]", "does not exist"),
+        ("crews[2].search_order[2]", "unique"),
     ] {
         assert!(
             has_error(&errors.0, path, message),
@@ -289,7 +319,8 @@ fn occupant(id: &str, floor_id: &str, x: f64, y: f64) -> OccupantSpawn {
 fn crew(id: &str, entry_opening_id: &str, member_count: u32) -> CrewSpawn {
     CrewSpawn {
         id: id.to_owned(),
-        entry_opening_id: entry_opening_id.to_owned(),
+        entry_opening_id: Some(entry_opening_id.to_owned()),
+        search_order: vec![],
         arrival_time_seconds: 30.0,
         member_count,
         walking_speed_m_per_s: 1.0,

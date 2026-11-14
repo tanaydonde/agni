@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { agentsAtTime, frameAtTime, occupantCounts } from './frames'
+import { agentsAtTime, crewStatus, frameAtTime, isShownAgent, occupantCounts } from './frames'
 import type { SimulationFrame } from './types'
 
 const frame = (time_seconds: number): SimulationFrame => ({
@@ -59,6 +59,40 @@ describe('occupantCounts', () => {
     }
 
     expect(occupantCounts([inside, exited, firefighter])).toEqual({ inside: 1, exited: 1 })
+  })
+})
+
+describe('crewStatus', () => {
+  const firefighter = (id: string, phase: 'staging' | 'suppressing') => ({
+    ...agent(0),
+    id,
+    role: { type: 'firefighter' as const, crew_id: 'engine-1', phase },
+  })
+
+  it('reports nothing without a crew', () => {
+    expect(crewStatus([agent(0)])).toBeNull()
+  })
+
+  it("describes the leader's phase", () => {
+    expect(
+      crewStatus([firefighter('engine-1/2', 'staging'), firefighter('engine-1/1', 'suppressing')]),
+    ).toBe('Crew spraying')
+  })
+})
+
+describe('isShownAgent', () => {
+  it('shows occupants and firefighters on the floor until they leave', () => {
+    const firefighter = {
+      ...agent(0),
+      id: 'engine-1/1',
+      role: { type: 'firefighter' as const, crew_id: 'engine-1', phase: 'advancing' as const },
+    }
+    const gone = { ...firefighter, role: { ...firefighter.role, phase: 'exited' as const } }
+
+    expect(isShownAgent(agent(0), 'floor-1')).toBe(true)
+    expect(isShownAgent(firefighter, 'floor-1')).toBe(true)
+    expect(isShownAgent(gone, 'floor-1')).toBe(false)
+    expect(isShownAgent(firefighter, 'floor-2')).toBe(false)
   })
 })
 

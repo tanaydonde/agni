@@ -109,6 +109,47 @@ fn routes_around_a_burning_floor_cell() {
     );
 }
 
+#[test]
+fn walks_straight_through_an_extinguished_floor_cell() {
+    let mut evacuation = Evacuation::new(
+        &scene_fixture(),
+        &[occupant("occupant-1", 3.0, 3.0, 0.0)],
+        SimulationConfig::default(),
+    )
+    .expect("evacuation should build");
+    let fire_position = point(3.125, 2.125);
+    let fire = [SurfaceFireNodeFrame {
+        id: "floor-fire".to_owned(),
+        source: SurfaceFireNodeSource::FloorCell {
+            floor_id: "floor-1".to_owned(),
+            coordinate: tflop_simulation_core::GridCoordinate { column: 12, row: 8 },
+        },
+        room_id: "room-1".to_owned(),
+        position_m: fire_position,
+        dimensions_m: Dimensions3 {
+            width_m: 0.5,
+            depth_m: 0.5,
+            height_m: 0.02,
+        },
+        furniture_cell: None,
+        material_id: "carpet".to_owned(),
+        state: CombustionState::Extinguished,
+        ignition_time_seconds: Some(0.0),
+        surface_temperature_c: 400.0,
+        heat_release_rate_kw: 0.0,
+        fuel_remaining_fraction: 1.0,
+    }];
+
+    evacuation.advance_to(0.0, &fire).expect("initial frame");
+    let agents = evacuation.advance_to(1.0, &fire).expect("moving frame");
+
+    assert!(
+        (agents[0].position_m.x - 3.0).abs() <= 0.25,
+        "an extinguished cell is not a hazard, so the direct route stands: {:?}",
+        agents[0].position_m
+    );
+}
+
 fn phase(agent: &tflop_simulation_core::AgentFrame) -> OccupantPhase {
     let AgentFrameRole::Occupant { phase } = agent.role else {
         panic!("expected occupant")

@@ -455,6 +455,12 @@ fn classify_cell(
     }
 }
 
+/// Whether `position_m` lies inside `room`'s boundary (or on it), ignoring
+/// height.
+pub(crate) fn room_contains(room: &Room, position_m: Vec3) -> bool {
+    point_in_room(point(position_m.x, position_m.y), room)
+}
+
 fn point_in_room(point: Point2, room: &Room) -> bool {
     let mut inside = false;
     for edge in &room.boundary {
