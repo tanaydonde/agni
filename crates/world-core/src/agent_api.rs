@@ -3,7 +3,10 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{FurnitureAsset, FurnitureObject, Mobility, Quaternion, Scene, Transform3, Vec3};
+use crate::{
+    FurnitureAsset, FurnitureObject, Mobility, PlacementRules, Quaternion, Scene, Transform3, Vec3,
+    placement::validate_candidate_placement,
+};
 
 const QUATERNION_NORMALIZATION_TOLERANCE: f64 = 1.0e-6;
 
@@ -13,6 +16,7 @@ pub struct World {
     scene: Scene,
     revision: u64,
     object_index: HashMap<String, ObjectLocation>,
+    placement_rules: PlacementRules,
 }
 
 #[derive(Clone, Copy)]
@@ -29,7 +33,18 @@ impl World {
             scene,
             revision: 0,
             object_index,
+            placement_rules: PlacementRules::default(),
         }
+    }
+
+    pub fn with_placement_rules(
+        scene: Scene,
+        placement_rules: PlacementRules,
+    ) -> WorldApiResult<Self> {
+        validate_placement_rules(placement_rules)?;
+        let mut world = Self::new(scene);
+        world.placement_rules = placement_rules;
+        Ok(world)
     }
 
     #[must_use]
@@ -123,7 +138,7 @@ impl World {
     }
 
     pub fn validate_layout(&self) -> WorldApiResult<ValidateLayoutResponse> {
-        let issues = self.scene.validate().map_or_else(
+        let mut issues = self.scene.validate().map_or_else(
             |errors| {
                 errors
                     .0
@@ -136,6 +151,17 @@ impl World {
             },
             |()| Vec::new(),
         );
+
+        for (floor_index, floor) in self.scene.floors.iter().enumerate() {
+            for (object_index, object) in floor.objects.iter().enumerate() {
+                if let Err(error) = self.validate_placement(floor_index, object) {
+                    issues.push(ValidationIssue {
+                        path: format!("floors[{floor_index}].objects[{object_index}]"),
+                        message: error.to_string(),
+                    });
+                }
+            }
+        }
 
         Ok(ValidateLayoutResponse {
             valid: issues.is_empty(),
@@ -223,6 +249,7 @@ impl World {
             transform,
             mobility,
         };
+        self.validate_placement(floor_index, &object)?;
         let object_index = self.scene.floors[floor_index].objects.len();
         self.scene.floors[floor_index].objects.push(object);
         self.object_index.insert(
@@ -262,12 +289,6 @@ impl World {
         mut transform: Transform3,
     ) -> WorldApiResult<String> {
         validate_transform(&transform)?;
-        if !transform.rotation.is_yaw_only() {
-            return Err(invalid_request(
-                "transform.rotation",
-                "furniture must stay upright; only rotation about the Z axis is allowed",
-            ));
-        }
         let location = self.location(&object_id)?;
         let floor = &mut self.scene.floors[location.floor_index];
         // Snap to the floor surface whatever height was requested.
@@ -276,7 +297,11 @@ impl World {
         if object.mobility == Mobility::Fixed {
             return Err(WorldApiError::ObjectFixed { object_id });
         }
-        object.transform = transform;
+        let mut candidate = object.clone();
+        candidate.transform = transform;
+        self.validate_placement(location.floor_index, &candidate)?;
+        self.scene.floors[location.floor_index].objects[location.object_index].transform =
+            transform;
 
         Ok(object_id)
     }
@@ -308,6 +333,31 @@ impl World {
     fn object(&self, object_id: &str) -> WorldApiResult<&FurnitureObject> {
         let location = self.location(object_id)?;
         Ok(&self.scene.floors[location.floor_index].objects[location.object_index])
+    }
+
+    fn validate_placement(
+        &self,
+        floor_index: usize,
+        object: &FurnitureObject,
+    ) -> WorldApiResult<()> {
+        let asset = self
+            .scene
+            .assets
+            .iter()
+            .find(|asset| asset.id == object.asset_id)
+            .ok_or_else(|| WorldApiError::AssetNotFound {
+                asset_id: object.asset_id.clone(),
+            })?;
+        let floor = &self.scene.floors[floor_index];
+        validate_candidate_placement(
+            object,
+            asset,
+            &floor.id,
+            &floor.rooms,
+            &floor.objects,
+            &self.scene.assets,
+            self.placement_rules,
+        )
     }
 
     fn require_revision(&self, expected_revision: u64) -> WorldApiResult<()> {
@@ -451,6 +501,30 @@ pub enum WorldApiError {
     DuplicateObjectId { object_id: String },
     #[error("object {object_id} is fixed")]
     ObjectFixed { object_id: String },
+    #[error("object {object_id} is not centered inside a room on floor {floor_id}")]
+    ObjectOutsideRooms { object_id: String, floor_id: String },
+    #[error("object {object_id} does not fit completely inside room {room_id}")]
+    ObjectOutsideRoom { object_id: String, room_id: String },
+    #[error("object {object_id} overlaps object {conflicting_object_id}")]
+    FurnitureOverlap {
+        object_id: String,
+        conflicting_object_id: String,
+    },
+    #[error("object {object_id} collides with edge {edge_id} in room {room_id}")]
+    WallCollision {
+        object_id: String,
+        room_id: String,
+        edge_id: String,
+    },
+    #[error("object {object_id} blocks opening {opening_id} on edge {edge_id} in room {room_id}")]
+    OpeningClearanceBlocked {
+        object_id: String,
+        room_id: String,
+        edge_id: String,
+        opening_id: String,
+    },
+    #[error("object {object_id} must remain upright and may only rotate around the Z axis")]
+    UnsupportedFurnitureRotation { object_id: String },
     #[error("request validation failed")]
     InvalidRequest { issues: Vec<ValidationIssue> },
     #[error("batch edit {edit_index} failed: {reason}")]
@@ -533,6 +607,32 @@ fn validate_transform(transform: &Transform3) -> WorldApiResult<()> {
         });
     }
 
+    if issues.is_empty() {
+        Ok(())
+    } else {
+        Err(WorldApiError::InvalidRequest { issues })
+    }
+}
+
+fn validate_placement_rules(rules: PlacementRules) -> WorldApiResult<()> {
+    let mut issues = Vec::new();
+    for (path, value) in [
+        (
+            "placement_rules.opening_clearance_depth_m",
+            rules.opening_clearance_depth_m,
+        ),
+        (
+            "placement_rules.opening_clearance_side_m",
+            rules.opening_clearance_side_m,
+        ),
+    ] {
+        if !value.is_finite() || value < 0.0 {
+            issues.push(ValidationIssue {
+                path: path.to_owned(),
+                message: "value must be finite and nonnegative".to_owned(),
+            });
+        }
+    }
     if issues.is_empty() {
         Ok(())
     } else {

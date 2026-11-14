@@ -1,8 +1,8 @@
 use tflop_world_core::{
-    AddObjectRequest, ApplyEditsRequest, Dimensions3, EditCommand, Floor, FurnitureAsset,
-    FurnitureObject, Mobility, MoveObjectRequest, Quaternion, RemoveObjectRequest,
-    RotateObjectRequest, SCENE_SCHEMA_VERSION, Scene, SceneSource, SetObjectTransformRequest,
-    Transform3, Vec3, World, WorldApiError,
+    AddObjectRequest, ApplyEditsRequest, BoundaryEdge, BoundaryKind, Dimensions3, EditCommand,
+    Floor, FurnitureAsset, FurnitureObject, Mobility, MoveObjectRequest, Opening, OpeningKind,
+    Quaternion, RemoveObjectRequest, Room, RotateObjectRequest, SCENE_SCHEMA_VERSION, Scene,
+    SceneSource, SetObjectTransformRequest, Transform3, Vec3, World, WorldApiError,
 };
 
 #[test]
@@ -181,8 +181,8 @@ fn successful_batches_increment_revision_once() {
                 EditCommand::MoveObject {
                     object_id: "chair-1".to_owned(),
                     position_m: Vec3 {
-                        x: 2.0,
-                        y: 0.0,
+                        x: 4.0,
+                        y: 2.0,
                         z: 0.0,
                     },
                 },
@@ -197,7 +197,103 @@ fn successful_batches_increment_revision_once() {
             .transform
             .position_m
             .x,
-        2.0
+        4.0
+    );
+}
+
+#[test]
+fn rejects_furniture_outside_rooms_and_preserves_revision() {
+    let mut world = test_world();
+    let mut request = add_request(0, "outside", Mobility::Movable);
+    request.position_m = position(12.0, 2.0);
+
+    assert_eq!(
+        world.add_object(request).expect_err("object is outside"),
+        WorldApiError::ObjectOutsideRooms {
+            object_id: "outside".to_owned(),
+            floor_id: "floor-1".to_owned(),
+        }
+    );
+    assert_eq!(world.get_scene().revision, 0);
+    assert!(world.get_scene().scene.floors[0].objects.is_empty());
+}
+
+#[test]
+fn rejects_furniture_overlap_but_allows_touching_edges() {
+    let mut world = test_world();
+    world
+        .add_object(add_request(0, "chair-1", Mobility::Movable))
+        .expect("first chair fits");
+
+    let mut overlapping = add_request(1, "chair-2", Mobility::Movable);
+    overlapping.position_m = position(2.4, 2.0);
+    assert_eq!(
+        world
+            .add_object(overlapping)
+            .expect_err("chairs overlap by 0.1 m"),
+        WorldApiError::FurnitureOverlap {
+            object_id: "chair-2".to_owned(),
+            conflicting_object_id: "chair-1".to_owned(),
+        }
+    );
+
+    let mut rotated_overlap = add_request(1, "chair-rotated", Mobility::Movable);
+    rotated_overlap.position_m = position(2.6, 2.0);
+    rotated_overlap.rotation_z_degrees = 90.0;
+    assert!(matches!(
+        world.add_object(rotated_overlap),
+        Err(WorldApiError::FurnitureOverlap { object_id, .. }) if object_id == "chair-rotated"
+    ));
+
+    let mut touching = add_request(1, "chair-3", Mobility::Movable);
+    touching.position_m = position(2.5, 2.0);
+    world
+        .add_object(touching)
+        .expect("chairs may touch without overlapping");
+}
+
+#[test]
+fn rejects_wall_collisions_and_door_clearance_obstructions() {
+    let mut world = test_world();
+
+    let mut against_wall = add_request(0, "wall-chair", Mobility::Movable);
+    against_wall.position_m = position(0.2, 8.0);
+    assert!(matches!(
+        world.add_object(against_wall),
+        Err(WorldApiError::WallCollision { edge_id, .. }) if edge_id == "west"
+    ));
+
+    let mut blocks_door = add_request(0, "door-chair", Mobility::Movable);
+    blocks_door.position_m = position(5.0, 0.6);
+    assert!(matches!(
+        world.add_object(blocks_door),
+        Err(WorldApiError::OpeningClearanceBlocked { opening_id, .. }) if opening_id == "door-1"
+    ));
+}
+
+#[test]
+fn failed_move_keeps_the_previous_transform_and_revision() {
+    let mut world = test_world();
+    world
+        .add_object(add_request(0, "chair-1", Mobility::Movable))
+        .expect("chair fits");
+
+    let error = world
+        .move_object(MoveObjectRequest {
+            expected_revision: 1,
+            object_id: "chair-1".to_owned(),
+            position_m: position(20.0, 20.0),
+        })
+        .expect_err("invalid move should fail");
+    assert!(matches!(error, WorldApiError::ObjectOutsideRooms { .. }));
+    let snapshot = world.get_scene();
+    assert_eq!(snapshot.revision, 1);
+    assert_eq!(
+        snapshot.scene.floors[0].objects[0].transform.position_m,
+        Vec3 {
+            z: FLOOR_Z,
+            ..origin()
+        }
     );
 }
 
@@ -272,7 +368,12 @@ fn rejects_tilted_rotations() {
             },
         })
         .expect_err("tilted furniture must be rejected");
-    assert!(matches!(error, WorldApiError::InvalidRequest { .. }));
+    assert_eq!(
+        error,
+        WorldApiError::UnsupportedFurnitureRotation {
+            object_id: "chair-1".to_owned(),
+        }
+    );
     assert_eq!(world.get_scene().revision, 1);
 }
 
@@ -346,7 +447,7 @@ fn test_world() -> World {
             model_uri: Some("assets/chair.glb".to_owned()),
             dimensions_m: Dimensions3 {
                 width_m: 0.5,
-                depth_m: 0.5,
+                depth_m: 0.8,
                 height_m: 0.9,
             },
         }],
@@ -354,16 +455,56 @@ fn test_world() -> World {
             id: "floor-1".to_owned(),
             label: Some("Floor 1".to_owned()),
             elevation_m: Some(FLOOR_Z),
-            rooms: vec![],
+            rooms: vec![test_room()],
             objects: vec![],
         }],
     })
 }
 
 fn origin() -> Vec3 {
-    Vec3 {
-        x: 0.0,
-        y: 0.0,
-        z: 0.0,
+    position(2.0, 2.0)
+}
+
+fn position(x: f64, y: f64) -> Vec3 {
+    Vec3 { x, y, z: 0.0 }
+}
+
+fn test_room() -> Room {
+    Room {
+        id: "room-1".to_owned(),
+        label: Some("Test room".to_owned()),
+        classifications: vec![],
+        dimensions: None,
+        boundary: vec![
+            edge(
+                "south",
+                position(0.0, 0.0),
+                position(10.0, 0.0),
+                vec![Opening {
+                    id: "door-1".to_owned(),
+                    label: Some("Door".to_owned()),
+                    kind: OpeningKind::Door,
+                    width_m: 1.0,
+                    height_m: Some(2.1),
+                    lower_elevation_m: Some(0.0),
+                    relative_center: 0.5,
+                }],
+            ),
+            edge("east", position(10.0, 0.0), position(10.0, 10.0), vec![]),
+            edge("north", position(10.0, 10.0), position(0.0, 10.0), vec![]),
+            edge("west", position(0.0, 10.0), position(0.0, 0.0), vec![]),
+        ],
+    }
+}
+
+fn edge(id: &str, start: Vec3, end: Vec3, openings: Vec<Opening>) -> BoundaryEdge {
+    BoundaryEdge {
+        id: id.to_owned(),
+        kind: BoundaryKind::Wall,
+        start,
+        end,
+        thickness_m: Some(0.2),
+        center_line_bias: Some(0.5),
+        openings,
     }
 }
