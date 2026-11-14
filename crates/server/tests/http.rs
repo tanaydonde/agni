@@ -231,6 +231,35 @@ async fn simulate_fire_returns_a_growing_timeline() {
 }
 
 #[tokio::test]
+async fn fire_timeline_moves_supplied_occupants() {
+    let (status, body) = call(
+        app(),
+        "POST",
+        "/api/fire/simulate",
+        Some(json!({
+            "object_id": "chair-1",
+            "duration_seconds": 5.0,
+            "occupants": [{
+                "id": "occupant-1",
+                "floor_id": "floor-1",
+                "position_m": { "x": 1.0, "y": 1.0, "z": 0.0 },
+                "walking_speed_m_per_s": 1.2,
+                "pre_movement_delay_seconds": 0.0
+            }]
+        })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let frames = body["results"]["frames"].as_array().expect("frames");
+    assert_eq!(frames[0]["agents"][0]["role"]["phase"], "unaware");
+    assert_ne!(
+        frames[0]["agents"][0]["position_m"],
+        frames.last().expect("last frame")["agents"][0]["position_m"]
+    );
+}
+
+#[tokio::test]
 async fn simulate_fire_rejects_unknown_objects() {
     let (status, body) = call(
         app(),

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { frameAtTime } from './frames'
+import { agentsAtTime, frameAtTime, occupantCounts } from './frames'
 import type { SimulationFrame } from './types'
 
 const frame = (time_seconds: number): SimulationFrame => ({
@@ -35,3 +35,41 @@ describe('frameAtTime', () => {
     expect(frameAtTime(frames, 100)?.time_seconds).toBe(4)
   })
 })
+
+describe('agentsAtTime', () => {
+  it('smoothly interpolates positions between simulation frames', () => {
+    const first = frame(0)
+    const second = frame(1)
+    first.agents = [agent(0)]
+    second.agents = [agent(2)]
+
+    expect(agentsAtTime([first, second], 0.25)[0].position_m.x).toBe(0.5)
+    expect(agentsAtTime([first, second], 0.75)[0].position_m.x).toBe(1.5)
+  })
+})
+
+describe('occupantCounts', () => {
+  it('counts only exited occupants as having left', () => {
+    const inside = agent(0)
+    const exited = { ...agent(1), id: 'occupant-2', role: { type: 'occupant' as const, phase: 'exited' as const } }
+    const firefighter = {
+      ...agent(2),
+      id: 'engine-1/1',
+      role: { type: 'firefighter' as const, crew_id: 'engine-1', phase: 'searching' as const },
+    }
+
+    expect(occupantCounts([inside, exited, firefighter])).toEqual({ inside: 1, exited: 1 })
+  })
+})
+
+function agent(x: number) {
+  return {
+    id: 'occupant-1',
+    floor_id: 'floor-1',
+    position_m: { x, y: 0, z: 0 },
+    velocity_m_per_s: { x: 1, y: 0, z: 0 },
+    radius_m: 0.25,
+    exposure: { heat: 0, toxic_gas: 0 },
+    role: { type: 'occupant' as const, phase: 'moving_to_exit' as const },
+  }
+}

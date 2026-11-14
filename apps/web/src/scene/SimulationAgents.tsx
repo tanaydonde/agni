@@ -1,7 +1,7 @@
 import { useThree } from '@react-three/fiber'
 import { useEffect, useMemo } from 'react'
 import * as THREE from 'three'
-import { useFireFrame } from '../fire/fireStore'
+import { useSimulationAgents } from '../fire/fireStore'
 import { Z_UP_TO_Y_UP } from './placement'
 import type { Floor } from './types'
 
@@ -12,10 +12,13 @@ const noRaycast = () => {}
 
 /** Stationary simulation agents, drawn as white upright ovals. */
 export function SimulationAgents({ floor }: { floor: Floor }) {
-  const frame = useFireFrame()
+  const simulationAgents = useSimulationAgents()
   const agents = useMemo(
-    () => frame?.agents.filter((agent) => agent.floor_id === floor.id) ?? [],
-    [frame, floor.id],
+    () =>
+      simulationAgents.filter(
+        (agent) => agent.floor_id === floor.id && agent.role.type === 'occupant' && agent.role.phase !== 'exited',
+      ),
+    [simulationAgents, floor.id],
   )
   const invalidate = useThree((state) => state.invalidate)
   useEffect(() => invalidate(), [agents, invalidate])

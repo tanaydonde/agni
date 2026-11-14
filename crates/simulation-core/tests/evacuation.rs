@@ -1,0 +1,187 @@
+use tflop_simulation_core::{
+    AgentFrameRole, CombustionState, Evacuation, OccupantPhase, OccupantSpawn, SimulationConfig,
+    SurfaceFireNodeFrame, SurfaceFireNodeSource,
+};
+use tflop_world_core::{
+    BoundaryEdge, BoundaryKind, Dimensions3, Floor, Opening, OpeningKind, Room,
+    SCENE_SCHEMA_VERSION, Scene, SceneSource, Vec3,
+};
+
+#[test]
+fn honors_pre_movement_delay_then_walks_to_an_exit() {
+    let mut evacuation = Evacuation::new(
+        &scene_fixture(),
+        &[occupant("occupant-1", 2.0, 3.0, 1.0)],
+        SimulationConfig::default(),
+    )
+    .expect("evacuation should build");
+
+    let initial = evacuation.advance_to(0.0, &[]).expect("initial frame");
+    let preparing = evacuation.advance_to(0.5, &[]).expect("preparing frame");
+    assert_eq!(initial[0].position_m, preparing[0].position_m);
+    assert_eq!(phase(&preparing[0]), OccupantPhase::Preparing);
+
+    let moving = evacuation.advance_to(1.5, &[]).expect("moving frame");
+    assert_ne!(moving[0].position_m, preparing[0].position_m);
+    assert_eq!(phase(&moving[0]), OccupantPhase::MovingToExit);
+    assert!(moving[0].velocity_m_per_s.x != 0.0 || moving[0].velocity_m_per_s.y != 0.0);
+
+    let mut last = moving;
+    for second in 2..=10 {
+        last = evacuation
+            .advance_to(f64::from(second), &[])
+            .expect("evacuation frame");
+        if phase(&last[0]) == OccupantPhase::Exited {
+            break;
+        }
+    }
+    assert_eq!(phase(&last[0]), OccupantPhase::Exited);
+}
+
+#[test]
+fn converging_occupants_never_overlap() {
+    let mut evacuation = Evacuation::new(
+        &scene_fixture(),
+        &[
+            occupant("occupant-1", 2.0, 3.0, 0.0),
+            occupant("occupant-2", 4.0, 3.0, 0.0),
+        ],
+        SimulationConfig::default(),
+    )
+    .expect("evacuation should build");
+
+    for second in 0..=10 {
+        let agents = evacuation
+            .advance_to(f64::from(second), &[])
+            .expect("evacuation frame");
+        if phase(&agents[0]) == OccupantPhase::Exited || phase(&agents[1]) == OccupantPhase::Exited
+        {
+            continue;
+        }
+        let dx = agents[0].position_m.x - agents[1].position_m.x;
+        let dy = agents[0].position_m.y - agents[1].position_m.y;
+        assert!(dx.hypot(dy) >= agents[0].radius_m + agents[1].radius_m);
+    }
+}
+
+#[test]
+fn routes_around_a_burning_floor_cell() {
+    let mut evacuation = Evacuation::new(
+        &scene_fixture(),
+        &[occupant("occupant-1", 3.0, 3.0, 0.0)],
+        SimulationConfig::default(),
+    )
+    .expect("evacuation should build");
+    let fire_position = point(3.125, 2.125);
+    let fire = [SurfaceFireNodeFrame {
+        id: "floor-fire".to_owned(),
+        source: SurfaceFireNodeSource::FloorCell {
+            floor_id: "floor-1".to_owned(),
+            coordinate: tflop_simulation_core::GridCoordinate { column: 12, row: 8 },
+        },
+        room_id: "room-1".to_owned(),
+        position_m: fire_position,
+        dimensions_m: Dimensions3 {
+            width_m: 0.5,
+            depth_m: 0.5,
+            height_m: 0.02,
+        },
+        furniture_cell: None,
+        material_id: "carpet".to_owned(),
+        state: CombustionState::Burning,
+        ignition_time_seconds: Some(0.0),
+        surface_temperature_c: 400.0,
+        heat_release_rate_kw: 10.0,
+        fuel_remaining_fraction: 1.0,
+    }];
+
+    evacuation.advance_to(0.0, &fire).expect("initial frame");
+    let agents = evacuation.advance_to(1.0, &fire).expect("moving frame");
+
+    assert!(
+        (agents[0].position_m.x - 3.0).abs() > 0.25,
+        "agent should turn sideways instead of walking through fire: {:?}",
+        agents[0].position_m
+    );
+    assert!(
+        (agents[0].position_m.x - fire_position.x).hypot(agents[0].position_m.y - fire_position.y)
+            > 0.6
+    );
+}
+
+fn phase(agent: &tflop_simulation_core::AgentFrame) -> OccupantPhase {
+    let AgentFrameRole::Occupant { phase } = agent.role else {
+        panic!("expected occupant")
+    };
+    phase
+}
+
+fn occupant(id: &str, x: f64, y: f64, delay: f64) -> OccupantSpawn {
+    OccupantSpawn {
+        id: id.to_owned(),
+        floor_id: "floor-1".to_owned(),
+        position_m: point(x, y),
+        walking_speed_m_per_s: 1.0,
+        pre_movement_delay_seconds: delay,
+    }
+}
+
+fn scene_fixture() -> Scene {
+    Scene {
+        schema_version: SCENE_SCHEMA_VERSION,
+        id: "evacuation-scene".to_owned(),
+        name: None,
+        source: SceneSource {
+            provider: "fixture".to_owned(),
+            external_id: "evacuation-scene".to_owned(),
+        },
+        assets: Vec::new(),
+        floors: vec![Floor {
+            id: "floor-1".to_owned(),
+            label: None,
+            elevation_m: Some(0.0),
+            rooms: vec![Room {
+                id: "room-1".to_owned(),
+                label: None,
+                classifications: Vec::new(),
+                dimensions: None,
+                boundary: vec![
+                    edge(
+                        "south",
+                        point(0.0, 0.0),
+                        point(6.0, 0.0),
+                        vec![Opening {
+                            id: "exit-1".to_owned(),
+                            label: None,
+                            kind: OpeningKind::Door,
+                            width_m: 1.2,
+                            height_m: Some(2.1),
+                            lower_elevation_m: Some(0.0),
+                            relative_center: 0.5,
+                        }],
+                    ),
+                    edge("east", point(6.0, 0.0), point(6.0, 4.0), Vec::new()),
+                    edge("north", point(6.0, 4.0), point(0.0, 4.0), Vec::new()),
+                    edge("west", point(0.0, 4.0), point(0.0, 0.0), Vec::new()),
+                ],
+            }],
+            objects: Vec::new(),
+        }],
+    }
+}
+
+fn edge(id: &str, start: Vec3, end: Vec3, openings: Vec<Opening>) -> BoundaryEdge {
+    BoundaryEdge {
+        id: id.to_owned(),
+        kind: BoundaryKind::Wall,
+        start,
+        end,
+        thickness_m: Some(0.1),
+        center_line_bias: Some(0.5),
+        openings,
+    }
+}
+
+fn point(x: f64, y: f64) -> Vec3 {
+    Vec3 { x, y, z: 0.0 }
+}

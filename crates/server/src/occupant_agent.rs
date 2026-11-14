@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tflop_simulation_core::{
     AgentFrame, GridCoordinate, OCCUPANT_RADIUS_M, OccupantSpawn, ScenarioValidationErrors,
-    Simulation, SimulationConfig, SimulationError,
+    Simulation, SimulationConfig, SimulationError, reachable_exit_cells,
 };
 use tflop_world_core::Vec3;
 
@@ -172,6 +172,8 @@ fn build_spawn_sites(
     simulation: &Simulation,
     requested_count: usize,
 ) -> Result<Vec<SpawnSite>, AgentError> {
+    let reachable = reachable_exit_cells(simulation.scene(), simulation.config())
+        .map_err(|error| AgentError::Simulation(error.to_string()))?;
     let mut sites = Vec::new();
     for (floor_index, grid) in simulation.grids().iter().enumerate() {
         // One spare cell beyond two body radii gives the validator numerical
@@ -184,6 +186,9 @@ fn build_spawn_sites(
                     continue;
                 };
                 if !grid.circle_is_walkable(cell.center_m, OCCUPANT_RADIUS_M) {
+                    continue;
+                }
+                if !reachable.contains(&(grid.floor_id.clone(), coordinate)) {
                     continue;
                 }
                 sites.push(SpawnSite {

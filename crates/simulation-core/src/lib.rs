@@ -1,6 +1,7 @@
 //! Deterministic simulation lifecycle and renderer-facing state snapshots.
 
 mod agent;
+mod evacuation;
 mod grid;
 mod results;
 mod scenario;
@@ -14,6 +15,7 @@ pub use agent::{
     Agent, AgentFrame, AgentFrameRole, AgentRole, Exposure, FIREFIGHTER_RADIUS_M, FirefighterPhase,
     FirefighterState, OCCUPANT_RADIUS_M, OccupantPhase, OccupantState,
 };
+pub use evacuation::{Evacuation, EvacuationError, reachable_exit_cells};
 pub use grid::{
     GridBounds, GridBuildError, GridCell, GridCellKind, GridCoordinate, GridSummary, SimulationGrid,
 };
@@ -155,6 +157,11 @@ impl Simulation {
     #[must_use]
     pub const fn config(&self) -> SimulationConfig {
         self.config
+    }
+
+    #[must_use]
+    pub const fn scene(&self) -> &Scene {
+        &self.scene
     }
 
     /// Static floor grids are read separately from dynamic snapshots so the

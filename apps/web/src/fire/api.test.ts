@@ -42,7 +42,7 @@ const response: SimulateFireResponse = {
         rooms: [],
         fires: [],
         openings: [],
-        agents: [],
+        agents: [agent],
       },
     ],
   },
@@ -51,7 +51,7 @@ const response: SimulateFireResponse = {
 afterEach(() => vi.unstubAllGlobals())
 
 describe('runFireSimulation', () => {
-  it('generates occupants, runs hybrid fire, and adds the agents to every frame', async () => {
+  it('generates occupants then sends them into the hybrid simulation', async () => {
     const fetch = vi.fn((url: string) =>
       Promise.resolve({
         ok: true,
@@ -72,7 +72,7 @@ describe('runFireSimulation', () => {
     expect(fetch).toHaveBeenCalledWith('/api/fire/simulate/hybrid', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ object_id: 'sofa-1' }),
+      body: JSON.stringify({ object_id: 'sofa-1', occupants: occupants.occupants }),
     })
   })
 

@@ -12,29 +12,25 @@ export const DEFAULT_OCCUPANT_COUNT = 10
  * hybrid fire simulation. Occupants remain stationary until movement exists.
  */
 export async function runFireSimulation(objectId: string): Promise<SimulateFireResponse> {
-  const [occupants, run] = await Promise.all([
-    spawnOccupants(DEFAULT_OCCUPANT_COUNT),
-    requestFireSimulation(objectId),
-  ])
+  const occupants = await spawnOccupants(DEFAULT_OCCUPANT_COUNT)
+  const run = await requestFireSimulation(objectId, occupants.occupants)
   if (occupants.revision !== run.revision) {
     throw new Error('The building changed while the scenario was being generated. Run it again.')
   }
-  return {
-    ...run,
-    results: {
-      ...run.results,
-      frames: run.results.frames.map((frame) => ({ ...frame, agents: occupants.agents })),
-    },
-  }
+  return run
 }
 
 async function spawnOccupants(count: number): Promise<SpawnOccupantsResponse> {
   return requestJson<SpawnOccupantsResponse>('/api/agents/spawn_occupants', { count })
 }
 
-async function requestFireSimulation(objectId: string): Promise<SimulateFireResponse> {
+async function requestFireSimulation(
+  objectId: string,
+  occupants: SpawnOccupantsResponse['occupants'],
+): Promise<SimulateFireResponse> {
   const run = await requestJson<SimulateFireResponse>('/api/fire/simulate/hybrid', {
     object_id: objectId,
+    occupants,
   })
   if (run.results.schema_version !== SIMULATION_RESULTS_SCHEMA_VERSION) {
     throw new Error(
@@ -92,6 +88,8 @@ export function describeFireError(error: unknown): string {
       case 'gemini_failed':
       case 'occupant_generation_failed':
         return `Generating occupants failed: ${String(error.body.message ?? 'unknown error')}`
+      case 'evacuation_failed':
+        return `Evacuation failed: ${String(error.body.message ?? 'unknown error')}`
       default:
         return `The simulation failed (${error.body.code})`
     }

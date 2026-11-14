@@ -1,7 +1,7 @@
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import { ControlsHint, type Controls } from '../components/ControlsHint'
 import { fireCellBoxes } from '../fire/cells'
-import { useFireFrame } from '../fire/fireStore'
+import { useFireFrame, useSimulationAgents } from '../fire/fireStore'
 import { FlyIndicator } from '../components/FlyIndicator'
 import { wheelPixels } from '../scene/cameraMath'
 import type { ModelPlacement } from '../scene/modelChoice'
@@ -91,12 +91,16 @@ export function ShowcaseViewport({ scene, floor, models, version }: ShowcaseView
   const furnitureModels = useRef<ShowcaseModels | null>(null)
   const latestModels = useRef(models)
   const fireFrame = useFireFrame()
+  const simulationAgents = useSimulationAgents()
   const fireCells = useMemo(() => fireCellBoxes(fireFrame, floor.objects), [fireFrame, floor.objects])
   const fire = useRef<ShowcaseFire | null>(null)
   const latestFireCells = useRef(fireCells)
   const agents = useMemo(
-    () => fireFrame?.agents.filter((agent) => agent.floor_id === floor.id) ?? [],
-    [fireFrame, floor.id],
+    () =>
+      simulationAgents.filter(
+        (agent) => agent.floor_id === floor.id && agent.role.type === 'occupant' && agent.role.phase !== 'exited',
+      ),
+    [simulationAgents, floor.id],
   )
   const agentOverlay = useRef<ShowcaseAgents | null>(null)
   const latestAgents = useRef(agents)

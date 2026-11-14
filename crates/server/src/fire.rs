@@ -16,9 +16,9 @@ use tflop_cfast::{
     resolve_cfast_bin,
 };
 use tflop_simulation_core::{
-    CombustionState, FireMaterialCatalog, SIMULATION_RESULTS_SCHEMA_VERSION, SimulationEngine,
-    SimulationFrame, SimulationResults, SurfaceFireConfig, SurfaceFireError, SurfaceFireFrame,
-    SurfaceFireWorld,
+    CombustionState, Evacuation, FireMaterialCatalog, OccupantSpawn,
+    SIMULATION_RESULTS_SCHEMA_VERSION, SimulationConfig, SimulationEngine, SimulationFrame,
+    SimulationResults, SurfaceFireConfig, SurfaceFireError, SurfaceFireFrame, SurfaceFireWorld,
 };
 use tflop_world_core::{Scene, resolve_opening_connections};
 
@@ -37,6 +37,8 @@ pub(crate) struct SimulateFireRequest {
     duration_seconds: Option<f64>,
     #[serde(default)]
     step_seconds: Option<f64>,
+    #[serde(default)]
+    occupants: Vec<OccupantSpawn>,
 }
 
 #[derive(Debug, Serialize)]
@@ -143,6 +145,7 @@ fn run(
         duration,
     );
 
+    let mut evacuation = build_evacuation(&scene, &request.occupants)?;
     let (mut fire, excluded_object_ids) = build_fire_world(&mut scene)?;
     if excluded_object_ids.iter().any(|id| id == object_id) {
         return Err((
@@ -182,19 +185,22 @@ fn run(
         }
     }
 
+    let mut results = SimulationResults {
+        schema_version: SIMULATION_RESULTS_SCHEMA_VERSION,
+        scene_id: scene.id.clone(),
+        scenario_id: format!("surface-fire:{object_id}"),
+        engine: SimulationEngine {
+            name: "tflop-surface-fire".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+        },
+        frames: frames.into_iter().map(simulation_frame).collect(),
+    };
+    attach_evacuation(&mut results, evacuation.as_mut())?;
+
     Ok(SimulateFireResponse {
         revision,
         excluded_object_ids,
-        results: SimulationResults {
-            schema_version: SIMULATION_RESULTS_SCHEMA_VERSION,
-            scene_id: scene.id.clone(),
-            scenario_id: format!("surface-fire:{object_id}"),
-            engine: SimulationEngine {
-                name: "tflop-surface-fire".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
-            },
-            frames: frames.into_iter().map(simulation_frame).collect(),
-        },
+        results,
     })
 }
 
@@ -206,6 +212,7 @@ fn run_hybrid(
 ) -> Result<SimulateFireResponse, Failure> {
     let object_id = request.object_id.as_str();
     require_object(&source_scene, object_id)?;
+    let mut evacuation = build_evacuation(&source_scene, &request.occupants)?;
 
     let prepared = prepare_cfast_scene(&source_scene)
         .map_err(|error| simulation_failure("cfast_preparation_failed", error.to_string()))?;
@@ -270,14 +277,45 @@ fn run_hybrid(
     let cfast_results = runner
         .run_all_rooms(&scene, &scenario)
         .map_err(|error| cfast_failure(error.to_string()))?;
-    let results = merge_cfast_with_surface_fire(&scene, &cfast_results, &surface_frames)
+    let mut results = merge_cfast_with_surface_fire(&scene, &cfast_results, &surface_frames)
         .map_err(|error| simulation_failure("cfast_merge_failed", error.to_string()))?;
+    attach_evacuation(&mut results, evacuation.as_mut())?;
+    results
+        .validate_against_scene(&scene)
+        .map_err(|error| simulation_failure("evacuation_failed", error.to_string()))?;
 
     Ok(SimulateFireResponse {
         revision,
         excluded_object_ids,
         results,
     })
+}
+
+fn build_evacuation(
+    scene: &Scene,
+    occupants: &[OccupantSpawn],
+) -> Result<Option<Evacuation>, Failure> {
+    if occupants.is_empty() {
+        return Ok(None);
+    }
+    Evacuation::new(scene, occupants, SimulationConfig::default())
+        .map(Some)
+        .map_err(|error| simulation_failure("evacuation_failed", error.to_string()))
+}
+
+fn attach_evacuation(
+    results: &mut SimulationResults,
+    evacuation: Option<&mut Evacuation>,
+) -> Result<(), Failure> {
+    let Some(evacuation) = evacuation else {
+        return Ok(());
+    };
+    for frame in &mut results.frames {
+        frame.agents = evacuation
+            .advance_to(frame.time_seconds, &frame.surface_fire)
+            .map_err(|error| simulation_failure("evacuation_failed", error.to_string()))?;
+    }
+    Ok(())
 }
 
 fn require_object(scene: &Scene, object_id: &str) -> Result<(), Failure> {

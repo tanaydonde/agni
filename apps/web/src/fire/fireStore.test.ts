@@ -1,5 +1,7 @@
+import { createElement } from 'react'
+import { renderToString } from 'react-dom/server'
 import { afterEach, describe, expect, it } from 'vitest'
-import { PLAYBACK_RATE, useFireStore } from './fireStore'
+import { PLAYBACK_RATE, useFireStore, useSimulationAgents } from './fireStore'
 import type { SimulateFireResponse } from './types'
 
 const run: SimulateFireResponse = {
@@ -24,6 +26,14 @@ const run: SimulateFireResponse = {
 afterEach(() => useFireStore.getState().clear())
 
 describe('fire playback', () => {
+  it('mounts with no simulation without entering an empty-agent render loop', () => {
+    function AgentCount() {
+      return createElement('span', null, useSimulationAgents().length)
+    }
+
+    expect(renderToString(createElement(AgentCount))).toBe('<span>0</span>')
+  })
+
   it('advances while playing and pauses at the last frame', () => {
     useFireStore.setState({ status: 'playing', run, clockSeconds: 0 })
     useFireStore.getState().tick(0.05)
