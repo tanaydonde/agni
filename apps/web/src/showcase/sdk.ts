@@ -75,6 +75,8 @@ export interface SweepData {
 export interface ComponentContext {
   three: typeof THREE
   camera: THREE.Camera
+  renderer: THREE.WebGLRenderer
+  scene: THREE.Scene
 }
 
 /**

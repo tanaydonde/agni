@@ -5,8 +5,6 @@ import type { ModelPlacement } from '../scene/modelChoice'
 import type { MpSdk, SceneObject } from './sdk'
 
 const GLTF_LOADER = 'mp.gltfLoader'
-/** Showcase's stock ambient and directional lights. */
-const LIGHTS = 'mp.lights'
 
 /** Node transform in Showcase's Y-up world for a Z-up placement. */
 export function showcaseTransform(placement: ModelPlacement) {
@@ -45,9 +43,8 @@ export function mountModels(sdk: MpSdk, initial: ModelPlacement[]): ShowcaseMode
     current?.stop()
     current = object
     if (!object) return
-    // Showcase's scene has no lights of its own, and glTF materials are lit:
-    // without these the models render black.
-    object.addNode().addComponent(LIGHTS)
+    // Lit by the environment from ./environment (mounted by the viewport);
+    // Showcase's stock lights added nothing visible on top of it.
     for (const placement of placements) {
       const node = object.addNode()
       node.addComponent(GLTF_LOADER, {

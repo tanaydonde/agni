@@ -8,6 +8,7 @@ import { type CameraDriver, createHopDriver } from './cameraDriver'
 import { activateDefurnishedView, showSpaceVersion, type SpaceVersion } from './defurnish'
 import { createFlyDriver } from './flyDriver'
 import { furnitureItems, mountFurniture, type ShowcaseFurniture } from './furniture'
+import { mountEnvironment } from './environment'
 import { mountModels, type ShowcaseModels } from './models'
 import { connectShowcase, hideShowcaseControls, type MpSdk, showcaseUrl, untilPlaying } from './sdk'
 
@@ -117,6 +118,7 @@ export function ShowcaseViewport({ scene, floor, models, version }: ShowcaseView
     const { signal } = abort
     let driver: CameraDriver | null = null
     let detachKeys = () => {}
+    let environment: { dispose(): void } | null = null
     setStatus({ kind: 'loading', slow: false })
     const slowTimer = setTimeout(
       () => setStatus((current) => (current.kind === 'loading' ? { kind: 'loading', slow: true } : current)),
@@ -143,6 +145,8 @@ export function ShowcaseViewport({ scene, floor, models, version }: ShowcaseView
       sdkRef.current = sdk
       furniture.current = await mountFurniture(sdk, latestItems.current)
       furnitureModels.current = mountModels(sdk, latestModels.current)
+      environment = await mountEnvironment(sdk)
+      signal.throwIfAborted()
       signal.throwIfAborted()
       driver = await createDriver(sdk, startSweep)
       if (signal.aborted) return driver.dispose()
@@ -171,6 +175,7 @@ export function ShowcaseViewport({ scene, floor, models, version }: ShowcaseView
       furniture.current = null
       furnitureModels.current?.dispose()
       furnitureModels.current = null
+      environment?.dispose()
       sdkRef.current = null
       iframe.remove()
     }
