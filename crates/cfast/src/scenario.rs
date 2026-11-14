@@ -1,6 +1,11 @@
 use serde::{Deserialize, Serialize};
 use tflop_world_core::Vec3;
 
+/// Most points CFAST 7.7.7 reads in one input curve (`mxpts` in
+/// `cfast_parameters.f90`). A longer curve overruns its arrays and crashes
+/// the solver.
+pub const CFAST_MAX_CURVE_POINTS: usize = 200;
+
 /// User-controlled inputs that are not present in the building scan.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CfastScenario {

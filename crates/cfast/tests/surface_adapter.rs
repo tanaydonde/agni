@@ -1,5 +1,6 @@
 use tflop_cfast::{
-    SurfaceFireAdapterConfig, SurfaceFireAdapterError, adapt_surface_fire_for_cfast,
+    CFAST_MAX_CURVE_POINTS, SurfaceFireAdapterConfig, SurfaceFireAdapterError,
+    adapt_surface_fire_for_cfast,
 };
 use tflop_simulation_core::{
     CombustionState, GridCoordinate, RoomHeatRelease, SURFACE_FIRE_SCHEMA_VERSION,
@@ -60,6 +61,46 @@ fn aggregates_spatial_cells_into_one_curve_per_room() {
         vec![0.0, 20.0, 0.0]
     );
     assert!((room_b.fire.position_m.x - 10.0).abs() < 1.0e-9);
+}
+
+#[test]
+fn long_timelines_are_thinned_to_what_cfast_can_read_keeping_the_peak() {
+    // Five minutes of half-second frames: 601 points, three times CFAST's limit.
+    let peak_frame = 377;
+    let frames = (0..=600)
+        .map(|index| {
+            let time = f64::from(index) * 0.5;
+            let hrr = if index == peak_frame {
+                900.0
+            } else {
+                f64::from(index % 7) * 10.0
+            };
+            let nodes = if index == 0 {
+                vec![]
+            } else {
+                vec![node("a", "room-a", 1.0, hrr)]
+            };
+            let total = if index == 0 { 0.0 } else { hrr };
+            frame(time, nodes, &[("room-a", total)])
+        })
+        .collect::<Vec<_>>();
+
+    let timeline = adapt_surface_fire_for_cfast(&frames, SurfaceFireAdapterConfig::default())
+        .expect("valid timeline should adapt");
+
+    let curve = &timeline.room_fires[0].fire.heat_release_curve;
+    assert_eq!(curve.len(), CFAST_MAX_CURVE_POINTS);
+    assert_eq!(curve[0].time_seconds, 0.0);
+    assert_eq!(curve.last().map(|point| point.time_seconds), Some(300.0));
+    assert!(
+        curve
+            .windows(2)
+            .all(|pair| pair[0].time_seconds < pair[1].time_seconds)
+    );
+    assert!(
+        curve.iter().any(|point| point.hrr_kw == 900.0),
+        "the peak survives"
+    );
 }
 
 #[test]
