@@ -1,6 +1,6 @@
-//! Firefighter crews: they arrive at an entrance, search the building room by
-//! room without knowing where the fire is, put out any fire they see, and
-//! leave once every room they can reach is searched.
+//! Firefighter crews: they arrive at an entrance, walk the building room by
+//! room along their route without knowing where the fire is, put out any
+//! fire they see, and leave once every room they can reach has been entered.
 //!
 //! Knowledge rule: [`decide`] reads only a crew's [`CrewMemory`], which is
 //! updated from what its leader can observe: the room it stands in, and heat
@@ -11,7 +11,8 @@
 //! A crew moves as a unit. The leader decides where to walk; followers keep
 //! a short distance behind it, and share its phase. The shared
 //! [`Crowd`](crate::crowd) does the walking, so crews have to push through
-//! evacuating occupants in doors and hallways.
+//! evacuating occupants in doors and hallways. Until a crew knows where the
+//! fire is it moves at scouting speed; with a charged hose it slows down.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -31,11 +32,13 @@ use crate::{
     scenario::spawn_crews,
 };
 
-/// How crews search, sense, and spray.
+/// How crews move, sense, and spray.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FirefightingConfig {
-    /// Floor area a crew searches per second while standing in a room.
-    pub search_rate_m2_per_s: f64,
+    /// Walking speed while the crew doesn't yet know of any fire. Crews
+    /// arrive with urgency; once they know where the fire is they advance at
+    /// their own (hose-laden) walking speed.
+    pub scouting_speed_m_per_s: f64,
     /// Burning nodes this close to the leader are noticed even through a wall
     /// or doorway.
     pub heat_sense_radius_m: f64,
@@ -51,7 +54,7 @@ pub struct FirefightingConfig {
 impl Default for FirefightingConfig {
     fn default() -> Self {
         Self {
-            search_rate_m2_per_s: 1.0,
+            scouting_speed_m_per_s: 1.5,
             heat_sense_radius_m: 2.0,
             nozzle_reach_m: DEFAULT_NOZZLE_REACH_M,
             nozzle_cooling_kw: DEFAULT_NOZZLE_COOLING_KW,
@@ -69,11 +72,7 @@ pub struct CrewMemory {
     /// Burning nodes the crew has seen and not yet seen go out, as last seen.
     pub known_fires: BTreeMap<String, SurfaceFireNodeFrame>,
     /// When the leader first stood in each room.
-    pub first_observed: BTreeMap<String, f64>,
-    /// Seconds of search spent so far in each room.
-    pub search_progress: BTreeMap<String, f64>,
-    /// When each room's search finished.
-    pub searched: BTreeMap<String, f64>,
+    pub visited: BTreeMap<String, f64>,
     /// Rooms the crew found no route to.
     pub unreachable: BTreeSet<String>,
 }
@@ -150,9 +149,9 @@ impl Firefighting {
                 arrival_time_seconds: spawn.arrival_time_seconds,
                 walking_speed_m_per_s: spawn.walking_speed_m_per_s,
                 plan: CrewPlan {
-                    search_order: spawn.search_order.clone(),
+                    route: spawn.route.clone(),
                     memory: CrewMemory::default(),
-                    search_target: None,
+                    room_target: None,
                 },
                 phase: FirefighterPhase::Staging,
             });
@@ -228,9 +227,7 @@ impl Firefighting {
 
         let mut suppressions = Vec::new();
         for crew_index in 0..self.crews.len() {
-            if let Some(suppression) =
-                self.advance_crew(crew_index, time_seconds, delta_seconds, fire, &true_hazards)
-            {
+            if let Some(suppression) = self.advance_crew(crew_index, fire, &true_hazards) {
                 suppressions.push(suppression);
             }
         }
@@ -293,8 +290,6 @@ impl Firefighting {
     fn advance_crew(
         &mut self,
         crew_index: usize,
-        time_seconds: f64,
-        delta_seconds: f64,
         fire: &[SurfaceFireNodeFrame],
         true_hazards: &HazardMap,
     ) -> Option<Suppression> {
@@ -352,7 +347,11 @@ impl Firefighting {
 
         let mut suppression = None;
         let mut target_fire = None;
-        let speed = crew.walking_speed_m_per_s;
+        let speed = if crew.plan.memory.known_fires.is_empty() {
+            self.config.scouting_speed_m_per_s
+        } else {
+            crew.walking_speed_m_per_s
+        };
         crew.phase = match action {
             Action::Stage => FirefighterPhase::Staging,
             Action::Spray { node_id, room_id } => {
@@ -364,21 +363,6 @@ impl Firefighting {
                 });
                 target_fire = Some(node_id);
                 FirefighterPhase::Suppressing
-            }
-            Action::Search { room_id } => {
-                let progress = crew
-                    .plan
-                    .memory
-                    .search_progress
-                    .entry(room_id.clone())
-                    .or_insert(0.0);
-                *progress += delta_seconds;
-                let needed = self.rooms[&room_id].area_m2 / self.config.search_rate_m2_per_s;
-                if *progress >= needed {
-                    crew.plan.memory.searched.insert(room_id, time_seconds);
-                    crew.plan.search_target = None;
-                }
-                FirefighterPhase::Searching
             }
             Action::Move { path, purpose } => {
                 self.intents[leader_index] = Intent {
@@ -486,10 +470,11 @@ struct Crew {
 /// The part of a crew [`decide`] may read and update.
 #[derive(Debug, Clone, PartialEq)]
 struct CrewPlan {
-    search_order: Vec<String>,
+    /// Rooms to enter first, in order.
+    route: Vec<String>,
     memory: CrewMemory,
-    /// Room currently being walked to or searched.
-    search_target: Option<String>,
+    /// Room currently being walked to.
+    room_target: Option<String>,
 }
 
 /// What the leader can perceive at one instant.
@@ -521,13 +506,16 @@ fn observe(
 }
 
 /// Folds an observation into memory. A visible room is seen whole, so fires
-/// remembered there that are no longer visible have gone out.
+/// remembered there that are no longer visible have gone out. A doorway
+/// shows both rooms, but only standing inside one counts as visiting it.
 fn remember(memory: &mut CrewMemory, observation: &Observation, time_seconds: f64) {
-    for room_id in &observation.rooms {
+    if let [room_id] = observation.rooms.as_slice() {
         memory
-            .first_observed
+            .visited
             .entry(room_id.clone())
             .or_insert(time_seconds);
+    }
+    for room_id in &observation.rooms {
         memory
             .known_fires
             .retain(|_, node| node.room_id != *room_id);
@@ -562,9 +550,6 @@ enum Action {
         node_id: String,
         room_id: String,
     },
-    Search {
-        room_id: String,
-    },
     Move {
         path: Vec<GridCoordinate>,
         purpose: Purpose,
@@ -582,7 +567,7 @@ enum Purpose {
 }
 
 /// Chooses the leader's next action from the crew's memory: stage until
-/// arrival, then fight known fire, then search, then leave.
+/// arrival, then fight known fire, then enter the next room, then leave.
 fn decide(plan: &mut CrewPlan, context: &Context<'_>) -> Action {
     if context.time_seconds < context.arrival_time_seconds {
         return Action::Stage;
@@ -590,7 +575,7 @@ fn decide(plan: &mut CrewPlan, context: &Context<'_>) -> Action {
     if let Some(action) = fight_known_fire(plan, context) {
         return action;
     }
-    if let Some(action) = search_next_room(plan, context) {
+    if let Some(action) = next_room(plan, context) {
         return action;
     }
     if context.exits.contains(&context.leader_cell) {
@@ -668,31 +653,33 @@ fn fight_known_fire(plan: &CrewPlan, context: &Context<'_>) -> Option<Action> {
     })
 }
 
-/// Searches the target room when standing at its search point, otherwise
-/// walks there. Rooms with no route are marked unreachable and skipped.
-fn search_next_room(plan: &mut CrewPlan, context: &Context<'_>) -> Option<Action> {
+/// Walks into the next room: the first unvisited one on the route, else the
+/// nearest unvisited one. Entering it is enough; whatever is in a room is
+/// seen from inside it. Rooms with no route are marked unreachable and
+/// skipped.
+fn next_room(plan: &mut CrewPlan, context: &Context<'_>) -> Option<Action> {
     loop {
-        let target = match plan.search_target.take() {
+        let target = match plan.room_target.take() {
             Some(room_id) if is_open(plan, &room_id) => room_id,
             _ => choose_room(plan, context)?,
         };
-        // A room with no walkable cell at all isn't indexed.
-        let Some(search_cell) = context.rooms.get(&target).and_then(|room| room.search_cell) else {
-            plan.memory.unreachable.insert(target);
-            continue;
-        };
-        if context.leader_cell == search_cell {
-            plan.search_target = Some(target.clone());
-            return Some(Action::Search { room_id: target });
-        }
-        if let Some(path) = find_path(
-            context.grid,
-            context.leader_cell,
-            &[search_cell],
-            context.hazards,
-            NavProfile::FIREFIGHTER,
-        ) {
-            plan.search_target = Some(target);
+        let cells = context
+            .rooms
+            .get(&target)
+            .map_or(&[][..], |room| room.cells.as_slice());
+        if let Some(path) = (!cells.is_empty())
+            .then(|| {
+                find_path(
+                    context.grid,
+                    context.leader_cell,
+                    cells,
+                    context.hazards,
+                    NavProfile::FIREFIGHTER,
+                )
+            })
+            .flatten()
+        {
+            plan.room_target = Some(target);
             return Some(Action::Move {
                 path,
                 purpose: Purpose::Room,
@@ -703,17 +690,13 @@ fn search_next_room(plan: &mut CrewPlan, context: &Context<'_>) -> Option<Action
 }
 
 fn is_open(plan: &CrewPlan, room_id: &str) -> bool {
-    !plan.memory.searched.contains_key(room_id) && !plan.memory.unreachable.contains(room_id)
+    !plan.memory.visited.contains_key(room_id) && !plan.memory.unreachable.contains(room_id)
 }
 
-/// The first open room in the search order, else the nearest open room on
-/// this floor by route cost. Rooms with no route are marked unreachable.
+/// The first open room on the route, else the nearest open room on this
+/// floor by route cost. Rooms with no route are marked unreachable.
 fn choose_room(plan: &mut CrewPlan, context: &Context<'_>) -> Option<String> {
-    if let Some(room_id) = plan
-        .search_order
-        .iter()
-        .find(|room_id| is_open(plan, room_id))
-    {
+    if let Some(room_id) = plan.route.iter().find(|room_id| is_open(plan, room_id)) {
         return Some(room_id.clone());
     }
     let floor_id = context.grid.floor_id.as_str();
@@ -733,7 +716,7 @@ fn choose_room(plan: &mut CrewPlan, context: &Context<'_>) -> Option<String> {
     );
     let mut nearest: Option<(u64, &String)> = None;
     for (room_id, room) in open_rooms {
-        match room.search_cell.and_then(|cell| costs.get(&cell)) {
+        match room.cells.iter().filter_map(|cell| costs.get(cell)).min() {
             Some(&cost) => {
                 if nearest.is_none_or(|(best, _)| cost < best) {
                     nearest = Some((cost, room_id));
@@ -808,32 +791,22 @@ fn follow_targets(
 #[derive(Debug, Clone, PartialEq)]
 struct RoomInfo {
     floor_id: String,
-    /// Walkable floor area, from the grid.
-    area_m2: f64,
-    /// Cells a firefighter's body fits on, sorted.
+    /// Cells inside the room (not its doorways) that a firefighter's body
+    /// fits on and can reach from an entry, sorted. Standing on any of them
+    /// is being in the room.
     cells: Vec<GridCoordinate>,
-    /// Where the crew stands to search: the body cell nearest the room's
-    /// centroid. `None` when no body fits anywhere in the room.
-    search_cell: Option<GridCoordinate>,
 }
 
 /// Indexes every room in the scene. A room's planning cells are the body
 /// cells reachable from a crew entry, so furniture that walls off part of a
-/// room doesn't put its search point out of reach; a room with none is left
-/// without a search point and will be reported unreachable.
+/// room doesn't make it unreachable; a room with none will be reported
+/// unreachable.
 fn index_rooms(
     scene: &Scene,
     grids: &[SimulationGrid],
     profile: NavProfile,
     reachable: &HashMap<String, HashSet<GridCoordinate>>,
 ) -> BTreeMap<String, RoomInfo> {
-    struct Accumulator {
-        floor_id: String,
-        walkable: usize,
-        sum_x: f64,
-        sum_y: f64,
-        cells: Vec<GridCoordinate>,
-    }
     let mut rooms = scene
         .floors
         .iter()
@@ -841,11 +814,8 @@ fn index_rooms(
             floor.rooms.iter().map(|room| {
                 (
                     room.id.clone(),
-                    Accumulator {
+                    RoomInfo {
                         floor_id: floor.id.clone(),
-                        walkable: 0,
-                        sum_x: 0.0,
-                        sum_y: 0.0,
                         cells: Vec::new(),
                     },
                 )
@@ -856,60 +826,30 @@ fn index_rooms(
     for grid in grids {
         let reachable = reachable.get(&grid.floor_id).unwrap_or(&no_cells);
         for cell in grid.cells() {
-            if !cell.is_walkable() {
+            let usable = cell.is_walkable()
+                && reachable.contains(&cell.coordinate)
+                && grid.circle_is_walkable(cell.center_m, profile.body_radius_m);
+            if !usable {
                 continue;
             }
-            let usable = reachable.contains(&cell.coordinate)
-                && grid.circle_is_walkable(cell.center_m, profile.body_radius_m);
-            for room_id in &cell.room_ids {
-                let Some(room) = rooms.get_mut(room_id) else {
-                    continue;
-                };
-                room.walkable += 1;
-                room.sum_x += cell.center_m.x;
-                room.sum_y += cell.center_m.y;
-                if usable {
-                    room.cells.push(cell.coordinate);
-                }
+            // Doorway cells belong to two rooms; walking in means standing
+            // on one that belongs to this room alone.
+            if let [room_id] = cell.room_ids.as_slice()
+                && let Some(room) = rooms.get_mut(room_id)
+            {
+                room.cells.push(cell.coordinate);
             }
         }
     }
-
+    for room in rooms.values_mut() {
+        room.cells.sort_by_key(|cell| (cell.row, cell.column));
+    }
     rooms
-        .into_iter()
-        .map(|(room_id, mut room)| {
-            let grid = grids.iter().find(|grid| grid.floor_id == room.floor_id);
-            let count = room.walkable as f64;
-            let centroid = Vec3 {
-                x: room.sum_x / count,
-                y: room.sum_y / count,
-                z: 0.0,
-            };
-            room.cells.sort_by_key(|cell| (cell.row, cell.column));
-            let search_cell = grid.and_then(|grid| {
-                room.cells.iter().copied().min_by(|left, right| {
-                    let distance = |cell| {
-                        grid.cell_center(cell)
-                            .map_or(f64::INFINITY, |center| distance_2d(center, centroid))
-                    };
-                    distance(*left).total_cmp(&distance(*right))
-                })
-            });
-            let cell_area = grid.map_or(0.0, |grid| grid.cell_size_m * grid.cell_size_m);
-            let info = RoomInfo {
-                area_m2: count * cell_area,
-                floor_id: room.floor_id,
-                cells: room.cells,
-                search_cell,
-            };
-            (room_id, info)
-        })
-        .collect()
 }
 
 fn validate_config(config: FirefightingConfig) -> Result<(), FirefightingError> {
     let positive = [
-        ("search_rate_m2_per_s", config.search_rate_m2_per_s),
+        ("scouting_speed_m_per_s", config.scouting_speed_m_per_s),
         ("heat_sense_radius_m", config.heat_sense_radius_m),
         ("nozzle_reach_m", config.nozzle_reach_m),
         ("nozzle_cooling_kw", config.nozzle_cooling_kw),
@@ -960,7 +900,7 @@ mod tests {
         let crew = CrewSpawn {
             id: "crew".to_owned(),
             entry_opening_id: None,
-            search_order: Vec::new(),
+            route: Vec::new(),
             arrival_time_seconds: 5.0,
             member_count: 2,
             walking_speed_m_per_s: 1.0,
@@ -1078,9 +1018,9 @@ mod tests {
 
     fn plan() -> CrewPlan {
         CrewPlan {
-            search_order: Vec::new(),
+            route: Vec::new(),
             memory: CrewMemory::default(),
-            search_target: None,
+            room_target: None,
         }
     }
 
@@ -1127,7 +1067,7 @@ mod tests {
     }
 
     #[test]
-    fn with_nothing_known_it_searches_rather_than_fighting() {
+    fn with_nothing_known_it_walks_into_the_next_room() {
         let firefighting = firefighting();
         let mut plan = plan();
 
@@ -1143,11 +1083,11 @@ mod tests {
             ),
             "{action:?}"
         );
-        assert_eq!(plan.search_target.as_deref(), Some("room"));
+        assert_eq!(plan.room_target.as_deref(), Some("room"));
     }
 
     #[test]
-    fn a_known_fire_beats_searching_and_is_sprayed_once_in_reach() {
+    fn a_known_fire_beats_scouting_and_is_sprayed_once_in_reach() {
         let firefighting = firefighting();
         let mut plan = plan();
         plan.memory
@@ -1173,10 +1113,10 @@ mod tests {
     }
 
     #[test]
-    fn leaves_once_every_room_is_searched() {
+    fn leaves_once_every_room_is_visited() {
         let firefighting = firefighting();
         let mut plan = plan();
-        plan.memory.searched.insert("room".to_owned(), 10.0);
+        plan.memory.visited.insert("room".to_owned(), 10.0);
 
         let action = decide_at(&firefighting, &mut plan, 20.0, point(3.0, 3.0));
         assert!(
@@ -1202,7 +1142,7 @@ mod tests {
     fn a_listed_room_that_cannot_be_reached_is_skipped() {
         let firefighting = firefighting();
         let mut plan = CrewPlan {
-            search_order: vec!["no-walkable-cells".to_owned(), "room".to_owned()],
+            route: vec!["no-walkable-cells".to_owned(), "room".to_owned()],
             ..plan()
         };
 
@@ -1219,7 +1159,7 @@ mod tests {
             ),
             "{action:?}"
         );
-        assert_eq!(plan.search_target.as_deref(), Some("room"));
+        assert_eq!(plan.room_target.as_deref(), Some("room"));
     }
 
     #[test]
@@ -1260,18 +1200,15 @@ mod room_index_tests {
     fn every_scene_room_is_indexed_even_without_walkable_cells() {
         let firefighting = super::tests::firefighting_for_index();
 
-        let sliver = &firefighting.rooms["sliver"];
-        assert_eq!(sliver.area_m2, 0.0);
-        assert_eq!(sliver.search_cell, None);
-        assert!(firefighting.rooms["room"].search_cell.is_some());
+        assert!(firefighting.rooms["sliver"].cells.is_empty());
+        assert!(!firefighting.rooms["room"].cells.is_empty());
     }
 
     #[test]
-    fn the_search_point_is_chosen_among_reachable_cells() {
+    fn a_room_keeps_only_cells_reachable_from_an_entry() {
         let firefighting = super::tests::firefighting_for_index();
         let grid = &firefighting.grids[0];
-        // Pretend furniture walls off everything right of x = 1.5 m, so the
-        // room's center can't be reached.
+        // Pretend furniture walls off everything right of x = 1.5 m.
         let left_strip = grid
             .cells()
             .iter()
@@ -1288,28 +1225,13 @@ mod room_index_tests {
         );
 
         let room = &rooms["room"];
-        let search_cell = room.search_cell.expect("part of the room is reachable");
-        assert!(left_strip.contains(&search_cell));
+        assert!(!room.cells.is_empty());
         assert!(room.cells.iter().all(|cell| left_strip.contains(cell)));
-        let everything = HashMap::from([(
-            "floor-1".to_owned(),
-            grid.cells().iter().map(|cell| cell.coordinate).collect(),
-        )]);
-        let whole = index_rooms(
-            &super::tests::scene(),
-            &firefighting.grids,
-            NavProfile::FIREFIGHTER,
-            &everything,
-        );
-        assert_eq!(
-            room.area_m2, whole["room"].area_m2,
-            "area counts the whole room's floor, reachable or not"
-        );
-        assert!(room.cells.len() < whole["room"].cells.len());
+        assert!(room.cells.len() < firefighting.rooms["room"].cells.len());
     }
 
     #[test]
-    fn a_room_with_no_reachable_cells_has_no_search_point() {
+    fn a_room_with_no_reachable_cells_has_no_cells() {
         let firefighting = super::tests::firefighting_for_index();
         let rooms = index_rooms(
             &super::tests::scene(),
@@ -1318,7 +1240,6 @@ mod room_index_tests {
             &HashMap::new(),
         );
 
-        assert_eq!(rooms["room"].search_cell, None);
         assert!(rooms["room"].cells.is_empty());
     }
 }

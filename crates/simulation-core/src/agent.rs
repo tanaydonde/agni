@@ -161,9 +161,8 @@ pub struct FirefighterState {
 pub enum FirefighterPhase {
     /// Outside, waiting for the crew's arrival time.
     Staging,
-    /// Moving toward an assigned task.
+    /// Walking into the next room on the route, or toward a known fire.
     Advancing,
-    Searching,
     Suppressing,
     Withdrawing,
     Exited,

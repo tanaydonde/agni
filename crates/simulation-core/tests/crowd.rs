@@ -290,7 +290,7 @@ fn crew(arrival_time_seconds: f64) -> CrewSpawn {
     CrewSpawn {
         id: "engine-1".to_owned(),
         entry_opening_id: Some("exit-east".to_owned()),
-        search_order: vec!["office".to_owned()],
+        route: vec!["office".to_owned()],
         arrival_time_seconds,
         member_count: 2,
         walking_speed_m_per_s: 1.0,

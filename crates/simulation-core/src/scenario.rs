@@ -63,16 +63,22 @@ pub struct CrewSpawn {
     /// absent, the first usable exterior exit by ID is used.
     #[serde(default)]
     pub entry_opening_id: Option<String>,
-    /// Rooms to search first, in order. Rooms not listed are searched
-    /// afterwards, nearest first. Empty means nearest first throughout.
-    #[serde(default)]
-    pub search_order: Vec<String>,
+    /// Rooms to walk into, in order, while looking for the fire. Rooms not
+    /// listed are entered afterwards, nearest first. Empty means nearest
+    /// first throughout. Accepts the old name `search_order`.
+    #[serde(default, alias = "search_order")]
+    pub route: Vec<String>,
     /// Seconds after ignition when the crew reaches the entry.
     #[serde(default)]
     pub arrival_time_seconds: f64,
+    #[serde(default = "default_member_count")]
     pub member_count: u32,
     #[serde(default = "default_firefighter_speed")]
     pub walking_speed_m_per_s: f64,
+}
+
+const fn default_member_count() -> u32 {
+    1
 }
 
 const fn default_occupant_speed() -> f64 {
@@ -213,10 +219,10 @@ fn validate_crews_into(
             );
         }
         let mut room_ids = HashSet::new();
-        for (room_index, room_id) in crew.search_order.iter().enumerate() {
+        for (room_index, room_id) in crew.route.iter().enumerate() {
             require_unique(
                 room_id,
-                &format!("{path}.search_order[{room_index}]"),
+                &format!("{path}.route[{room_index}]"),
                 &mut room_ids,
                 errors,
             );
@@ -297,19 +303,19 @@ fn create_crews(
             );
             continue;
         };
-        for (room_index, room_id) in crew.search_order.iter().enumerate() {
+        for (room_index, room_id) in crew.route.iter().enumerate() {
             let floor = scene
                 .floors
                 .iter()
                 .find(|floor| floor.rooms.iter().any(|room| room.id == *room_id));
             match floor {
                 None => push_error(
-                    &format!("{path}.search_order[{room_index}]"),
+                    &format!("{path}.route[{room_index}]"),
                     "room does not exist in the scene",
                     errors,
                 ),
                 Some(floor) if floor.id != entry.floor_id => push_error(
-                    &format!("{path}.search_order[{room_index}]"),
+                    &format!("{path}.route[{room_index}]"),
                     "room is not on the crew's entry floor",
                     errors,
                 ),
