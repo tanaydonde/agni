@@ -1,0 +1,25 @@
+{
+  "name": "@tflop/agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "chat": "tsx --env-file-if-exists=../../.env src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@langchain/anthropic": "1.6.5",
+    "@langchain/core": "^1.4.0",
+    "@langchain/langgraph": "1.7.4",
+    "deepagents": "1.16.5",
+    "langchain": "1.6.6",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}

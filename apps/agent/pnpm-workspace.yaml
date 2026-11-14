@@ -1,0 +1,3 @@
+minimumReleaseAgeExclude:
+  - '@langchain/anthropic@1.6.5'
+  - langchain@1.6.6

@@ -4,9 +4,11 @@
 
 ```text
 apps/
+├── agent/              Designer agent (TypeScript Deep Agent); see apps/agent/README.md
 └── import-scene/       Matterport import CLI
 crates/
 ├── matterport/         Matterport API and normalization boundary
+├── server/             HTTP server exposing the world API (cargo run -p tflop-server)
 └── world-core/         Canonical scene types and world rules
 data/
 ├── fixtures/           Small sanitized test inputs
