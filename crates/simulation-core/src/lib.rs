@@ -2,6 +2,7 @@
 
 mod grid;
 mod results;
+mod surface_fire;
 
 use serde::{Deserialize, Serialize};
 use tflop_world_core::{Scene, SceneValidationErrors, Vec3};
@@ -14,6 +15,12 @@ pub use results::{
     FireConditions, GasLayerConditions, OpeningConditions, ResultsValidationError,
     ResultsValidationErrors, RoomConditions, SIMULATION_RESULTS_SCHEMA_VERSION, SimulationEngine,
     SimulationFrame, SimulationResults,
+};
+pub use surface_fire::{
+    CombustionState, FURNITURE_FIRE_CELL_SIZE_M, FireMaterialCatalog, FireMaterialProfile,
+    FurnitureFireCell, FurnitureFireMaterial, RoomHeatRelease, SURFACE_FIRE_SCHEMA_VERSION,
+    SurfaceFireConfig, SurfaceFireError, SurfaceFireFrame, SurfaceFireNode, SurfaceFireNodeFrame,
+    SurfaceFireNodeSource, SurfaceFireWorld,
 };
 
 /// Inputs that remain fixed for one simulation run.

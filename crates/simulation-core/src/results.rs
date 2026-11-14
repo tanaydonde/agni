@@ -3,6 +3,8 @@ use std::{collections::HashSet, error::Error, fmt};
 use serde::{Deserialize, Serialize};
 use tflop_world_core::Scene;
 
+use crate::surface_fire::{SurfaceFireNodeFrame, SurfaceFireNodeSource};
+
 pub const SIMULATION_RESULTS_SCHEMA_VERSION: u32 = 1;
 
 /// Provider-independent, time-ordered results for one scene and scenario.
@@ -28,6 +30,9 @@ pub struct SimulationFrame {
     pub rooms: Vec<RoomConditions>,
     pub fires: Vec<FireConditions>,
     pub openings: Vec<OpeningConditions>,
+    /// Spatial floor and furniture combustion state for renderer placement.
+    #[serde(default)]
+    pub surface_fire: Vec<SurfaceFireNodeFrame>,
 }
 
 /// CFAST-style two-layer conditions mapped back to a `world-core` room ID.
@@ -145,6 +150,16 @@ impl SimulationResults {
             .flat_map(|room| room.boundary.iter())
             .flat_map(|edge| edge.openings.iter().map(|opening| opening.id.as_str()))
             .collect::<HashSet<_>>();
+        let floor_ids = scene
+            .floors
+            .iter()
+            .map(|floor| floor.id.as_str())
+            .collect::<HashSet<_>>();
+        let object_ids = scene
+            .floors
+            .iter()
+            .flat_map(|floor| floor.objects.iter().map(|object| object.id.as_str()))
+            .collect::<HashSet<_>>();
 
         for (frame_index, frame) in self.frames.iter().enumerate() {
             for (room_index, room) in frame.rooms.iter().enumerate() {
@@ -172,6 +187,36 @@ impl SimulationResults {
                         "opening ID does not exist in the physical scene",
                         &mut errors,
                     );
+                }
+            }
+            for (node_index, node) in frame.surface_fire.iter().enumerate() {
+                let path = format!("frames[{frame_index}].surface_fire[{node_index}]");
+                if !room_ids.contains(node.room_id.as_str()) {
+                    push_error(
+                        &format!("{path}.room_id"),
+                        "room ID does not exist in the physical scene",
+                        &mut errors,
+                    );
+                }
+                match &node.source {
+                    SurfaceFireNodeSource::FloorCell { floor_id, .. } => {
+                        if !floor_ids.contains(floor_id.as_str()) {
+                            push_error(
+                                &format!("{path}.source.floor_id"),
+                                "floor ID does not exist in the physical scene",
+                                &mut errors,
+                            );
+                        }
+                    }
+                    SurfaceFireNodeSource::Furniture { object_id } => {
+                        if !object_ids.contains(object_id.as_str()) {
+                            push_error(
+                                &format!("{path}.source.object_id"),
+                                "object ID does not exist in the physical scene",
+                                &mut errors,
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -273,6 +318,73 @@ fn validate_frame(frame: &SimulationFrame, path: &str, errors: &mut Vec<ResultsV
             &format!("{opening_path}.opening_fraction"),
             errors,
         );
+    }
+
+    let mut surface_node_ids = HashSet::new();
+    for (index, node) in frame.surface_fire.iter().enumerate() {
+        let node_path = format!("{path}.surface_fire[{index}]");
+        require_unique_id(&node.id, &node_path, &mut surface_node_ids, errors);
+        require_nonempty(&node.room_id, &format!("{node_path}.room_id"), errors);
+        require_nonempty(
+            &node.material_id,
+            &format!("{node_path}.material_id"),
+            errors,
+        );
+        for (field, value) in [
+            ("position_m.x", node.position_m.x),
+            ("position_m.y", node.position_m.y),
+            ("position_m.z", node.position_m.z),
+            ("surface_temperature_c", node.surface_temperature_c),
+        ] {
+            validate_finite(value, &format!("{node_path}.{field}"), errors);
+        }
+        for (field, value) in [
+            ("dimensions_m.width_m", node.dimensions_m.width_m),
+            ("dimensions_m.depth_m", node.dimensions_m.depth_m),
+            ("dimensions_m.height_m", node.dimensions_m.height_m),
+            ("heat_release_rate_kw", node.heat_release_rate_kw),
+        ] {
+            validate_nonnegative(value, &format!("{node_path}.{field}"), errors);
+        }
+        validate_percentage_fraction(
+            node.fuel_remaining_fraction,
+            &format!("{node_path}.fuel_remaining_fraction"),
+            errors,
+        );
+        match (&node.source, node.furniture_cell) {
+            (SurfaceFireNodeSource::FloorCell { .. }, Some(_)) => push_error(
+                &format!("{node_path}.furniture_cell"),
+                "floor nodes cannot carry furniture cell coordinates",
+                errors,
+            ),
+            (SurfaceFireNodeSource::Furniture { .. }, None) => push_error(
+                &format!("{node_path}.furniture_cell"),
+                "furniture nodes must carry furniture cell coordinates",
+                errors,
+            ),
+            _ => {}
+        }
+        if let Some(cell) = node.furniture_cell
+            && (cell.columns == 0
+                || cell.rows == 0
+                || cell.layers == 0
+                || cell.column >= cell.columns
+                || cell.row >= cell.rows
+                || cell.layer >= cell.layers)
+        {
+            push_error(
+                &format!("{node_path}.furniture_cell"),
+                "furniture cell coordinates must fit within nonzero grid dimensions",
+                errors,
+            );
+        }
+        if let Some(ignition_time_seconds) = node.ignition_time_seconds {
+            validate_nonnegative(
+                ignition_time_seconds,
+                &format!("{node_path}.ignition_time_seconds"),
+                errors,
+            );
+        }
     }
 }
 

@@ -227,6 +227,7 @@ fn parse_compartments(
                     )?,
                 }],
                 openings: Vec::new(),
+                surface_fire: Vec::new(),
             })
         })
         .collect()

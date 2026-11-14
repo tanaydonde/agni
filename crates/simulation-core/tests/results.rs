@@ -1,10 +1,11 @@
 use tflop_simulation_core::{
-    FireConditions, GasLayerConditions, OpeningConditions, RoomConditions,
-    SIMULATION_RESULTS_SCHEMA_VERSION, SimulationEngine, SimulationFrame, SimulationResults,
+    CombustionState, FireConditions, GasLayerConditions, GridCoordinate, OpeningConditions,
+    RoomConditions, SIMULATION_RESULTS_SCHEMA_VERSION, SimulationEngine, SimulationFrame,
+    SimulationResults, SurfaceFireNodeFrame, SurfaceFireNodeSource,
 };
 use tflop_world_core::{
-    BoundaryEdge, BoundaryKind, Floor, Opening, OpeningKind, Room, SCENE_SCHEMA_VERSION, Scene,
-    SceneSource, Vec3,
+    BoundaryEdge, BoundaryKind, Dimensions3, Floor, Opening, OpeningKind, Room,
+    SCENE_SCHEMA_VERSION, Scene, SceneSource, Vec3,
 };
 
 #[test]
@@ -20,6 +21,7 @@ fn valid_results_round_trip_through_json() {
     assert_eq!(decoded.frames[0].rooms[0].room_id, "room-1");
     assert_eq!(decoded.frames[0].fires[0].actual_hrr_kw, 75.0);
     assert_eq!(decoded.frames[0].openings[0].opening_id, "door-1");
+    assert_eq!(decoded.frames[0].surface_fire[0].id, "floor:floor-1:2:3");
 }
 
 #[test]
@@ -138,6 +140,27 @@ fn results_fixture() -> SimulationResults {
                 opening_id: "door-1".to_owned(),
                 net_flow_kg_per_s: -0.04,
                 opening_fraction: 1.0,
+            }],
+            surface_fire: vec![SurfaceFireNodeFrame {
+                id: "floor:floor-1:2:3".to_owned(),
+                source: SurfaceFireNodeSource::FloorCell {
+                    floor_id: "floor-1".to_owned(),
+                    coordinate: GridCoordinate { column: 2, row: 3 },
+                },
+                room_id: "room-1".to_owned(),
+                position_m: point(1.25, 1.75),
+                dimensions_m: Dimensions3 {
+                    width_m: 0.5,
+                    depth_m: 0.5,
+                    height_m: 0.02,
+                },
+                furniture_cell: None,
+                material_id: "generic_carpet".to_owned(),
+                state: CombustionState::Burning,
+                ignition_time_seconds: Some(20.0),
+                surface_temperature_c: 600.0,
+                heat_release_rate_kw: 45.0,
+                fuel_remaining_fraction: 0.8,
             }],
         }],
     }
