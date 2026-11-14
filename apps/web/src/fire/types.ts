@@ -90,7 +90,7 @@ export interface OpeningConditions {
   opening_fraction: number
 }
 
-/** `POST /api/fire/simulate` (crates/server/src/fire.rs). */
+/** `POST /api/fire/simulate/hybrid` (crates/server/src/fire.rs). */
 export interface SimulateFireResponse {
   /** World revision the simulated scene was taken at. */
   revision: number

@@ -175,6 +175,19 @@ async fn malformed_body_returns_structured_400() {
 }
 
 #[tokio::test]
+async fn hybrid_fire_route_rejects_a_malformed_request() {
+    let (status, body) = call(
+        app(),
+        "POST",
+        "/api/fire/simulate/hybrid",
+        Some(json!({ "duration_seconds": 30.0 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "invalid_request");
+}
+
+#[tokio::test]
 async fn simulate_fire_returns_a_growing_timeline() {
     let (status, body) = call(
         app(),

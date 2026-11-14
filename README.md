@@ -50,7 +50,9 @@ cargo test --workspace
 
 The Rust world server owns the scene; the web app reads and edits it through
 `/api/world/*`, which Vite proxies to `TFLOP_SERVER_ADDR` (default
-`127.0.0.1:3000`). Import the scene first (below), then in two terminals:
+`127.0.0.1:3000`). Set `CFAST_BIN` in `.env` to the CFAST 7.7.7 executable so
+the web app's fire action can run the hybrid Rust + CFAST simulation. Import
+the scene first (below), then in two terminals:
 
 ```bash
 cargo run -p tflop-server -- --scene data/prepared-scenes/<model-id>.json

@@ -6,15 +6,22 @@ import { SIMULATION_RESULTS_SCHEMA_VERSION, type SimulateFireResponse } from './
  * current scene. Resolves with the whole timeline.
  */
 export async function runFireSimulation(objectId: string): Promise<SimulateFireResponse> {
-  const response = await fetch('/api/fire/simulate', {
+  const response = await fetch('/api/fire/simulate/hybrid', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ object_id: objectId }),
   }).catch(() => null)
-  // The Vite proxy answers 5xx when the Rust server is down.
-  if (!response || response.status >= 500) throw new WorldServerUnavailableError()
+  if (!response) throw new WorldServerUnavailableError()
   const body = await response.json().catch(() => null)
-  if (!response.ok) throw new WorldApiError(response.status, body ?? { code: 'unknown' })
+  if (!response.ok) {
+    // Preserve structured backend errors such as cfast_not_configured. Vite's
+    // proxy failure response is not JSON, so only that case means unreachable.
+    if (body && typeof body === 'object' && typeof body.code === 'string') {
+      throw new WorldApiError(response.status, body)
+    }
+    if (response.status >= 500) throw new WorldServerUnavailableError()
+    throw new WorldApiError(response.status, { code: 'unknown' })
+  }
 
   const run = body as SimulateFireResponse
   if (run.results.schema_version !== SIMULATION_RESULTS_SCHEMA_VERSION) {
@@ -38,6 +45,13 @@ export function describeFireError(error: unknown): string {
         return "That item doesn't burn"
       case 'simulation_failed':
         return `The simulation failed: ${String(error.body.message ?? 'unknown error')}`
+      case 'cfast_not_configured':
+        return 'CFAST is not configured on the world server'
+      case 'cfast_failed':
+      case 'cfast_preparation_failed':
+      case 'cfast_adapter_failed':
+      case 'cfast_merge_failed':
+        return `CFAST failed: ${String(error.body.message ?? 'unknown error')}`
       default:
         return `The simulation failed (${error.body.code})`
     }

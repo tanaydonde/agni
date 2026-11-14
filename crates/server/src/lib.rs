@@ -2,9 +2,8 @@
 //! processes, chiefly the TypeScript designer agent in `apps/agent`.
 //!
 //! One route per tool in `docs/AGENT_TOOLS.md`. Request and response bodies are
-//! the world-core types serialized as-is. The one addition is
-//! `/api/fire/simulate` (see `fire`), which runs the surface-fire simulation on
-//! a snapshot of the world's scene for the renderer.
+//! the world-core types serialized as-is. Fire routes expose both the original
+//! Rust-only simulation and the hybrid Rust + CFAST pipeline.
 
 mod fire;
 
@@ -102,6 +101,7 @@ pub fn load_scene_with_detection(
 /// | `/api/world/check_edits` | POST | `check_edits` (dry run; always 200 with `{valid, error}`) |
 /// | `/api/world/validate_layout` | POST | `validate_layout` |
 /// | `/api/fire/simulate` | POST | none; runs the surface-fire simulation on a scene snapshot |
+/// | `/api/fire/simulate/hybrid` | POST | none; runs surface fire and CFAST, then merges both timelines |
 ///
 /// Requests are serialized through a mutex, so edits apply one at a time.
 pub fn router(world: World) -> Router {
@@ -122,6 +122,7 @@ pub fn router(world: World) -> Router {
         .route("/api/world/check_edits", post(check_edits))
         .route("/api/world/validate_layout", post(validate_layout))
         .route("/api/fire/simulate", post(fire::simulate))
+        .route("/api/fire/simulate/hybrid", post(fire::simulate_hybrid))
         .with_state(state)
 }
 

@@ -7,18 +7,19 @@ WebSocket, or a local fixture.
 Today the world server exposes it over HTTP (`crates/server/src/fire.rs`):
 
 ```
-POST /api/fire/simulate
+POST /api/fire/simulate/hybrid
 { "object_id": "sofa-1", "duration_seconds": 180, "step_seconds": 1 }
 → { "revision": 4, "excluded_object_ids": [], "results": SimulationResults }
 ```
 
-It ignites the object, runs the surface fire on a snapshot of the current scene
-until `duration_seconds` (max 600) or until nothing is heating or burning, and
-returns every frame. Only `surface_fire` is filled until the CFAST adapter
-exists. Objects that don't stand inside a room are left out of the run and
+It ignites the object, runs the surface fire on a snapshot of the current scene,
+feeds the resulting room heat-release curves through CFAST, and returns the
+merged timeline. The server must have `CFAST_BIN` set to a CFAST 7.7.7
+executable. Objects that don't stand inside a room are left out of the run and
 listed in `excluded_object_ids`. Errors: 404 `object_not_found`, 422
-`object_outside_rooms`, `object_not_combustible`, or `simulation_failed`. The
-web app's placeholder renderer is `apps/web/src/scene/SurfaceFire.tsx`.
+`object_outside_rooms`, `object_not_combustible`, or `simulation_failed`; 503
+`cfast_not_configured`; and 502 `cfast_failed`. The web app's placeholder
+renderer is `apps/web/src/scene/SurfaceFire.tsx`.
 
 ## Which data to render
 
