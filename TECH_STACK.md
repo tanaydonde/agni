@@ -14,7 +14,7 @@ layout must pass through the Rust engine before it can be simulated or saved.
 flowchart LR
     M[Matterport Model API<br/>and MatterPak] --> I[Rust ingestion and normalization]
     I --> W[Rust world engine]
-    G[Gemini design agent] -->|structured tool calls| W
+    G[LangChain Deep Agent] -->|structured tool calls| W
     U[React + Three.js editor] -->|scene commands| W
     W -->|snapshots and simulation frames| U
     W --> S[JSON scene snapshots<br/>and variants]
@@ -34,7 +34,7 @@ flowchart LR
 | Geometry | `geo`, `parry2d`, `nalgebra` | Polygons, clearances, intersections, and transforms |
 | Data model | `serde`, `serde_json`, `uuid`, `ts-rs` | Scene serialization and generated TypeScript types |
 | Persistence | Rust memory + versioned JSON files | Prepared scenes, variants, and demo results without database plumbing |
-| AI | Gemini REST API via `reqwest`, with function calling | Layout generation and iterative optimization |
+| AI | LangChain Deep Agents (TypeScript) with a LangChain model provider | Layout generation and bounded iterative optimization |
 | External data | Matterport GraphQL Model API | Floors, rooms, boundaries, walls, openings, dimensions, and asset URLs |
 | Testing | Rust tests + `proptest`; Vitest; Playwright | Geometry invariants, deterministic simulations, UI flows |
 | Packaging | pnpm workspace, Cargo workspace, Docker | Reproducible local and deployed builds |
@@ -220,12 +220,21 @@ interactive optimization loop: it is too expensive for rapid multi-variant
 search. FDS+Evac is also no longer supported in current FDS releases, so our
 pedestrian engine should remain independent.
 
-## 8. Gemini design and optimization agent
+## 8. LangChain Deep Agents design and optimization agent
 
-Use Gemini function calling through the backend. Keep the model name
-configuration-driven so the team can use whichever Gemini tier the hackathon
-credits enable. The official [function-calling documentation](https://ai.google.dev/gemini-api/docs/function-calling)
-shows the structured tool pattern.
+Run the LangChain Deep Agent in a small TypeScript service within the pnpm
+workspace. It calls the Rust/Axum backend over authenticated server-to-server
+HTTP; the browser only calls `POST /api/agent/turn`. Configure the LangChain
+model provider separately, with Gemini as the initial provider if hackathon
+credits support it. The Deep Agent's planning, context management, and
+subagent capabilities are useful for multi-step optimization, but its access
+to the world must remain limited to the tools below.
+
+The canonical layout remains Rust-owned JSON. Deep Agent files/state may hold
+the extracted design brief and candidate notes, but are never submitted as
+scene snapshots or edited directly by the model. Every proposed layout reaches
+the world through typed commands and engine validation. See `DESIGNER.md` for
+the operating contract and prompts.
 
 Expose a narrow tool surface:
 
@@ -239,14 +248,15 @@ Expose a narrow tool surface:
 | `compare_variants` | Return normalized metrics and constraint failures |
 
 The backend executes tool calls and returns structured results. The model never
-edits JSON blobs directly and never receives Matterport or Gemini credentials.
+edits JSON blobs directly and never receives Matterport, model-provider, or
+backend credentials.
 
 Optimization should be bounded:
 
 1. Generate a small number of coherent layouts for the requested use case.
 2. Reject geometrically or functionally invalid variants before simulation.
 3. Run the same seeded scenario set against every valid variant.
-4. Let Gemini propose targeted changes based on bottlenecks.
+4. Let the Deep Agent propose targeted changes based on bottlenecks.
 5. Stop at a fixed iteration/time budget.
 6. Return the best-performing tested layout while preserving the requested
    capacity, required objects, and intended use.
@@ -298,12 +308,13 @@ day.
 ```text
 /
 ├── apps/
-│   └── web/                 # React, R3F, UI
+│   ├── web/                 # React, R3F, UI
+│   └── agent/               # LangChain Deep Agent and Rust tool bridge
 ├── crates/
 │   ├── world-core/          # scene types, commands, geometry, validation
 │   ├── simulation/          # fire and evacuation engines
 │   ├── matterport/          # GraphQL client and normalization
-│   └── server/              # Axum API, Gemini loop, persistence, streaming
+│   └── server/              # Axum API, persistence, streaming
 ├── assets/
 │   ├── furniture/           # optimized GLB furniture
 │   └── prepared-scenes/     # cached demo assets, where licensing permits
@@ -319,6 +330,8 @@ MATTERPORT_API_KEY=
 MATTERPORT_API_TOKEN=
 GEMINI_API_KEY=
 GEMINI_MODEL=
+DEEP_AGENTS_MODEL=
+RUST_ENGINE_URL=http://127.0.0.1:3000
 ASSET_CACHE_DIR=./data/assets
 RUST_LOG=info
 ```
@@ -334,7 +347,7 @@ URLs.
 3. Implement saveable baseline and variants.
 4. Implement deterministic navigation for configurable `N` occupants.
 5. Add material-tagged fire/smoke spread and hazard-aware re-routing.
-6. Add Gemini generation through `get_scene`, `apply_edits`, and validation.
+6. Add Deep Agent generation through `get_scene`, `apply_edits`, and validation.
 7. Add bounded optimize/simulate/compare iteration.
 8. Polish the baseline-versus-optimized judging flow.
 
@@ -347,7 +360,7 @@ follow-ons but are not on the critical path to the demo described in the PRD.
 The stack is working when the team can:
 
 - load a prepared Matterport-derived commercial room;
-- ask Gemini for a layout matching an arbitrary use case and capacity;
+- ask the Deep Agent for a layout matching an arbitrary use case and capacity;
 - manually move an object through the same Rust command path;
 - start a material- and geometry-dependent fire scenario;
 - watch `N` collision-aware occupants react and evacuate;
