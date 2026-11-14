@@ -1,0 +1,18 @@
+[package]
+name = "tflop-cfast"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+csv.workspace = true
+serde.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tflop-simulation-core = { path = "../simulation-core" }
+tflop-world-core = { path = "../world-core" }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

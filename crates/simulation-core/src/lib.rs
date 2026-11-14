@@ -1,0 +1,188 @@
+//! Deterministic simulation lifecycle and renderer-facing state snapshots.
+
+mod grid;
+mod results;
+
+use serde::{Deserialize, Serialize};
+use tflop_world_core::{Scene, SceneValidationErrors, Vec3};
+use thiserror::Error;
+
+pub use grid::{
+    GridBounds, GridBuildError, GridCell, GridCellKind, GridCoordinate, GridSummary, SimulationGrid,
+};
+pub use results::{
+    FireConditions, GasLayerConditions, OpeningConditions, ResultsValidationError,
+    ResultsValidationErrors, RoomConditions, SIMULATION_RESULTS_SCHEMA_VERSION, SimulationEngine,
+    SimulationFrame, SimulationResults,
+};
+
+/// Inputs that remain fixed for one simulation run.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SimulationConfig {
+    /// Reserved now so randomized fire and occupant behavior can remain
+    /// repeatable when those systems are implemented.
+    pub random_seed: u64,
+    /// Width and depth of each square floor cell.
+    pub grid_cell_size_m: f64,
+}
+
+impl Default for SimulationConfig {
+    fn default() -> Self {
+        Self {
+            random_seed: 0,
+            grid_cell_size_m: 0.25,
+        }
+    }
+}
+
+/// Owns one simulation run. The canonical scene remains unchanged while the
+/// simulation's derived state advances.
+#[derive(Debug)]
+pub struct Simulation {
+    scene: Scene,
+    config: SimulationConfig,
+    grids: Vec<SimulationGrid>,
+    time_seconds: f64,
+    status: SimulationStatus,
+    fires: Vec<FireState>,
+    smoke: Vec<SmokeState>,
+    people: Vec<PersonState>,
+}
+
+impl Simulation {
+    /// Creates a simulation at time zero from a structurally valid scene.
+    pub fn new(scene: Scene, config: SimulationConfig) -> Result<Self, SimulationError> {
+        scene.validate()?;
+        if !config.grid_cell_size_m.is_finite() || config.grid_cell_size_m <= 0.0 {
+            return Err(GridBuildError::InvalidCellSize {
+                cell_size_m: config.grid_cell_size_m,
+            }
+            .into());
+        }
+        let grids = scene
+            .floors
+            .iter()
+            .map(|floor| SimulationGrid::from_floor(floor, &scene.assets, config.grid_cell_size_m))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            scene,
+            config,
+            grids,
+            time_seconds: 0.0,
+            status: SimulationStatus::Ready,
+            fires: Vec::new(),
+            smoke: Vec::new(),
+            people: Vec::new(),
+        })
+    }
+
+    /// Advances simulation time and returns the state the renderer should show.
+    /// Fire, smoke, and occupant updates will be added behind this method.
+    pub fn step(&mut self, delta_seconds: f64) -> Result<SimulationSnapshot, SimulationError> {
+        if !delta_seconds.is_finite() || delta_seconds <= 0.0 {
+            return Err(SimulationError::InvalidDeltaSeconds { delta_seconds });
+        }
+
+        self.time_seconds += delta_seconds;
+        self.status = SimulationStatus::Running;
+        Ok(self.snapshot())
+    }
+
+    /// Reads the current state without advancing simulation time.
+    #[must_use]
+    pub fn snapshot(&self) -> SimulationSnapshot {
+        SimulationSnapshot {
+            scene_id: self.scene.id.clone(),
+            time_seconds: self.time_seconds,
+            status: self.status,
+            fires: self.fires.clone(),
+            smoke: self.smoke.clone(),
+            people: self.people.clone(),
+        }
+    }
+
+    /// Returns the simulation to the same state as a newly created run.
+    pub fn reset(&mut self) -> SimulationSnapshot {
+        self.time_seconds = 0.0;
+        self.status = SimulationStatus::Ready;
+        self.fires.clear();
+        self.smoke.clear();
+        self.people.clear();
+        self.snapshot()
+    }
+
+    #[must_use]
+    pub const fn config(&self) -> SimulationConfig {
+        self.config
+    }
+
+    /// Static floor grids are read separately from dynamic snapshots so the
+    /// renderer does not receive unchanged geometry on every step.
+    #[must_use]
+    pub fn grids(&self) -> &[SimulationGrid] {
+        &self.grids
+    }
+
+    #[must_use]
+    pub fn grid(&self, floor_id: &str) -> Option<&SimulationGrid> {
+        self.grids.iter().find(|grid| grid.floor_id == floor_id)
+    }
+}
+
+/// Complete renderer-facing state at one simulation time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SimulationSnapshot {
+    pub scene_id: String,
+    pub time_seconds: f64,
+    pub status: SimulationStatus,
+    pub fires: Vec<FireState>,
+    pub smoke: Vec<SmokeState>,
+    pub people: Vec<PersonState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SimulationStatus {
+    Ready,
+    Running,
+    Finished,
+}
+
+/// One renderer-visible fire sample. Grid generation will populate these.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FireState {
+    pub position_m: Vec3,
+    pub intensity: f64,
+}
+
+/// One renderer-visible smoke sample. Grid generation will populate these.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SmokeState {
+    pub position_m: Vec3,
+    pub concentration: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PersonState {
+    pub id: String,
+    pub position_m: Vec3,
+    pub status: PersonStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PersonStatus {
+    Evacuating,
+    Escaped,
+    Incapacitated,
+}
+
+#[derive(Debug, Error)]
+pub enum SimulationError {
+    #[error(transparent)]
+    InvalidScene(#[from] SceneValidationErrors),
+    #[error(transparent)]
+    GridBuild(#[from] GridBuildError),
+    #[error("delta_seconds must be finite and greater than zero, got {delta_seconds}")]
+    InvalidDeltaSeconds { delta_seconds: f64 },
+}

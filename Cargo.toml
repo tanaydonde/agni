@@ -1,7 +1,9 @@
 [workspace]
 members = [
     "apps/import-scene",
+    "crates/cfast",
     "crates/matterport",
+    "crates/simulation-core",
     "crates/world-core",
 ]
 resolver = "3"
@@ -15,10 +17,12 @@ unsafe_code = "forbid"
 
 [workspace.dependencies]
 clap = { version = "4.6.7", features = ["derive", "env"] }
+csv = "1"
 dotenvy = "0.15.7"
 reqwest = { version = "0.13.5", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tempfile = "3"
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread"] }
 
