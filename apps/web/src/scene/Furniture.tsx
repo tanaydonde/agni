@@ -2,7 +2,7 @@ import { useEffect, useMemo } from 'react'
 import * as THREE from 'three'
 import { useEditorStore } from './editorStore'
 import { categoryColor, EDGE_COLOR, SELECTED_COLOR } from './furnitureStyle'
-import { Z_UP_TO_Y_UP } from './placement'
+import { FURNITURE_GROUP, Z_UP_TO_Y_UP, zRotation } from './placement'
 import type { Floor, FurnitureAsset, Quaternion, Vec3 } from './types'
 
 const IDENTITY: Quaternion = { x: 0, y: 0, z: 0, w: 1 }
@@ -22,24 +22,24 @@ interface FurnitureProps {
 export function Furniture({ floor, assets }: FurnitureProps) {
   const selectedId = useEditorStore((state) => state.selectedObjectId)
   const drag = useEditorStore((state) => state.drag)
-  const dragPosition = useEditorStore((state) => state.dragPosition)
+  const preview = useEditorStore((state) => state.preview)
   const placing = useEditorStore((state) => state.placing)
   const assetsById = useMemo(() => new Map(assets.map((asset) => [asset.id, asset])), [assets])
   const ghostAsset = placing ? assetsById.get(placing.assetId) : undefined
 
   return (
-    <group rotation={Z_UP_TO_Y_UP}>
+    <group name={FURNITURE_GROUP} rotation={Z_UP_TO_Y_UP}>
       {floor.objects.map((object) => {
         const asset = assetsById.get(object.asset_id)
         if (!asset) return null
-        const dragged = drag?.objectId === object.id && dragPosition
+        const dragged = drag?.objectId === object.id ? preview : null
         return (
           <FurnitureBox
             key={object.id}
             objectId={object.id}
             asset={asset}
-            position={dragged || object.transform.position_m}
-            rotation={object.transform.rotation}
+            position={dragged?.position ?? object.transform.position_m}
+            rotation={dragged ? zRotation(dragged.yaw) : object.transform.rotation}
             scale={object.transform.scale}
             selected={object.id === selectedId}
           />

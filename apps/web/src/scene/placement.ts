@@ -8,8 +8,14 @@ import type { EditCommand, Floor, FurnitureAsset, FurnitureObject, Scene, Vec3 }
 /** Rotates the canonical Z-up world into Three.js Y-up: (x, y, z) → (x, z, -y). */
 export const Z_UP_TO_Y_UP: [number, number, number] = [-Math.PI / 2, 0, 0]
 
-/** Which gizmo handle is being dragged: one floor axis, or both. */
+/** Object names used to raycast only furniture or only the gizmo. */
+export const FURNITURE_GROUP = 'furniture'
+export const GIZMO_GROUP = 'transform-gizmo'
+
+/** Gizmo handles that slide an object: along one floor axis, or both. */
 export type MoveHandle = 'x' | 'y' | 'plane'
+/** Every gizmo handle: the move handles plus the ring that turns about Z. */
+export type GizmoHandle = MoveHandle | 'rotate'
 
 export function floorZ(floor: Pick<Floor, 'elevation_m'>): number {
   return floor.elevation_m ?? 0
@@ -46,6 +52,47 @@ export function constrainedMove(start: Vec3, from: Vec3, to: Vec3, handle: MoveH
   const dx = handle === 'y' ? 0 : to.x - from.x
   const dy = handle === 'x' ? 0 : to.y - from.y
   return { x: start.x + dx, y: start.y + dy, z }
+}
+
+/** Wraps an angle into (-180, 180] degrees. */
+export function normalizeDegrees(degrees: number): number {
+  const wrapped = ((((degrees + 180) % 360) + 360) % 360) - 180
+  return wrapped === -180 ? 180 : wrapped
+}
+
+/** Heading of an upright object: its rotation about canonical +Z, in degrees. */
+export function yawDegrees(q: { z: number; w: number }): number {
+  return normalizeDegrees((2 * Math.atan2(q.z, q.w) * 180) / Math.PI)
+}
+
+/**
+ * New heading after dragging the rotation ring from `from` to `to` (floor
+ * points) around `center`: the start heading plus the angle swept, optionally
+ * snapped to multiples of `snapDegrees`.
+ */
+export function rotationDrag(
+  center: Vec3,
+  from: Vec3,
+  to: Vec3,
+  startYaw: number,
+  snapDegrees?: number,
+): number {
+  const angle = (p: Vec3) => (Math.atan2(p.y - center.y, p.x - center.x) * 180) / Math.PI
+  const yaw = startYaw + angle(to) - angle(from)
+  return normalizeDegrees(snapDegrees ? Math.round(yaw / snapDegrees) * snapDegrees : yaw)
+}
+
+/** Normalized device coordinates (-1..1, +y up) of a client point within `rect`. */
+export function ndcFromClient(
+  clientX: number,
+  clientY: number,
+  rect: Pick<DOMRect, 'left' | 'top' | 'width' | 'height'>,
+  target = new THREE.Vector2(),
+): THREE.Vector2 {
+  return target.set(
+    ((clientX - rect.left) / rect.width) * 2 - 1,
+    -((clientY - rect.top) / rect.height) * 2 + 1,
+  )
 }
 
 /** A readable, unused object ID such as `chair-3`. Agents see these IDs. */

@@ -37,14 +37,21 @@ Edits live in the server's memory; restarting it reloads the file. The
 defurnished mesh is still served by Vite from
 `data/prepared-scenes/<model-id>.obj`.
 
-### Placing furniture
+### Editing and flying
 
-- Drag an item from the Furniture panel into the view. It follows the floor
-  under the cursor and is added where you release it.
-- Click the view to fly (Esc releases). Aim the crosshair at furniture and
-  click to select it; click empty space to deselect.
-- Press on the red (X) or green (Y) arrow and move to slide along that axis,
-  or on the blue square to move freely across the floor. Del removes it.
+The view has two modes. The cursor is only captured while flying.
+
+- **Edit mode** (default): drag an item from the Furniture panel into the
+  view; it follows the floor and is added where you release it. Click
+  furniture to select it (click anything else to deselect). Drag the red (X)
+  or green (Y) arrow to slide along that axis, the grey square to move freely
+  across the floor, or the blue ring to rotate (hold Shift to snap to 15°).
+  Del removes the selection and Esc deselects. Pinch moves toward the cursor,
+  a two-finger swipe looks around, and ⌥ + drag orbits.
+- **Fly mode**: right-click (or Control-click) to capture the cursor; Esc or
+  another right-click returns to edit mode. Move to look, WASD/QE to fly,
+  Shift for speed, Space + move to pan, ⌥ + move to orbit. Nothing can be
+  selected or edited while flying.
 
 Furniture always stands on the floor: the world snaps every object's
 `z` to its floor's elevation and rejects tilted rotations.

@@ -3,7 +3,7 @@ import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import { useWorldEdit } from './api'
 import { useEditorStore } from './editorStore'
-import { allObjectIds, assetById, floorZ, nextObjectId, rayFloorHit } from './placement'
+import { allObjectIds, assetById, floorZ, ndcFromClient, nextObjectId, rayFloorHit } from './placement'
 import type { Floor, Scene } from './types'
 
 interface PlacementControllerProps {
@@ -12,7 +12,7 @@ interface PlacementControllerProps {
 }
 
 /**
- * Drives a drag from the asset palette into the view. While an asset is held,
+ * Drives a drag from the asset palette into the view (edit mode only). While an asset is held,
  * the preview follows the floor under the cursor; releasing over the view
  * adds the object there and selects it. Releasing elsewhere, or Esc, cancels.
  */
@@ -40,12 +40,9 @@ export function PlacementController({ scene, floor }: PlacementControllerProps) 
         event.clientX <= rect.right &&
         event.clientY >= rect.top &&
         event.clientY <= rect.bottom
-      if (!inside) return null
-      ndc.set(
-        ((event.clientX - rect.left) / rect.width) * 2 - 1,
-        -((event.clientY - rect.top) / rect.height) * 2 + 1,
-      )
-      raycaster.setFromCamera(ndc, camera)
+      // Placing is an edit-mode action; fly mode hides the cursor anyway.
+      if (!inside || document.pointerLockElement) return null
+      raycaster.setFromCamera(ndcFromClient(event.clientX, event.clientY, rect, ndc), camera)
       return rayFloorHit(raycaster.ray, floorZ(latest.current.floor))
     }
 

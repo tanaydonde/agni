@@ -3,16 +3,23 @@
 // world (see api.ts); nothing here is sent to the server until a drag ends.
 
 import { create } from 'zustand'
-import type { MoveHandle } from './placement'
+import type { GizmoHandle } from './placement'
 import type { Vec3 } from './types'
 
 export interface GizmoDrag {
   objectId: string
-  handle: MoveHandle
-  /** Object position when the drag started. */
+  handle: GizmoHandle
+  /** Object position and heading (degrees about Z) when the drag started. */
   start: Vec3
+  startYaw: number
   /** Where the pointer ray met the floor when the drag started. */
   startHit: Vec3
+}
+
+/** Live placement of the dragged object; committed on release. */
+export interface DragPreview {
+  position: Vec3
+  yaw: number
 }
 
 interface EditorState {
@@ -20,42 +27,35 @@ interface EditorState {
   /** Asset being dragged in from the palette, and where it would land. */
   placing: { assetId: string; position: Vec3 | null } | null
   drag: GizmoDrag | null
-  /** Live position of the dragged object; committed on release. */
-  dragPosition: Vec3 | null
-  /** Gizmo handle under the crosshair, for highlighting. */
-  hoveredHandle: MoveHandle | null
-  /**
-   * While the pointer is locked the cursor is hidden; during a gizmo drag the
-   * crosshair follows this virtual cursor, in pixels from the view center.
-   */
-  cursorOffset: { x: number; y: number }
+  preview: DragPreview | null
+  /** Gizmo handle under the cursor, for highlighting. */
+  hoveredHandle: GizmoHandle | null
 
   select: (objectId: string | null) => void
   startPlacing: (assetId: string) => void
   setPlacingPosition: (position: Vec3 | null) => void
   stopPlacing: () => void
   startDrag: (drag: GizmoDrag) => void
-  updateDrag: (position: Vec3, cursorOffset: { x: number; y: number }) => void
+  updateDrag: (preview: DragPreview) => void
   endDrag: () => void
-  setHoveredHandle: (handle: MoveHandle | null) => void
+  setHoveredHandle: (handle: GizmoHandle | null) => void
 }
 
 export const useEditorStore = create<EditorState>()((set) => ({
   selectedObjectId: null,
   placing: null,
   drag: null,
-  dragPosition: null,
+  preview: null,
   hoveredHandle: null,
-  cursorOffset: { x: 0, y: 0 },
 
   select: (selectedObjectId) => set({ selectedObjectId }),
   startPlacing: (assetId) => set({ placing: { assetId, position: null } }),
   setPlacingPosition: (position) =>
     set((state) => (state.placing ? { placing: { ...state.placing, position } } : {})),
   stopPlacing: () => set({ placing: null }),
-  startDrag: (drag) => set({ drag, dragPosition: drag.start, cursorOffset: { x: 0, y: 0 } }),
-  updateDrag: (dragPosition, cursorOffset) => set({ dragPosition, cursorOffset }),
-  endDrag: () => set({ drag: null, dragPosition: null, cursorOffset: { x: 0, y: 0 } }),
+  startDrag: (drag) => set({ drag, preview: { position: drag.start, yaw: drag.startYaw } }),
+  updateDrag: (preview) => set({ preview }),
+  endDrag: () => set({ drag: null, preview: null }),
   setHoveredHandle: (hoveredHandle) =>
     set((state) => (state.hoveredHandle === hoveredHandle ? {} : { hoveredHandle })),
 }))

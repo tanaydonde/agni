@@ -2,13 +2,12 @@ import { Canvas } from '@react-three/fiber'
 import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { WorldServerUnavailableError, sceneMeshUrl, useSceneMeshAvailable, useWorld } from '../scene/api'
 import { CameraController } from '../scene/CameraController'
-import { useEditorStore } from '../scene/editorStore'
 import { Furniture } from '../scene/Furniture'
 import { buildFloorGeometry } from '../scene/geometry'
-import { MoveGizmo } from '../scene/MoveGizmo'
 import { PlacementController } from '../scene/PlacementController'
 import { SceneModel } from '../scene/SceneModel'
 import { SelectionController } from '../scene/SelectionController'
+import { TransformGizmo } from '../scene/TransformGizmo'
 import type { Floor, Scene } from '../scene/types'
 
 interface SceneViewportProps {
@@ -68,15 +67,15 @@ function SceneCanvas({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; me
     <div
       ref={focusTarget}
       tabIndex={-1}
-      aria-label="3D view. Click to explore; press Escape to stop."
-      className={`absolute inset-0 rounded-lg outline-none ${active ? '' : 'cursor-pointer'}`}
+      aria-label="3D view. Click to select furniture; right-click to fly, Escape to stop."
+      className="absolute inset-0 rounded-lg outline-none"
     >
       <Canvas frameloop="demand" dpr={[1, 2]} camera={{ fov: 50 }}>
         <hemisphereLight args={['#ffffff', '#d5dbe1', 1.6]} />
         <directionalLight position={[8, 14, 6]} intensity={1.4} />
         <SceneModel geometry={geometry} meshUrl={meshUrl} />
         <Furniture floor={floor} assets={scene.assets} />
-        <MoveGizmo floor={floor} />
+        <TransformGizmo floor={floor} />
         <CameraController element={focusTarget} geometry={geometry} onActiveChange={setActive} />
         <SelectionController element={focusTarget} floor={floor} />
         <PlacementController scene={scene} floor={floor} />
@@ -95,22 +94,33 @@ function SceneCanvas({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; me
   )
 }
 
-/**
- * Marks the middle of the view, which clicks, pinch, and orbit aim at. During
- * a gizmo drag it follows the virtual cursor instead.
- */
+/** Marks the middle of the view in fly mode, which pinch and orbit aim at. */
 function Crosshair() {
-  const offset = useEditorStore((state) => state.cursorOffset)
   return (
     <div
       aria-hidden
-      style={{ left: `calc(50% + ${offset.x}px)`, top: `calc(50% + ${offset.y}px)` }}
-      className="pointer-events-none absolute size-1.5 -translate-1/2 rounded-full bg-white ring-1 ring-ink/60"
+      className="pointer-events-none absolute top-1/2 left-1/2 size-1.5 -translate-1/2 rounded-full bg-white ring-1 ring-ink/60"
     />
   )
 }
 
-const CONTROLS: [keys: string[], action: string][] = [
+type Controls = [keys: string[], action: string][]
+
+const EDIT_CONTROLS: Controls = [
+  [['Click'], 'Select'],
+  [['Drag', 'Arrow'], 'Move along X / Y'],
+  [['Drag', 'Square'], 'Move freely'],
+  [['Drag', 'Ring'], 'Rotate (⇧ snaps 15°)'],
+  [['Del'], 'Delete selected'],
+  [['Esc'], 'Deselect'],
+  [['Pinch'], 'Move to cursor'],
+  [['Swipe'], 'Look around'],
+  [['⌥', 'Drag'], 'Orbit'],
+  [['F'], 'Reset view'],
+  [['Right-click'], 'Fly'],
+]
+
+const FLY_CONTROLS: Controls = [
   [['Move'], 'Look around'],
   [['W', 'A', 'S', 'D'], 'Fly'],
   [['Q', 'E'], 'Down / up'],
@@ -119,37 +129,31 @@ const CONTROLS: [keys: string[], action: string][] = [
   [['Space', 'Move'], 'Pan'],
   [['⌥', 'Move'], 'Orbit'],
   [['F'], 'Reset view'],
-  [['Click'], 'Select furniture'],
-  [['Drag', 'Arrow'], 'Move along floor'],
-  [['Del'], 'Delete selected'],
-  [['Esc'], 'Release cursor'],
+  [['Esc'], 'Back to editing'],
 ]
 
 function ControlsHint({ active }: { active: boolean }) {
-  if (!active) {
-    return (
-      <div className="pointer-events-none absolute bottom-3 left-3 rounded-md border border-hairline bg-white px-2.5 py-1.5 text-xs text-ink-secondary">
-        Click to explore · Esc to release · Drag furniture in from the panel
-      </div>
-    )
-  }
+  const controls = active ? FLY_CONTROLS : EDIT_CONTROLS
   return (
-    <div className="pointer-events-none absolute bottom-3 left-3 grid grid-cols-[auto_auto] items-center gap-x-3 gap-y-1.5 rounded-lg border border-hairline bg-white px-3 py-2.5 text-xs text-ink-secondary shadow-[0_4px_12px_rgba(26,31,54,0.08)]">
-      {CONTROLS.map(([keys, action]) => (
-        <div key={action} className="contents">
-          <span className="flex gap-1">
-            {keys.map((key) => (
-              <kbd
-                key={key}
-                className="rounded border border-control-border bg-canvas px-1.5 font-mono text-[11px] leading-[18px] text-ink"
-              >
-                {key}
-              </kbd>
-            ))}
-          </span>
-          <span>{action}</span>
-        </div>
-      ))}
+    <div className="pointer-events-none absolute bottom-3 left-3 flex flex-col gap-2 rounded-lg border border-hairline bg-white px-3 py-2.5 text-xs text-ink-secondary shadow-[0_4px_12px_rgba(26,31,54,0.08)]">
+      <span className="font-medium text-ink">{active ? 'Flying' : 'Editing'}</span>
+      <div className="grid grid-cols-[auto_auto] items-center gap-x-3 gap-y-1.5">
+        {controls.map(([keys, action]) => (
+          <div key={action} className="contents">
+            <span className="flex gap-1">
+              {keys.map((key) => (
+                <kbd
+                  key={key}
+                  className="rounded border border-control-border bg-canvas px-1.5 font-mono text-[11px] leading-[18px] text-ink"
+                >
+                  {key}
+                </kbd>
+              ))}
+            </span>
+            <span>{action}</span>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }

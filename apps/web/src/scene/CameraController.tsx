@@ -12,8 +12,8 @@ import {
   wheelPixels,
   worldPerPixel,
 } from './cameraMath'
-import { useEditorStore } from './editorStore'
 import type { FloorGeometry } from './geometry'
+import { ndcFromClient } from './placement'
 
 /** Radians turned per pixel of pointer movement. */
 const LOOK_RATE = 0.0025
@@ -31,18 +31,25 @@ const FLY_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyQ', 'KeyE', 'Shift
 const SCREEN_CENTER = new THREE.Vector2(0, 0)
 
 interface CameraControllerProps {
-  /** Focusable element wrapping the canvas. Clicking it captures the pointer. */
+  /** Focusable element wrapping the canvas. Right-clicking it captures the pointer. */
   element: RefObject<HTMLElement | null>
   geometry: FloorGeometry
-  /** Called when the pointer is captured (controls on) or released (Esc). */
+  /** Called when fly mode starts (pointer captured) or ends (pointer released). */
   onActiveChange?: (active: boolean) => void
 }
 
 /**
- * Fly camera modeled on Unity's Scene view, built for a trackpad. Clicking the
- * view captures the pointer (Esc releases it). While captured, moving the
- * pointer looks around, WASD/QE fly, pinch moves toward the center of the view,
- * Space + move pans, Option + move orbits, and F returns to the overview.
+ * Camera modeled on Unity's Scene view, built for a trackpad. It has two modes:
+ *
+ * - Edit mode (default; cursor free, left clicks belong to the editor): pinch
+ *   moves toward the point under the cursor, a two-finger swipe looks around,
+ *   and Option + drag orbits around the point under the cursor.
+ * - Fly mode: right-click (or Control-click) captures the pointer; Esc or
+ *   another right-click releases it. Moving the pointer looks around, WASD/QE
+ *   fly, pinch moves toward the center of the view, Space + move pans, and
+ *   Option + move orbits.
+ *
+ * F returns to the overview in either mode.
  */
 export function CameraController({ element, geometry, onActiveChange }: CameraControllerProps) {
   const get = useThree((state) => state.get)
@@ -86,11 +93,16 @@ export function CameraController({ element, geometry, onActiveChange }: CameraCo
     // Pan distance and orbit pivot are fixed when their modifier goes down.
     let panDistance: number | null = null
     let orbitPivot: THREE.Vector3 | null = null
+    /** Edit mode's Option + drag orbit: the pivot under the cursor at press. */
+    let editOrbitPivot: THREE.Vector3 | null = null
 
-    /** First visible surface in the middle of the view, if any. */
-    const surfaceAtCenter = () => {
+    const cursorNdc = (event: { clientX: number; clientY: number }) =>
+      ndcFromClient(event.clientX, event.clientY, get().gl.domElement.getBoundingClientRect())
+
+    /** First visible surface at `ndc` (default: the middle of the view), if any. */
+    const surfaceAt = (ndc: THREE.Vector2 = SCREEN_CENTER) => {
       const { camera, scene } = get()
-      raycaster.setFromCamera(SCREEN_CENTER, camera)
+      raycaster.setFromCamera(ndc, camera)
       const hit = raycaster
         .intersectObjects(scene.children, true)
         .find((intersection) => intersection.object instanceof THREE.Mesh)
@@ -101,33 +113,53 @@ export function CameraController({ element, geometry, onActiveChange }: CameraCo
       keys.current.clear()
       panDistance = null
       orbitPivot = null
+      editOrbitPivot = null
     }
 
     const onPointerDown = (event: PointerEvent) => {
-      if (isActive() || event.button !== 0) return
-      // Chrome refuses a re-lock for about a second after Esc; the next click works.
-      Promise.resolve(el.requestPointerLock()).catch(() => {})
+      // Right-click, or Control-click on a Mac, toggles fly mode.
+      if (event.button === 2 || (event.button === 0 && event.ctrlKey)) {
+        event.preventDefault()
+        if (isActive()) document.exitPointerLock()
+        // Chrome refuses a re-lock for about a second after Esc; the next click works.
+        else Promise.resolve(el.requestPointerLock()).catch(() => {})
+        return
+      }
+      if (isActive() || event.button !== 0 || !event.altKey) return
+      // Edit mode: Option + drag orbits around what's under the cursor.
+      const { ray, hit } = surfaceAt(cursorNdc(event))
+      editOrbitPivot = hit?.point ?? ray.at(FALLBACK_DISTANCE_M, new THREE.Vector3())
+      el.setPointerCapture(event.pointerId)
     }
 
+    const onPointerUp = (event: PointerEvent) => {
+      if (editOrbitPivot && el.hasPointerCapture(event.pointerId)) el.releasePointerCapture(event.pointerId)
+      editOrbitPivot = null
+    }
+
+    const onContextMenu = (event: MouseEvent) => event.preventDefault()
+
     const onPointerLockChange = () => {
-      const active = isActive()
-      if (!active) {
-        reset()
-        if (el.contains(document.activeElement)) el.blur()
-      }
-      onActiveChangeRef.current?.(active)
+      reset()
+      onActiveChangeRef.current?.(isActive())
     }
 
     const onPointerMove = (event: PointerEvent) => {
       const p = pose.current
-      // During a gizmo drag the pointer moves the object, not the view.
-      if (!p || !isActive() || useEditorStore.getState().drag) return
+      if (!p) return
+      if (!isActive()) {
+        if (editOrbitPivot && event.buttons & 1) {
+          pose.current = orbit(p, editOrbitPivot, -event.movementX * ORBIT_RATE, -event.movementY * ORBIT_RATE)
+          apply()
+        }
+        return
+      }
       const dx = event.movementX
       const dy = event.movementY
 
       if (keys.current.has('Space')) {
         // Drag the world: what's in the middle of the view moves with the pointer.
-        if (panDistance === null) panDistance = surfaceAtCenter().hit?.distance ?? FALLBACK_DISTANCE_M
+        if (panDistance === null) panDistance = surfaceAt().hit?.distance ?? FALLBACK_DISTANCE_M
         const { camera, size } = get()
         const fov = camera instanceof THREE.PerspectiveCamera ? camera.fov : 50
         const scale = worldPerPixel(panDistance, fov, size.height)
@@ -137,7 +169,7 @@ export function CameraController({ element, geometry, onActiveChange }: CameraCo
           .addScaledVector(new THREE.Vector3(0, 1, 0).applyQuaternion(rotation), dy * scale)
       } else if (event.altKey) {
         if (!orbitPivot) {
-          const { ray, hit } = surfaceAtCenter()
+          const { ray, hit } = surfaceAt()
           orbitPivot = hit?.point ?? ray.at(FALLBACK_DISTANCE_M, new THREE.Vector3())
         }
         pose.current = orbit(p, orbitPivot, -dx * ORBIT_RATE, -dy * ORBIT_RATE)
@@ -151,15 +183,16 @@ export function CameraController({ element, geometry, onActiveChange }: CameraCo
 
     const onWheel = (event: WheelEvent) => {
       // Always swallow wheel/pinch over the viewport so the page never zooms
-      // or swipes back; act on it only while the controls are active.
+      // or swipes back.
       event.preventDefault()
       const p = pose.current
-      if (!p || !isActive()) return
+      if (!p) return
       const delta = wheelPixels(event)
 
       if (event.ctrlKey) {
-        // Chrome and Firefox report trackpad pinch as ctrl + wheel.
-        const { ray, hit } = surfaceAtCenter()
+        // Chrome and Firefox report trackpad pinch as ctrl + wheel. Fly mode
+        // aims at the crosshair; edit mode at the cursor.
+        const { ray, hit } = surfaceAt(isActive() ? SCREEN_CENTER : cursorNdc(event))
         const travel = pinchTravel(hit?.distance ?? FALLBACK_DISTANCE_M, delta.y)
         p.position.addScaledVector(ray.direction, travel)
       } else {
@@ -171,9 +204,11 @@ export function CameraController({ element, geometry, onActiveChange }: CameraCo
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!isActive() || event.metaKey || event.ctrlKey) return // leave browser shortcuts alone
+      if (event.metaKey || event.ctrlKey) return // leave browser shortcuts alone
       if (event.code === 'KeyF') {
         goHome()
+      } else if (!isActive()) {
+        return
       } else if (event.code === 'Space') {
         event.preventDefault()
         keys.current.add('Space')
@@ -192,6 +227,8 @@ export function CameraController({ element, geometry, onActiveChange }: CameraCo
     }
 
     el.addEventListener('pointerdown', onPointerDown)
+    el.addEventListener('pointerup', onPointerUp)
+    el.addEventListener('contextmenu', onContextMenu)
     el.addEventListener('pointermove', onPointerMove)
     el.addEventListener('wheel', onWheel, { passive: false })
     el.addEventListener('keydown', onKeyDown)
@@ -199,6 +236,8 @@ export function CameraController({ element, geometry, onActiveChange }: CameraCo
     document.addEventListener('pointerlockchange', onPointerLockChange)
     return () => {
       el.removeEventListener('pointerdown', onPointerDown)
+      el.removeEventListener('pointerup', onPointerUp)
+      el.removeEventListener('contextmenu', onContextMenu)
       el.removeEventListener('pointermove', onPointerMove)
       el.removeEventListener('wheel', onWheel)
       el.removeEventListener('keydown', onKeyDown)

@@ -4,9 +4,14 @@ import {
   applyEditLocally,
   constrainedMove,
   fromThree,
+  ndcFromClient,
   nextObjectId,
+  normalizeDegrees,
   rayFloorHit,
+  rotationDrag,
   toThree,
+  yawDegrees,
+  zRotation,
 } from './placement'
 import type { Scene } from './types'
 
@@ -107,5 +112,37 @@ describe('applyEditLocally', () => {
     const before = scene()
     const after = applyEditLocally(before, { type: 'remove_object', object_id: 'missing' })
     expect(after.floors[0].rooms).toBe(before.floors[0].rooms)
+  })
+})
+
+describe('rotation helpers', () => {
+  it('wraps angles into (-180, 180]', () => {
+    expect(normalizeDegrees(190)).toBe(-170)
+    expect(normalizeDegrees(-180)).toBe(180)
+    expect(normalizeDegrees(720 + 45)).toBe(45)
+  })
+
+  it('reads the heading back from a Z rotation', () => {
+    for (const degrees of [0, 45, 90, -135, 180]) {
+      expect(yawDegrees(zRotation(degrees))).toBeCloseTo(degrees)
+    }
+  })
+
+  it('turns by the angle swept around the center, with optional snapping', () => {
+    const center = { x: 1, y: 1, z: 0 }
+    const from = { x: 2, y: 1, z: 0 } // east of center
+    const to = { x: 1, y: 3, z: 0 } // north of center: +90°
+    expect(rotationDrag(center, from, to, 10)).toBeCloseTo(100)
+    expect(rotationDrag(center, from, { x: 2, y: 1.3, z: 0 }, 0, 15)).toBe(15)
+    expect(rotationDrag(center, from, to, 170)).toBeCloseTo(-100)
+  })
+})
+
+describe('ndcFromClient', () => {
+  it('maps the rect corners and center to NDC', () => {
+    const rect = { left: 10, top: 20, width: 200, height: 100 }
+    expect(ndcFromClient(110, 70, rect).toArray()).toEqual([0, 0])
+    expect(ndcFromClient(10, 20, rect).toArray()).toEqual([-1, 1])
+    expect(ndcFromClient(210, 120, rect).toArray()).toEqual([1, -1])
   })
 })
