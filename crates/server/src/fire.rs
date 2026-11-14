@@ -276,9 +276,13 @@ fn run_hybrid(
         title: format!("Hybrid simulation igniting {object_id}"),
         room_id: ignition_room_id,
         exterior_opening_id: "unused-in-all-room-run".to_owned(),
-        // CFAST emits rows on [0, duration), so run one output interval beyond
-        // the surface endpoint to make interpolation at that endpoint valid.
-        duration_seconds: cfast_timeline.duration_seconds + CFAST_OUTPUT_INTERVAL_SECONDS,
+        // CFAST emits rows every output interval on [0, duration), so run to
+        // a whole interval past the surface endpoint, which may fall on a
+        // half second, to make interpolation at that endpoint valid.
+        duration_seconds: ((cfast_timeline.duration_seconds / CFAST_OUTPUT_INTERVAL_SECONDS)
+            .ceil()
+            + 1.0)
+            * CFAST_OUTPUT_INTERVAL_SECONDS,
         output_interval_seconds: CFAST_OUTPUT_INTERVAL_SECONDS,
         interior_temperature_c: 20.0,
         exterior_temperature_c: 20.0,
