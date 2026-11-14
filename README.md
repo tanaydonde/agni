@@ -57,3 +57,8 @@ falls back to a shell built from the JSON. Pass `--skip-mesh` to import only
 the JSON. The JSON stays the source of truth for walls, openings, and
 simulation. Generated files are ignored by Git and contain no credentials or
 signed Matterport URLs.
+
+Imported scenes include a built-in five-item furniture catalog: chair, desk,
+meeting table, sofa, and storage cabinet. These entries contain real-world
+placeholder dimensions but no GLB URI yet, so renderers should display boxes
+until final models are assigned.
