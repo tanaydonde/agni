@@ -31,7 +31,20 @@ describe('furnitureItems', () => {
       scale: { x: 1, y: 1, z: 1 },
       size: desk.dimensions_m,
       color: categoryColor('desk'),
+      burning: false,
     })
+  })
+
+  it('marks objects that have fire cells as burning', () => {
+    const items = furnitureItems(
+      { objects: [placed('desk-a', 'desk-1'), placed('desk-b', 'desk-1')] },
+      [desk],
+      new Set(['desk-b']),
+    )
+    expect(items.map((item) => [item.id, item.burning])).toEqual([
+      ['desk-a', false],
+      ['desk-b', true],
+    ])
   })
 
   it('skips objects whose asset is missing', () => {

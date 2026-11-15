@@ -23,27 +23,20 @@ export function ActionBar({
   onScenarioChange,
 }: ActionBarProps) {
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex gap-3">
-        <button
-          type="button"
-          disabled={!canRunSimulation}
-          onClick={onRunSimulation}
-          title={
-            canRunSimulation
-              ? 'Generate occupants and start a fire at the selected furniture'
-              : 'Select a piece of furniture in the editor to start a fire there'
-          }
-          className="h-10 flex-1 rounded-md border border-control-border bg-white font-medium text-ink hover:bg-canvas disabled:cursor-not-allowed disabled:text-placeholder disabled:hover:bg-white"
-        >
-          {hasSelectedOrigin ? 'Run simulation' : 'Select fire origin'}
-        </button>
-      </div>
-      {!hasSelectedOrigin && (
-        <p className="text-xs leading-normal text-muted">
-          In Building → Editor, click a piece of furniture to choose where the single fire starts.
-        </p>
-      )}
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+      <button
+        type="button"
+        disabled={!canRunSimulation}
+        onClick={onRunSimulation}
+        title={
+          canRunSimulation
+            ? 'Generate occupants and start a fire at the selected furniture'
+            : 'Select a piece of furniture in the editor to start a fire there'
+        }
+        className="h-8 shrink-0 rounded-md border border-control-border bg-white px-4 text-sm font-medium text-ink hover:bg-canvas disabled:cursor-not-allowed disabled:text-placeholder disabled:hover:bg-white"
+      >
+        {hasSelectedOrigin ? 'Run simulation' : 'Select fire origin'}
+      </button>
       <div className="flex items-center gap-3 text-xs text-ink-secondary">
         <OccupantCountInput
           value={scenario.occupantCount}
@@ -63,6 +56,11 @@ export function ActionBar({
           Crowded
         </label>
       </div>
+      {!hasSelectedOrigin && (
+        <p className="text-xs text-muted">
+          In Building → Editor, click a piece of furniture to choose where the single fire starts.
+        </p>
+      )}
     </div>
   )
 }

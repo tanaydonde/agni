@@ -72,6 +72,28 @@ export async function activateDefurnishedView(sdk: MpSdk): Promise<string | null
   return null
 }
 
+/**
+ * Moves Showcase to its dollhouse: the whole textured model seen from above,
+ * with its own orbit and zoom. Retries while an intro or other transition is
+ * still running, as stepping inside does.
+ */
+export async function showDollhouse(sdk: MpSdk, signal?: AbortSignal): Promise<void> {
+  let lastError: unknown
+  for (let attempt = 0; attempt < STEP_INSIDE_ATTEMPTS; attempt++) {
+    signal?.throwIfAborted()
+    await untilSettled(sdk.Mode.current, signal)
+    signal?.throwIfAborted()
+    try {
+      await sdk.Mode.moveTo(MODE.DOLLHOUSE)
+      return
+    } catch (error) {
+      lastError = error
+      await new Promise((resolve) => setTimeout(resolve, RETRY_MS))
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("Matterport wouldn't switch to the dollhouse view.")
+}
+
 /** The enabled scan nearest the middle of all of them: a central place to start. */
 export function centralSweep(sweeps: Pick<SweepData, 'sid' | 'enabled' | 'position'>[]): string | null {
   const enabled = sweeps.filter((sweep) => sweep.enabled)
@@ -87,15 +109,23 @@ export function centralSweep(sweeps: Pick<SweepData, 'sid' | 'enabled' | 'positi
   return enabled.reduce((best, sweep) => (distance(sweep) < distance(best) ? sweep : best)).sid
 }
 
-/** Resolves once the view mode isn't mid-transition. */
-function untilSettled(mode: Observable<string>): Promise<void> {
-  return new Promise((resolve) => {
+/** Resolves once the view mode isn't mid-transition (or rejects on abort). */
+function untilSettled(mode: Observable<string>, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
     let done = false
     const subscription = mode.subscribe((current) => {
       if (done || current === MODE.TRANSITIONING) return
       done = true
+      signal?.removeEventListener('abort', onAbort)
       resolve()
       queueMicrotask(() => subscription.cancel())
     })
+    function onAbort() {
+      if (done) return
+      done = true
+      queueMicrotask(() => subscription.cancel())
+      reject(signal?.reason)
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
   })
 }

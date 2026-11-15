@@ -17,13 +17,19 @@ export interface FurnitureItem {
   scale: Vec3
   size: Dimensions3
   color: string
+  /** Has fire cells; drawn see-through so they show (walls still hide them). */
+  burning: boolean
 }
 
 /**
  * The floor's placed furniture as boxes, the way the editor draws them.
  * Scanned furniture is left out: real models stand in for it here.
  */
-export function furnitureItems(floor: Pick<Floor, 'objects'>, assets: FurnitureAsset[]): FurnitureItem[] {
+export function furnitureItems(
+  floor: Pick<Floor, 'objects'>,
+  assets: FurnitureAsset[],
+  burning: ReadonlySet<string> = new Set(),
+): FurnitureItem[] {
   const assetsById = new Map(assets.map((asset) => [asset.id, asset]))
   return floor.objects.flatMap((object) => {
     const asset = assetsById.get(object.asset_id)
@@ -36,6 +42,7 @@ export function furnitureItems(floor: Pick<Floor, 'objects'>, assets: FurnitureA
         scale: object.transform.scale,
         size: asset.dimensions_m,
         color: categoryColor(asset.category),
+        burning: burning.has(object.id),
       },
     ]
   })
@@ -46,6 +53,8 @@ interface FurnitureInputs {
 }
 
 const COMPONENT_NAME = 'tflop.furniture'
+/** Same as the editor's burning furniture. */
+const BURNING_OPACITY = 0.3
 
 /** Rebuilds a group of boxes whenever its `items` input changes. */
 class FurnitureComponent implements SceneComponent<FurnitureInputs> {
@@ -84,7 +93,11 @@ class FurnitureComponent implements SceneComponent<FurnitureInputs> {
       // Bottom face at the origin, i.e. standing on the floor.
       const box = new three.BoxGeometry(width, depth, height).translate(0, 0, height / 2)
       const edges = new three.EdgesGeometry(box)
-      const material = new three.MeshBasicMaterial({ color: item.color })
+      const material = new three.MeshBasicMaterial(
+        item.burning
+          ? { color: item.color, transparent: true, opacity: BURNING_OPACITY, depthWrite: false }
+          : { color: item.color },
+      )
       this.owned.push(box, edges, material)
 
       const group = new three.Group()

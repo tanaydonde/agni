@@ -228,10 +228,27 @@ const HIDDEN_SHOWCASE_CONTROLS = [
   '[class*="logo--footer"]', // the Matterport logo, linked or not
 ]
 
-/** Hides HIDDEN_SHOWCASE_CONTROLS in the (same-origin) Showcase page. */
-export function hideShowcaseControls(page: Document): void {
+/**
+ * Also hidden in the fixed bird's-eye view: the mode and tool buttons, which
+ * would leave the dollhouse (floor plan, walking inside, measuring) or swap
+ * in the furnished scan. Showcase's Help and Terms links stay.
+ */
+const BIRDS_EYE_HIDDEN_CONTROLS = [
+  // Dollhouse / Floor Plan / Explore 3D Space, with the active-mode highlight.
+  '.mode-controls',
+  // Prefix matches: Showcase's labels can end with a trailing space.
+  'button[aria-label^="Measurements"]',
+  'button[aria-label^="Show Furniture"]',
+]
+
+/**
+ * Hides HIDDEN_SHOWCASE_CONTROLS in the (same-origin) Showcase page, plus
+ * the mode buttons when `birdsEye` keeps the player in its dollhouse.
+ */
+export function hideShowcaseControls(page: Document, { birdsEye = false } = {}): void {
+  const hidden = birdsEye ? [...HIDDEN_SHOWCASE_CONTROLS, ...BIRDS_EYE_HIDDEN_CONTROLS] : HIDDEN_SHOWCASE_CONTROLS
   const style = page.createElement('style')
   style.dataset.tflop = 'hidden-controls'
-  style.textContent = `${HIDDEN_SHOWCASE_CONTROLS.join(',\n')} { display: none !important; }`
+  style.textContent = `${hidden.join(',\n')} { display: none !important; }`
   page.head.append(style)
 }
