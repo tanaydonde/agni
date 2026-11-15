@@ -8,6 +8,7 @@ import { wheelPixels } from '../scene/cameraMath'
 import type { ModelPlacement } from '../scene/modelChoice'
 import type { AgentFrame, SimulationFrame } from '../fire/types'
 import type { Floor, Scene } from '../scene/types'
+import { fovFromProjection, orbitForFov, orbitPosition, orbitYawPitch, type Orbit } from '../scene/orbitCamera'
 import { type CameraDriver, createHopDriver } from './cameraDriver'
 import { activateDefurnishedView, showDollhouse, showSpaceVersion, type SpaceVersion } from './defurnish'
 import { createFlyDriver } from './flyDriver'
@@ -21,6 +22,7 @@ import {
   hideShowcaseControls,
   MODE,
   type MpSdk,
+  SWEEP_TRANSITION,
   showcaseUrl,
   type Subscription,
   untilPlaying,
@@ -84,6 +86,8 @@ interface ShowcaseViewportProps {
    * own orbit and zoom) instead of standing inside with our fly controls.
    */
   birdsEye?: boolean
+  /** With `birdsEye`: the camera to show (input is handled by the caller). */
+  orbit?: Orbit | null
 }
 
 /**
@@ -106,6 +110,7 @@ export function ShowcaseViewport({
   version,
   timeline,
   birdsEye = false,
+  orbit = null,
 }: ShowcaseViewportProps) {
   const container = useRef<HTMLDivElement>(null)
   const inputLayer = useRef<HTMLDivElement>(null)
@@ -121,6 +126,9 @@ export function ShowcaseViewport({
   const fireFrame = timeline ? timeline.frame : storeFrame
   const simulationAgents = timeline ? timeline.agents : storeAgents
   const latestBirdsEye = useRef(birdsEye)
+  const [dollhouseReady, setDollhouseReady] = useState(false)
+  /** Showcase's dollhouse camera is wider than ours; measured once it's up. */
+  const dollhouseFov = useRef(DEFAULT_DOLLHOUSE_FOV_DEGREES)
   // Burning furniture draws see-through. Keyed by the IDs so the boxes are
   // only rebuilt when that set changes, not on every fire frame.
   const burningKey = useMemo(() => [...burningObjectIds(fireFrame)].sort().join('\n'), [fireFrame])
@@ -223,6 +231,9 @@ export function ShowcaseViewport({
         if (signal.aborted) return
         // Clicks can't reach Showcase here (see the layer below), but if the
         // view leaves the dollhouse anyway, put it back.
+        dollhouseFov.current = await readFieldOfView(sdk)
+        if (signal.aborted) return
+        setDollhouseReady(true)
         dollhouseLock = sdk.Mode.current.subscribe((mode) => {
           if (mode === MODE.INSIDE || mode === MODE.FLOORPLAN) {
             sdk.Mode.moveTo(MODE.DOLLHOUSE).catch(() => {})
@@ -265,10 +276,13 @@ export function ShowcaseViewport({
       agentOverlay.current = null
       environment?.dispose()
       dollhouseLock?.cancel()
+      setDollhouseReady(false)
       sdkRef.current = null
       iframe.remove()
     }
   }, [scene.id])
+
+  useDollhouseOrbit(sdkRef, dollhouseReady ? orbit : null, dollhouseFov)
 
   useFlightInput(inputLayer, status.kind === 'ready' ? status.driver : null, setFlying)
 
@@ -283,9 +297,9 @@ export function ShowcaseViewport({
 
   return (
     <div ref={container} className="absolute inset-0">
-      {/* The bird's-eye view is a fixed picture, like the 3D overview: this
-          layer keeps clicks (which would fly inside) and drags off Showcase,
-          and lets wheel events reach the review for paging. */}
+      {/* In the bird's-eye view Showcase gets no input of its own: clicks
+          would fly inside. The review's orbit controls sit above this and
+          drive the camera through the `orbit` prop instead. */}
       {birdsEye && <div aria-hidden className="absolute inset-0" />}
       {freeFlight && (
         <div
@@ -453,4 +467,81 @@ function Overlay({ children }: { children: ReactNode }) {
       <p className="max-w-md text-center leading-normal text-muted">{children}</p>
     </div>
   )
+}
+
+/** Showcase's dollhouse camera reported about 75° when measured; used until read. */
+const DEFAULT_DOLLHOUSE_FOV_DEGREES = 75
+
+/** Showcase's current vertical field of view, from its camera's projection. */
+function readFieldOfView(sdk: MpSdk): Promise<number> {
+  return new Promise((resolve) => {
+    let done = false
+    const finish = (fov: number) => {
+      if (done) return
+      done = true
+      resolve(fov)
+    }
+    const subscription = sdk.Camera.pose.subscribe((pose) => {
+      finish(fovFromProjection(pose.projection) ?? DEFAULT_DOLLHOUSE_FOV_DEGREES)
+      queueMicrotask(() => subscription.cancel())
+    })
+    setTimeout(() => finish(DEFAULT_DOLLHOUSE_FOV_DEGREES), 2000)
+  })
+}
+
+/** A rejected move (Showcase still mid-transition) is retried this often... */
+const ORBIT_RETRY_MS = 250
+/** ...this many times before waiting for the next change. */
+const ORBIT_RETRIES = 12
+
+/**
+ * Moves Showcase's dollhouse camera to `orbit` whenever it changes. Moves
+ * are instant and one at a time: while one is in flight, only the newest
+ * orbit is kept and sent when it lands, so fast drags never queue up. Showcase
+ * rejects moves while it's still settling into the dollhouse, so a rejected
+ * move is retried (unless a newer orbit has arrived).
+ */
+function useDollhouseOrbit(
+  sdkRef: RefObject<MpSdk | null>,
+  orbit: Orbit | null,
+  fovDegrees: RefObject<number>,
+) {
+  const inFlight = useRef(false)
+  const pending = useRef<Orbit | null>(null)
+
+  useEffect(() => {
+    if (!orbit) return
+    const send = (next: Orbit, retriesLeft: number) => {
+      const sdk = sdkRef.current
+      if (!sdk) return
+      inFlight.current = true
+      // Same framing through Showcase's wider lens: move in to match.
+      const framed = orbitForFov(next, fovDegrees.current)
+      const position = orbitPosition(framed)
+      const { yaw, pitch } = orbitYawPitch(framed)
+      sdk.Mode.moveTo(MODE.DOLLHOUSE, {
+        position: { x: position.x, y: position.y, z: position.z },
+        rotation: { x: (pitch * 180) / Math.PI, y: (yaw * 180) / Math.PI },
+        transition: SWEEP_TRANSITION.INSTANT,
+      }).then(
+        () => {
+          inFlight.current = false
+          const queued = pending.current
+          pending.current = null
+          if (queued) send(queued, ORBIT_RETRIES)
+        },
+        () => {
+          inFlight.current = false
+          const queued = pending.current
+          pending.current = null
+          if (queued) send(queued, ORBIT_RETRIES)
+          else if (retriesLeft > 0) setTimeout(() => {
+            if (!inFlight.current && !pending.current) send(next, retriesLeft - 1)
+          }, ORBIT_RETRY_MS)
+        },
+      )
+    }
+    if (inFlight.current) pending.current = orbit
+    else send(orbit, ORBIT_RETRIES)
+  }, [orbit, sdkRef, fovDegrees])
 }

@@ -120,9 +120,21 @@ export interface MpSdk {
   }
   Mode: {
     current: Observable<string>
-    moveTo(mode: Mode, options?: { transition?: string }): Promise<string>
+    /** In the dollhouse, `position` and `rotation` (degrees: x pitch, y yaw) set the camera. */
+    moveTo(
+      mode: Mode,
+      options?: {
+        transition?: string
+        position?: { x: number; y: number; z: number }
+        rotation?: { x: number; y: number }
+      },
+    ): Promise<string>
   }
-  Camera: { moveInDirection(direction: Direction): Promise<void> }
+  Camera: {
+    moveInDirection(direction: Direction): Promise<void>
+    /** The camera's pose; `projection` is a column-major 4×4 matrix. */
+    pose: Observable<{ projection: ArrayLike<number> }>
+  }
   Sweep: {
     data: ObservableMap<SweepData>
     current: Observable<SweepData>
@@ -221,6 +233,7 @@ export function readMap<T>(map: ObservableMap<T>): Promise<Record<string, T>> {
  * hashed per build except for its `logo--footer` prefix.
  */
 const HIDDEN_SHOWCASE_CONTROLS = [
+  'footer[class*="showcase-footer"]', // the "AI Enhanced | Help | Terms" links
   'button[aria-label="Search"]',
   'button[aria-label="Share this Space"]',
   'button.view-in-vr',
@@ -239,6 +252,7 @@ const BIRDS_EYE_HIDDEN_CONTROLS = [
   // Prefix matches: Showcase's labels can end with a trailing space.
   'button[aria-label^="Measurements"]',
   'button[aria-label^="Show Furniture"]',
+  '.showcase-settings', // the gear in the top right
 ]
 
 /**
