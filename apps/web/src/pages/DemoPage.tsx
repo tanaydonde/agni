@@ -4,6 +4,7 @@ import { type LoadedScene, SceneGate } from '../components/SceneViewport'
 import { PrimaryButton, StageMessage } from '../components/ViewportFrame'
 import { firefighterStartSeconds, firstPersonPose } from '../demo/cameras'
 import { HeatmapView } from '../demo/HeatmapView'
+import { leadRoute, routeRibbon } from '../demo/route'
 import { DemoShell, Switch } from '../demo/shared'
 import { useDemoPlayback, useFloorGeometry } from '../demo/useDemoPlayback'
 import { DEFAULT_BATCH_SIMULATION_COUNT } from '../fire/api'
@@ -119,6 +120,7 @@ function DemoViews({ scene, floor, meshUrl }: LoadedScene) {
 /**
  * The top scenario from the lead firefighter's eyes, in the furnished scan
  * with the fire and people drawn in. The firefighter's own body is left out.
+ * An arrow on the floor shows the route still ahead of them.
  */
 function FirstPersonRoute({
   scene,
@@ -128,6 +130,7 @@ function FirstPersonRoute({
   const clockSeconds = useFireStore((state) => state.clockSeconds)
   const pose = useMemo(() => firstPersonPose(frames, clockSeconds), [frames, clockSeconds])
   const leadId = useMemo(() => leadFirefighter(agentsAtTime(frames, 0))?.id, [frames])
+  const route = useMemo(() => routeRibbon(leadRoute(frames)), [frames])
 
   return (
     <ShowcaseViewport
@@ -137,6 +140,8 @@ function FirstPersonRoute({
       version="furnished"
       cameraPose={pose}
       hiddenAgentId={leadId}
+      route={route}
+      routeSeconds={clockSeconds}
     />
   )
 }

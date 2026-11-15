@@ -1,6 +1,7 @@
 // Agents drawn inside Showcase's own three.js scene as their role's blob
 // model (see ../scene/agentModels), with ovals until a model loads. People
-// held up in the crowd glow red; people squeezing past glow amber.
+// held up in the crowd glow red; people squeezing past glow amber. Their hose
+// streams are drawn by ./water.
 
 import type * as THREE from 'three'
 import { AGENT_COLORS } from '../fire/frames'
@@ -18,7 +19,6 @@ import {
   byTint,
   loadAgentModels,
   nextHeadings,
-  nozzleStream,
   partGeometry,
   partMaterial,
 } from '../scene/agentModels'
@@ -41,8 +41,6 @@ class AgentComponent implements SceneComponent<AgentInputs> {
     geometry: THREE.SphereGeometry
     materials: Record<AgentKind, Record<AgentTint, THREE.Material>>
   }
-  /** Unit cone (tip up) and its material, for hose streams. */
-  private stream?: { geometry: THREE.ConeGeometry; material: THREE.Material }
   /** Built with Showcase's three.js once the models arrive, in every tint. */
   private bodies: Partial<
     Record<AgentKind, Record<AgentTint, { geometry: THREE.BufferGeometry; material: THREE.Material }[]>>
@@ -64,16 +62,6 @@ class AgentComponent implements SceneComponent<AgentInputs> {
       byTint(
         (tint) => new three.MeshBasicMaterial({ color: tint === 'none' ? color : TINT_COLORS[tint] }),
       )
-    this.stream = {
-      geometry: new three.ConeGeometry(1, 1, 24, 1, true),
-      material: new three.MeshBasicMaterial({
-        color: '#60a5fa',
-        transparent: true,
-        opacity: 0.35,
-        depthWrite: false,
-        side: three.DoubleSide,
-      }),
-    }
     this.oval = {
       geometry: new three.SphereGeometry(1, 16, 12),
       materials: {
@@ -106,8 +94,6 @@ class AgentComponent implements SceneComponent<AgentInputs> {
     this.destroyed = true
     this.root?.clear()
     this.oval?.geometry.dispose()
-    this.stream?.geometry.dispose()
-    this.stream?.material.dispose()
     for (const tints of Object.values(this.oval?.materials ?? {})) {
       for (const material of Object.values(tints)) material.dispose()
     }
@@ -132,14 +118,6 @@ class AgentComponent implements SceneComponent<AgentInputs> {
       const pose = agentPose(agent)
       const lift = pose === 'carried' ? CARRY_HEIGHT_M : 0
       const shrink = pose === 'carried' ? CARRY_SCALE : 1
-      const stream = nozzleStream(agent)
-      if (stream && this.stream) {
-        const cone = new three.Mesh(this.stream.geometry, this.stream.material)
-        cone.position.set(...stream.position)
-        cone.quaternion.set(...stream.quaternion)
-        cone.scale.set(...stream.scale)
-        this.root.add(cone)
-      }
       const body = this.bodies[agent.role.type]?.[tint]
       if (body) {
         const group = new three.Group()

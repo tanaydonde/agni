@@ -14,9 +14,10 @@ pub const FURNITURE_FIRE_CELL_SIZE_M: f64 = 0.25;
 const MAX_FURNITURE_FIRE_CELLS_PER_OBJECT: usize = 100_000;
 /// Horizontal distance a hose stream reaches inside a room.
 pub const DEFAULT_NOZZLE_REACH_M: f64 = 5.0;
-/// Effective cooling of one handline: a 1.75-inch line flows about 9.5 kg/s,
-/// of which a fraction actually absorbs heat from the fire.
-pub const DEFAULT_NOZZLE_COOLING_KW: f64 = 1_000.0;
+/// Effective cooling of one handline. Five times what a 1.75-inch line
+/// flowing about 9.5 kg/s would realistically absorb (about 1 MW), so crews
+/// put fires out quickly.
+pub const DEFAULT_NOZZLE_COOLING_KW: f64 = 5_000.0;
 /// Half the spread of a nozzle's stream: a 30 degree cone.
 pub const DEFAULT_NOZZLE_HALF_ANGLE_DEGREES: f64 = 15.0;
 /// A burning cell with less than this share of its fuel left has burned out.

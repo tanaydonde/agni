@@ -4,6 +4,7 @@ import { burningObjectIds, fireCellBoxes } from '../fire/cells'
 import { fireVolume } from '../fire/volume'
 import { useFireFrame, useSimulationAgents } from '../fire/fireStore'
 import { isShownAgent } from '../fire/frames'
+import { hoseStream } from '../scene/agentModels'
 import { FlyIndicator } from '../components/FlyIndicator'
 import { type CameraPose, wheelPixels } from '../scene/cameraMath'
 import type { ModelPlacement } from '../scene/modelChoice'
@@ -18,6 +19,9 @@ import { createFlyDriver } from './flyDriver'
 import { createPoseDriver, type PoseDriver } from './poseDriver'
 import { mountAgents, type ShowcaseAgents } from './agents'
 import { mountFire, type ShowcaseFire } from './fire'
+import { mountWater, type ShowcaseWater } from './water'
+import { mountRoute, type ShowcaseRoute } from './route'
+import type { RouteRibbon } from '../demo/route'
 import { furnitureItems, mountFurniture, type ShowcaseFurniture } from './furniture'
 import { mountEnvironment } from './environment'
 import { mountModels, type ShowcaseModels } from './models'
@@ -113,6 +117,12 @@ interface ShowcaseViewportProps {
   flyFromVantage?: boolean
   /** An agent to leave out, e.g. the firefighter whose eyes the camera is. */
   hiddenAgentId?: string
+  /**
+   * A route to lay on the floor as an arrow. Only the part after
+   * `routeSeconds` (the playback clock) is drawn.
+   */
+  route?: RouteRibbon | null
+  routeSeconds?: number
 }
 
 /**
@@ -144,6 +154,8 @@ export function ShowcaseViewport({
   vantageFocus,
   flyFromVantage = false,
   hiddenAgentId,
+  route = null,
+  routeSeconds = 0,
 }: ShowcaseViewportProps) {
   const container = useRef<HTMLDivElement>(null)
   const inputLayer = useRef<HTMLDivElement>(null)
@@ -185,6 +197,17 @@ export function ShowcaseViewport({
       simulationAgents.filter((agent) => agent.id !== hiddenAgentId && isShownAgent(agent, floor.id)),
     [simulationAgents, floor.id, hiddenAgentId],
   )
+  // Every spraying firefighter's water, the hidden one's included: riding
+  // with them, the stream leaves from just below the camera.
+  const streams = useMemo(
+    () =>
+      simulationAgents.flatMap((agent) => (isShownAgent(agent, floor.id) && hoseStream(agent)) || []),
+    [simulationAgents, floor.id],
+  )
+  const water = useRef<ShowcaseWater | null>(null)
+  const latestStreams = useRef(streams)
+  const routeArrow = useRef<ShowcaseRoute | null>(null)
+  const latestRoute = useRef({ route, routeSeconds })
   const agentOverlay = useRef<ShowcaseAgents | null>(null)
   const latestAgents = useRef(agents)
   const freeFlight = status.kind === 'ready' && Boolean(status.driver?.look)
@@ -204,6 +227,16 @@ export function ShowcaseViewport({
     latestFireVolume.current = fireVolumeNow
     fire.current?.update(fireVolumeNow)
   }, [fireVolumeNow])
+
+  useEffect(() => {
+    latestStreams.current = streams
+    water.current?.update(streams)
+  }, [streams])
+
+  useEffect(() => {
+    latestRoute.current = { route, routeSeconds }
+    routeArrow.current?.update(route, routeSeconds)
+  }, [route, routeSeconds])
 
   useEffect(() => {
     latestAgents.current = agents
@@ -267,6 +300,8 @@ export function ShowcaseViewport({
       furniture.current = await mountFurniture(sdk, latestItems.current)
       furnitureModels.current = mountModels(sdk, latestModels.current)
       fire.current = await mountFire(sdk, latestFireVolume.current)
+      water.current = await mountWater(sdk, latestStreams.current)
+      routeArrow.current = await mountRoute(sdk, latestRoute.current.route, latestRoute.current.routeSeconds)
       agentOverlay.current = await mountAgents(sdk, latestAgents.current)
       environment = await mountEnvironment(sdk)
       signal.throwIfAborted()
@@ -331,6 +366,10 @@ export function ShowcaseViewport({
       furnitureModels.current = null
       fire.current?.dispose()
       fire.current = null
+      water.current?.dispose()
+      water.current = null
+      routeArrow.current?.dispose()
+      routeArrow.current = null
       agentOverlay.current?.dispose()
       agentOverlay.current = null
       environment?.dispose()
