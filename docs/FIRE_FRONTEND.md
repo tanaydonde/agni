@@ -45,15 +45,22 @@ simulation or selection calculations. Review responses also omit the large
 `frequencies` and `assignments` arrays that the UI does not display.
 
 The current review requests ten 360-second candidates and K=4. It shows the
-four returned timelines one at a time, full size, from a fixed bird's-eye
-overview, with one global clock and 1x/2x/4x/8x/16x controls. The arrows, the
-dots, one scroll gesture per page, or the ←/→ keys move between runs; paging
-never moves the clock, so every run is seen at the same moment. Runs that
-settle before 360 seconds hold their final frame. A 3D / Textured switch shows
-the same run either on the 3D mesh or in Matterport's textured dollhouse, with
-the fire and people drawn into it. Like the 3D overview it is a fixed
-picture: Showcase's mode buttons are hidden and clicks don't reach it, so it
-can't fly inside, and scrolling over it pages runs as in 3D.
+four returned timelines one at a time, full size, with one global clock and
+1x/2x/4x/8x/16x controls. The arrows, the dots, or the ←/→ keys move between
+runs; paging never moves the clock, so every run is seen at the same moment.
+Runs that settle before 360 seconds hold their final frame.
+
+The camera is a bird's-eye orbit (`scene/orbitCamera.ts`): drag to orbit
+around the building, right-drag (or Shift-drag) to pan, scroll or pinch to
+zoom, and **Reset view** to return to the whole-floor framing. A 3D / Textured
+switch shows the same run on the 3D mesh or in Matterport's textured
+dollhouse, with the fire and people drawn in. Both views share one orbit, so
+switching keeps the view. Textured sends each orbit to Showcase with
+`Mode.moveTo('mode.dollhouse', { position, rotation })`. Showcase's dollhouse
+lens is wider (about 75° against our 50°, read from its projection matrix), so
+the distance is scaled to frame the scene the same way. Our layer takes the
+pointer, so a click can never fly inside. Showcase's mode buttons, gear and
+"AI Enhanced | Help | Terms" footer are hidden.
 
 Known limitations of the review and textured views (accepted for now):
 
@@ -71,6 +78,9 @@ Known limitations of the review and textured views (accepted for now):
 - **Controls legend.** It lists only the essential editor controls. Trackpad
   pinch (move to cursor) and two-finger swipe (look around) still work but
   aren't listed.
+- **Showcase's footer links are hidden.** Matterport's embed terms may require
+  the Terms link on a public deployment; restore it there
+  (`HIDDEN_SHOWCASE_CONTROLS` in `showcase/sdk.ts`).
 
 The batch accepts 1–32 distinct inputs. By default its `runs` array stays in
 request order even though the server executes up to four runs concurrently. A

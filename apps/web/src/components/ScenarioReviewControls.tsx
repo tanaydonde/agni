@@ -2,7 +2,7 @@ import { Canvas } from '@react-three/fiber'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useWorld } from '../scene/api'
 import { burningObjectIds } from '../fire/cells'
-import { agentsAtTime, crewStatus, frameAtTime, occupantCounts } from '../fire/frames'
+import { agentsAtTime, frameAtTime } from '../fire/frames'
 import {
   PLAYBACK_RATES,
   batchEndSeconds,
@@ -12,8 +12,10 @@ import {
 import type { SimulateFireResponse } from '../fire/types'
 import { ReviewCamera } from '../scene/ReviewCamera'
 import { Furniture } from '../scene/Furniture'
+import { wheelPixels } from '../scene/cameraMath'
 import type { FloorGeometry } from '../scene/geometry'
 import type { ModelPlacement } from '../scene/modelChoice'
+import { ORBIT_FOV_DEGREES, orbitHome, panOrbit, rotateOrbit, zoomOrbit, type Orbit } from '../scene/orbitCamera'
 import { SceneModel } from '../scene/SceneModel'
 import { SimulationAgentsView } from '../scene/SimulationAgents'
 import { SurfaceFireView } from '../scene/SurfaceFire'
@@ -27,10 +29,9 @@ const REVIEW_VIEWS: [view: ReviewView, label: string][] = [
   ['textured', 'Textured'],
 ]
 
-/** A scroll gesture pages once; it ends after this long without wheel events. */
-const WHEEL_GESTURE_IDLE_MS = 300
-/** Ignore tiny wheel deltas (trackpad jitter). */
-const MIN_WHEEL_DELTA = 4
+/** How close and how far the review camera may zoom, relative to the start. */
+const MIN_ZOOM = 0.15
+const MAX_ZOOM = 3
 
 interface ScenarioReviewControlsProps {
   scene: Scene
@@ -41,10 +42,10 @@ interface ScenarioReviewControlsProps {
 
 /**
  * Scenario review: one representative run at a time, filling the view from
- * a fixed bird's-eye overview. Page through the runs with the arrows, the
- * dots, a scroll gesture over the view, or the ←/→ keys. Every run shares
- * the playback clock, and paging never moves it, so each run is shown at
- * the same moment (shorter runs hold their last frame).
+ * a bird's-eye orbit camera (drag to orbit, scroll to zoom, right-drag to
+ * pan). Page through the runs with the arrows, the dots, or the ←/→ keys.
+ * Every run shares the playback clock, and paging never moves it, so each
+ * run is shown at the same moment (shorter runs hold their last frame).
  */
 export function ScenarioReviewControls({
   scene,
@@ -113,35 +114,6 @@ export function ScenarioReviewControls({
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [canPage, nextRun, previousRun])
 
-  // One page per scroll gesture, so a trackpad fling doesn't skip runs. A
-  // gesture is a run of wheel events less than WHEEL_GESTURE_IDLE_MS apart,
-  // judged by the events' own timestamps so slow frames can't split it. The
-  // listener is non-passive so it can stop a pinch (ctrl+wheel) from zooming
-  // the page and a sideways swipe from navigating back; pinches never page.
-  const paging = useRef({ canPage, nextRun, previousRun })
-  useEffect(() => {
-    paging.current = { canPage, nextRun, previousRun }
-  })
-  const lastWheelAt = useRef(Number.NEGATIVE_INFINITY)
-  const wheelArea = useCallback((el: HTMLDivElement | null) => {
-    if (!el) return
-    const onWheel = (event: globalThis.WheelEvent) => {
-      event.preventDefault()
-      if (event.ctrlKey) return
-      const { canPage: pageable, nextRun: next, previousRun: previous } = paging.current
-      if (!pageable) return
-      const delta = Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX
-      if (Math.abs(delta) < MIN_WHEEL_DELTA) return
-      const gestureInProgress = event.timeStamp - lastWheelAt.current < WHEEL_GESTURE_IDLE_MS
-      lastWheelAt.current = event.timeStamp
-      if (gestureInProgress) return
-      if (delta > 0) next()
-      else previous()
-    }
-    el.addEventListener('wheel', onWheel, { passive: false })
-    return () => el.removeEventListener('wheel', onWheel)
-  }, [])
-
   if (status === 'loading') {
     return <ReviewMessage title="Running scenarios…">Preparing four training views.</ReviewMessage>
   }
@@ -169,7 +141,7 @@ export function ScenarioReviewControls({
 
   return (
     <>
-      <div ref={wheelArea} className="absolute inset-0 flex overscroll-none bg-canvas p-2 pt-12 pb-28">
+      <div className="absolute inset-0 flex overscroll-none bg-canvas p-2 pt-12 pb-28">
         <ReviewPanel
           run={runs[position]}
           position={position}
@@ -249,13 +221,9 @@ function ReviewPanel({
     () => agentsAtTime(run.results.frames, clockSeconds),
     [run.results.frames, clockSeconds],
   )
-  const counts = occupantCounts(agents)
-  const total = counts.inside + counts.exited
-  const burningCells = frame?.surface_fire.filter((node) => node.state === 'burning').length ?? 0
-  const activity = crewStatus(agents)
   const timeline = useMemo(() => ({ frame, agents }), [frame, agents])
   const burning = useMemo(() => burningObjectIds(frame), [frame])
-  const stats = `Escaped ${counts.exited}/${total} · Fire ${burningCells} cells${activity ? ` · ${activity}` : ''}`
+  const { orbit, resetOrbit, controls } = useReviewOrbit(geometry)
 
   return (
     <section
@@ -265,14 +233,14 @@ function ReviewPanel({
     >
       {/* One canvas for every run: paging swaps the data, not the WebGL context. */}
       <div className={`absolute inset-0 ${textured ? 'invisible' : ''}`}>
-        <Canvas frameloop="demand" dpr={[1, 2]} camera={{ fov: 50 }}>
+        <Canvas frameloop="demand" dpr={[1, 2]} camera={{ fov: ORBIT_FOV_DEGREES }}>
           <hemisphereLight args={['#ffffff', '#d5dbe1', 1.6]} />
           <directionalLight position={[8, 14, 6]} intensity={1.4} />
           <SceneModel geometry={geometry} meshUrl={meshUrl} />
           <Furniture floor={floor} assets={scene.assets} burning={burning} />
           <SurfaceFireView floor={floor} frame={frame} />
           <SimulationAgentsView floor={floor} simulationAgents={agents} />
-          <ReviewCamera geometry={geometry} />
+          <ReviewCamera orbit={orbit} />
         </Canvas>
       </div>
       {texturedOpened && (
@@ -284,25 +252,131 @@ function ReviewPanel({
             version="defurnished"
             timeline={timeline}
             birdsEye
+            orbit={orbit}
           />
         </div>
       )}
 
-      {/* One header row, so the stats and the pager wrap instead of overlapping. */}
-      <div className="pointer-events-none absolute inset-x-2 top-2 z-10 flex flex-wrap items-start justify-between gap-2">
-        <div
-          title={stats}
-          className="min-w-0 max-w-full rounded-md bg-ink/85 px-2.5 py-1.5 text-xs text-white shadow-sm"
-        >
-          <div className="truncate">{stats}</div>
-        </div>
-        <div className="pointer-events-auto ml-auto flex shrink-0 items-start gap-2">
+      {/* Camera input for both views: drag orbits, right-drag pans, scroll zooms. */}
+      <div
+        ref={controls}
+        aria-label="Scenario view. Drag to orbit, right-drag to pan, scroll to zoom."
+        className="absolute inset-0 cursor-grab touch-none active:cursor-grabbing"
+      />
+
+      <div className="pointer-events-none absolute inset-x-2 top-2 z-10 flex flex-wrap items-start justify-end gap-2">
+        <div className="pointer-events-auto flex shrink-0 flex-wrap items-start justify-end gap-2">
+          <button
+            type="button"
+            onClick={resetOrbit}
+            className="rounded-md border border-hairline bg-white px-2.5 py-1 text-xs font-medium text-ink-secondary shadow-sm hover:text-ink"
+          >
+            Reset view
+          </button>
           {viewSwitch}
           {pager}
         </div>
       </div>
     </section>
   )
+}
+
+/**
+ * The review's orbit camera, shared by the 3D and textured views so switching
+ * keeps the same view. It starts framed on the whole floor (as the 3D
+ * overview always was) once the panel has a size, survives paging and
+ * resizing, and returns there on `resetOrbit`. `controls` is the ref for the
+ * element that takes the pointer: left-drag orbits, right-drag (or
+ * Shift-drag) pans, the wheel or a pinch zooms.
+ */
+function useReviewOrbit(geometry: FloorGeometry) {
+  const [orbit, setOrbit] = useState<Orbit | null>(null)
+  const home = useRef<Orbit | null>(null)
+  const size = useRef({ width: 0, height: 0 })
+
+  const homeFor = useCallback(
+    (width: number, height: number) =>
+      orbitHome(geometry.bounds, geometry.floorZ, ORBIT_FOV_DEGREES, width / height),
+    [geometry],
+  )
+  const resetOrbit = useCallback(() => {
+    const { width, height } = size.current
+    if (width === 0 || height === 0) return
+    home.current = homeFor(width, height)
+    setOrbit(home.current)
+  }, [homeFor])
+  // A new floor starts over from its own home view.
+  useEffect(() => {
+    resetOrbit()
+  }, [resetOrbit])
+
+  const controls = useCallback(
+    (el: HTMLDivElement | null) => {
+      if (!el) return
+      const observer = new ResizeObserver(([entry]) => {
+        const { width, height } = entry.contentRect
+        const first = size.current.width === 0 || size.current.height === 0
+        size.current = { width, height }
+        if (first && width > 0 && height > 0) resetOrbit()
+      })
+      observer.observe(el)
+
+      let drag: { mode: 'rotate' | 'pan'; x: number; y: number; pointerId: number } | null = null
+      const onPointerDown = (event: PointerEvent) => {
+        if (event.button !== 0 && event.button !== 2) return
+        const pan = event.button === 2 || event.shiftKey || event.ctrlKey || event.metaKey
+        drag = { mode: pan ? 'pan' : 'rotate', x: event.clientX, y: event.clientY, pointerId: event.pointerId }
+        el.setPointerCapture(event.pointerId)
+        event.preventDefault()
+      }
+      const onPointerMove = (event: PointerEvent) => {
+        if (!drag || event.pointerId !== drag.pointerId) return
+        const dx = event.clientX - drag.x
+        const dy = event.clientY - drag.y
+        drag.x = event.clientX
+        drag.y = event.clientY
+        const { mode } = drag
+        setOrbit((current) =>
+          current &&
+          (mode === 'rotate'
+            ? rotateOrbit(current, dx, dy)
+            : panOrbit(current, dx, dy, ORBIT_FOV_DEGREES, size.current.height || 1)),
+        )
+      }
+      const onPointerUp = (event: PointerEvent) => {
+        if (!drag || event.pointerId !== drag.pointerId) return
+        if (el.hasPointerCapture(event.pointerId)) el.releasePointerCapture(event.pointerId)
+        drag = null
+      }
+      // Non-passive, so scrolling and pinching zoom the view, not the page.
+      const onWheel = (event: WheelEvent) => {
+        event.preventDefault()
+        const { y } = wheelPixels(event)
+        const base = home.current?.distance ?? 1
+        setOrbit((current) => current && zoomOrbit(current, y, base * MIN_ZOOM, base * MAX_ZOOM))
+      }
+      const onContextMenu = (event: MouseEvent) => event.preventDefault()
+
+      el.addEventListener('pointerdown', onPointerDown)
+      el.addEventListener('pointermove', onPointerMove)
+      el.addEventListener('pointerup', onPointerUp)
+      el.addEventListener('pointercancel', onPointerUp)
+      el.addEventListener('wheel', onWheel, { passive: false })
+      el.addEventListener('contextmenu', onContextMenu)
+      return () => {
+        observer.disconnect()
+        el.removeEventListener('pointerdown', onPointerDown)
+        el.removeEventListener('pointermove', onPointerMove)
+        el.removeEventListener('pointerup', onPointerUp)
+        el.removeEventListener('pointercancel', onPointerUp)
+        el.removeEventListener('wheel', onWheel)
+        el.removeEventListener('contextmenu', onContextMenu)
+      }
+    },
+    [resetOrbit],
+  )
+
+  return { orbit, resetOrbit, controls }
 }
 
 /** Stable empty list: the review's textured view draws no scanned-furniture models. */
