@@ -74,7 +74,7 @@ export function ScenarioReviewControls({
       <ReviewMessage title="No scenarios yet">
         Gemini will choose varied fire origins and occupant locations, then prepare four synchronized
         simulations for review.
-        <RunButton startBatch={startBatch} label="Run simulations" />
+        <RunButton startBatch={startBatch} label="Run multiple simulations" />
       </ReviewMessage>
     )
   }
@@ -98,6 +98,21 @@ export function ScenarioReviewControls({
             geometry={geometry}
             meshUrl={meshUrl}
             expanded
+            controls={
+              <div className="flex gap-2 text-xs">
+                <ControlButton label="Return to four scenarios" onClick={() => setExpandedPosition(null)}>
+                  ← Four scenarios
+                </ControlButton>
+                <div className="flex rounded-md border border-hairline bg-white p-0.5 text-xs font-medium shadow-sm">
+                  <ModeButton active={cameraMode === 'follow'} onClick={() => setCameraMode('follow')}>
+                    Follow firefighter
+                  </ModeButton>
+                  <ModeButton active={cameraMode === 'overview'} onClick={() => setCameraMode('overview')}>
+                    Overview
+                  </ModeButton>
+                </div>
+              </div>
+            }
           />
         ) : (
           <div className="grid min-h-0 grid-cols-2 grid-rows-2 gap-2">
@@ -121,22 +136,6 @@ export function ScenarioReviewControls({
           </div>
         )}
       </div>
-
-      {expandedRun && (
-        <div className="absolute top-14 left-3 z-30 flex gap-2">
-          <ControlButton label="Return to four scenarios" onClick={() => setExpandedPosition(null)}>
-            ← Four scenarios
-          </ControlButton>
-          <div className="flex rounded-md border border-hairline bg-white p-0.5 text-xs font-medium shadow-sm">
-            <ModeButton active={cameraMode === 'follow'} onClick={() => setCameraMode('follow')}>
-              Follow firefighter
-            </ModeButton>
-            <ModeButton active={cameraMode === 'overview'} onClick={() => setCameraMode('overview')}>
-              Overview
-            </ModeButton>
-          </div>
-        </div>
-      )}
 
       <GlobalPlaybackControls
         status={status}
@@ -165,6 +164,7 @@ function ReviewPanel({
   meshUrl,
   expanded = false,
   onExpand,
+  controls,
 }: {
   run: SimulateFireResponse
   position: number
@@ -176,6 +176,8 @@ function ReviewPanel({
   meshUrl?: string
   expanded?: boolean
   onExpand?: () => void
+  /** Buttons for the right of the header, e.g. the expanded view's camera modes. */
+  controls?: ReactNode
 }) {
   const frame = useMemo(
     () => frameAtTime(run.results.frames, clockSeconds),
@@ -189,6 +191,7 @@ function ReviewPanel({
   const total = counts.inside + counts.exited
   const burning = frame?.surface_fire.filter((node) => node.state === 'burning').length ?? 0
   const activity = crewStatus(agents)
+  const stats = `Escaped ${counts.exited}/${total} · Fire ${burning} cells${activity ? ` · ${activity}` : ''}`
 
   return (
     <section
@@ -205,21 +208,28 @@ function ReviewPanel({
         <ReviewCamera mode={cameraMode} geometry={geometry} agents={agents} />
       </Canvas>
 
-      <div className="pointer-events-none absolute top-2 left-2 rounded-md bg-ink/85 px-2.5 py-1.5 text-xs text-white shadow-sm">
-        <div className="font-semibold">Scenario {position + 1}</div>
-        <div className="mt-0.5 text-white/80">
-          Escaped {counts.exited}/{total} · Fire {burning} cells{activity ? ` · ${activity}` : ''}
+      {/* One header row, so the badge and the buttons wrap instead of overlapping. */}
+      <div className="pointer-events-none absolute inset-x-2 top-2 z-10 flex flex-wrap items-start justify-between gap-2">
+        <div
+          title={stats}
+          className="min-w-0 max-w-full rounded-md bg-ink/85 px-2.5 py-1.5 text-xs text-white shadow-sm"
+        >
+          <div className="font-semibold">Scenario {position + 1}</div>
+          <div className="mt-0.5 truncate text-white/80">{stats}</div>
+        </div>
+        <div className="pointer-events-auto ml-auto flex shrink-0 flex-wrap items-start justify-end gap-2">
+          {controls}
+          {!expanded && onExpand && (
+            <button
+              type="button"
+              onClick={onExpand}
+              className="rounded-md border border-white/30 bg-ink/85 px-2.5 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-ink"
+            >
+              Follow firefighter ↗
+            </button>
+          )}
         </div>
       </div>
-      {!expanded && onExpand && (
-        <button
-          type="button"
-          onClick={onExpand}
-          className="absolute top-2 right-2 rounded-md border border-white/30 bg-ink/85 px-2.5 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-ink"
-        >
-          Follow firefighter ↗
-        </button>
-      )}
     </section>
   )
 }

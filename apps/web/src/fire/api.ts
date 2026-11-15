@@ -9,8 +9,9 @@ import {
   type SpawnOccupantsResponse,
 } from './types'
 
-export const DEFAULT_OCCUPANT_COUNT = 50
-export const OCCUPANT_COUNTS = [10, 50, 100, 200] as const
+export const DEFAULT_OCCUPANT_COUNT = 10
+export const MIN_OCCUPANT_COUNT = 1
+export const MAX_OCCUPANT_COUNT = 30
 /** Crowded by default, so a run shows people queuing at doors. */
 export const DEFAULT_OCCUPANT_LAYOUT: OccupantLayout = 'crowded'
 export const DEFAULT_BATCH_SIMULATION_COUNT = 10
@@ -19,6 +20,11 @@ export const DEFAULT_TOP_K = 4
 export interface ScenarioOptions {
   occupantCount: number
   layout: OccupantLayout
+}
+
+/** Rounds `value` to a whole number of occupants within the allowed range. */
+export function clampOccupantCount(value: number): number {
+  return Math.min(MAX_OCCUPANT_COUNT, Math.max(MIN_OCCUPANT_COUNT, Math.round(value)))
 }
 
 /** One firefighter who arrives 10 s after ignition at the first exterior exit. */

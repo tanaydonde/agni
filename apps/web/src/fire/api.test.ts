@@ -3,6 +3,7 @@ import {
   DEFAULT_BATCH_SIMULATION_COUNT,
   DEFAULT_CREW,
   DEFAULT_TOP_K,
+  clampOccupantCount,
   describeFireError,
   runFireSimulation,
   runScenarioBatch,
@@ -98,12 +99,12 @@ describe('runFireSimulation', () => {
     )
     vi.stubGlobal('fetch', fetch)
 
-    await runFireSimulation('sofa-1', { occupantCount: 200, layout: 'spread' })
+    await runFireSimulation('sofa-1', { occupantCount: 20, layout: 'spread' })
 
     expect(fetch).toHaveBeenCalledWith('/api/agents/spawn_occupants', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ count: 200, layout: 'spread' }),
+      body: JSON.stringify({ count: 20, layout: 'spread' }),
     })
   })
 
@@ -123,7 +124,7 @@ describe('runFireSimulation', () => {
     expect(fetch).toHaveBeenCalledWith('/api/agents/spawn_occupants', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ count: 50, layout: 'crowded' }),
+      body: JSON.stringify({ count: 10, layout: 'crowded' }),
     })
     expect(fetch).toHaveBeenCalledWith('/api/fire/simulate/hybrid', {
       method: 'POST',
@@ -171,14 +172,14 @@ describe('runScenarioBatch', () => {
     )
     vi.stubGlobal('fetch', fetch)
 
-    await runScenarioBatch({ occupantCount: 50, layout: 'crowded' })
+    await runScenarioBatch({ occupantCount: 20, layout: 'crowded' })
 
     expect(fetch).toHaveBeenCalledWith('/api/agents/generate_fire_scenarios', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         count: DEFAULT_BATCH_SIMULATION_COUNT,
-        occupant_count: 50,
+        occupant_count: 20,
       }),
     })
 
@@ -198,5 +199,15 @@ describe('runScenarioBatch', () => {
       crews: [DEFAULT_CREW],
       duration_seconds: 360,
     })
+  })
+})
+
+describe('clampOccupantCount', () => {
+  it('rounds to a whole number within 1–30', () => {
+    expect(clampOccupantCount(0)).toBe(1)
+    expect(clampOccupantCount(-5)).toBe(1)
+    expect(clampOccupantCount(31)).toBe(30)
+    expect(clampOccupantCount(7.6)).toBe(8)
+    expect(clampOccupantCount(10)).toBe(10)
   })
 })

@@ -1,4 +1,10 @@
-import { OCCUPANT_COUNTS, type ScenarioOptions } from '../fire/api'
+import { useState, type KeyboardEvent } from 'react'
+import {
+  MAX_OCCUPANT_COUNT,
+  MIN_OCCUPANT_COUNT,
+  clampOccupantCount,
+  type ScenarioOptions,
+} from '../fire/api'
 
 interface ActionBarProps {
   canRunSimulation: boolean
@@ -39,20 +45,10 @@ export function ActionBar({
         </p>
       )}
       <div className="flex items-center gap-3 text-xs text-ink-secondary">
-        <label className="flex items-center gap-1.5">
-          Occupants
-          <select
-            value={scenario.occupantCount}
-            onChange={(event) => onScenarioChange({ occupantCount: Number(event.target.value) })}
-            className="rounded border border-control-border bg-white px-1.5 py-0.5 text-ink"
-          >
-            {OCCUPANT_COUNTS.map((count) => (
-              <option key={count} value={count}>
-                {count}
-              </option>
-            ))}
-          </select>
-        </label>
+        <OccupantCountInput
+          value={scenario.occupantCount}
+          onChange={(occupantCount) => onScenarioChange({ occupantCount })}
+        />
         <label
           className="flex items-center gap-1.5"
           title="Pack people into the largest rooms so they queue at the doors. Off: Gemini spreads them out."
@@ -68,5 +64,44 @@ export function ActionBar({
         </label>
       </div>
     </div>
+  )
+}
+
+/**
+ * A number box for how many occupants to spawn. Typing edits a local draft
+ * (so the box can be cleared and retyped); Enter or leaving the box commits
+ * it, clamped to the allowed range, and anything unparseable reverts.
+ */
+function OccupantCountInput({ value, onChange }: { value: number; onChange: (count: number) => void }) {
+  const [draft, setDraft] = useState<string | null>(null)
+
+  const commit = () => {
+    if (draft === null) return
+    const parsed = Number.parseFloat(draft)
+    if (Number.isFinite(parsed)) onChange(clampOccupantCount(parsed))
+    setDraft(null)
+  }
+
+  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter') commit()
+    else if (event.key === 'Escape') setDraft(null)
+  }
+
+  return (
+    <label className="flex items-center gap-1.5" title={`${MIN_OCCUPANT_COUNT}–${MAX_OCCUPANT_COUNT} occupants`}>
+      Occupants
+      <input
+        type="number"
+        inputMode="numeric"
+        min={MIN_OCCUPANT_COUNT}
+        max={MAX_OCCUPANT_COUNT}
+        step={1}
+        value={draft ?? String(value)}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={onKeyDown}
+        className="w-14 rounded border border-control-border bg-white px-1.5 py-0.5 text-ink"
+      />
+    </label>
   )
 }
