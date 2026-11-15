@@ -25,8 +25,11 @@ the preplan agent's tool surface (`propose_findings`, `create_scenario`,
 | `validate_layout` | Working | `World::validate_layout()` |
 | `get_property` | Working | `GET /api/property`: the scan's CoStar record (`tflop_costar::PropertyRecord`) and derived `FireProfile`; 404 `no_property_record` without one |
 | `spawn_occupants` | Working | Gemini proposes exactly N occupants; `Simulation::spawn_occupants` validates them and retries up to three attempts |
+| `generate_fire_scenarios` | Working | Gemini chooses N fire origins and occupied rooms; Rust resolves and validates exact occupant positions |
 
-`POST /api/agents/spawn_occupants` takes `{ "count": N }`. Rust first derives a
+`POST /api/agents/spawn_occupants` takes `{ "count": N }`. `count` is a target:
+when the modeled floor has fewer collision-free positions, Rust uses the
+verified safe capacity instead of rejecting the run. Rust first derives a
 catalog of collision-free, mutually separated spawn sites from the simulation
 grid. Gemini must call the `spawn_occupants` function with the complete batch
 and select only those site IDs; Rust resolves the IDs back to exact world
@@ -34,6 +37,14 @@ coordinates and validates the result. A rejected batch is returned to Gemini
 as field-level feedback; after three failed proposals the endpoint returns
 `occupant_generation_failed`. Set `GEMINI_API_KEY` and optionally
 `GEMINI_MODEL` in `.env`.
+
+`POST /api/agents/generate_fire_scenarios` takes
+`{ "count": N, "occupant_count": M }`. Gemini chooses only from verified
+furniture-object and room IDs. Rust converts each room-level choice into M
+collision-free occupant spawns, rejects invented IDs and duplicate scenarios,
+and retries rejected tool calls up to three times. Scenario Review feeds the
+response into `/api/fire/simulate_n` and requests only compact top-K playback
+timelines; no manually selected fire origin is required.
 
 ## Example requests
 

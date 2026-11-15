@@ -21,6 +21,60 @@ POST /api/fire/simulate/hybrid
 → { "revision": 4, "excluded_object_ids": [], "results": SimulationResults }
 ```
 
+Several complete single-run requests can be executed as one bounded parallel
+batch. The surface-only route is `POST /api/fire/simulate_n`; use
+`POST /api/fire/simulate_n/hybrid` for the same CFAST-backed results as above.
+
+```json
+{
+  "top_k": 2,
+  "representatives_only": true,
+  "response_interval_seconds": 2,
+  "simulations": [
+    { "object_id": "sofa-1", "occupants": [], "crews": [], "seed": 1 },
+    { "object_id": "desk-1", "occupants": [], "crews": [], "seed": 2 }
+  ]
+}
+```
+
+Scenario Review uses the surface route with `representatives_only: true`.
+All N full-resolution runs still participate in ranking, but the response
+contains only the selected K timelines. `response_interval_seconds` samples
+only those returned playback copies after ranking; it does not change the
+simulation or selection calculations. Review responses also omit the large
+`frequencies` and `assignments` arrays that the UI does not display.
+
+The current review requests ten 360-second candidates and K=4. It displays
+the four returned timelines in synchronized overview panels with one global
+clock and 1x/2x/4x/8x/16x controls. A panel can be expanded into a third-person
+camera that follows the lead firefighter; returning to the grid restores the
+four-way comparison. Runs that settle before 360 seconds hold their final
+frame while the other panels continue.
+
+The batch accepts 1–32 distinct inputs. By default its `runs` array stays in
+request order even though the server executes up to four runs concurrently. A
+successful item has `{ "status": "completed", "index", "simulation" }`,
+where `simulation` is the ordinary response above. A failed item instead has
+`{ "status": "failed", "index", "http_status", "error" }`; one invalid run
+does not discard the successful runs. Every run uses the same scene snapshot
+and the response includes that shared `revision`.
+
+When `top_k` is present, the response also includes `fire_ensemble`:
+
+- `frequencies` is the empirical `simulation_count / completed_simulation_count`
+  for every burning 0.25 m cell in every one-second time bin;
+- `representatives` contains up to `top_k` diverse run indexes plus the count
+  and fraction of completed runs assigned to each;
+- `assignments` maps every successful run index to its nearest selected run;
+- `config.time_tolerance_bins` is used only when comparing runs. Frequency
+  values stay on the original timeline.
+
+Representative selection uses greedy time-aware Jaccard medoids: the first
+run minimizes total distance to the ensemble, and each later run is the one
+that most reduces distance to the nearest already-selected representative.
+Only `burning` cells participate. The indexes always refer to the original
+`runs` array, including when some batch entries failed.
+
 It ignites the object, advances the surface fire, occupants, and firefighter
 crews together frame by frame on a snapshot of the current scene (crews' water
 changes how the fire spreads), feeds the resulting room heat-release curves

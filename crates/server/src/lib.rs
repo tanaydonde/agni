@@ -155,6 +155,8 @@ pub fn load_scene_with_detection(
 /// | `/api/world/validate_layout` | POST | `validate_layout` |
 /// | `/api/fire/simulate` | POST | none; runs the surface-fire simulation on a scene snapshot |
 /// | `/api/fire/simulate/hybrid` | POST | none; runs surface fire and CFAST, then merges both timelines |
+/// | `/api/fire/simulate_n` | POST | runs a bounded batch of ordinary surface-fire simulations |
+/// | `/api/fire/simulate_n/hybrid` | POST | runs a bounded batch of hybrid simulations |
 /// | `/api/property` | GET | none; the scan's CoStar record and derived scenario assumptions (404 without one) |
 ///
 /// Requests are serialized through a mutex, so edits apply one at a time.
@@ -184,9 +186,15 @@ pub fn router_with_property(world: World, property: Option<PropertyBrief>) -> Ro
         .route("/api/world/validate_layout", post(validate_layout))
         .route("/api/fire/simulate", post(fire::simulate))
         .route("/api/fire/simulate/hybrid", post(fire::simulate_hybrid))
+        .route("/api/fire/simulate_n", post(fire::simulate_n))
+        .route("/api/fire/simulate_n/hybrid", post(fire::simulate_n_hybrid))
         .route(
             "/api/agents/spawn_occupants",
             post(occupant_agent::spawn_occupants),
+        )
+        .route(
+            "/api/agents/generate_fire_scenarios",
+            post(occupant_agent::generate_scenarios),
         )
         .route("/api/property", get(get_property))
         .layer(Extension(property))

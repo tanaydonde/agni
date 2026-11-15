@@ -17,10 +17,11 @@ use tflop_cfast::{
     resolve_cfast_bin,
 };
 use tflop_simulation_core::{
-    AlarmConfig, CrewSpawn, Evacuation, FireMaterialCatalog, Firefighting, FirefightingConfig,
-    OccupantSpawn, Rehearsal, RehearsalError, RehearsalFrame, SIMULATION_RESULTS_SCHEMA_VERSION,
-    SimulationConfig, SimulationEngine, SimulationResults, SurfaceFireConfig, SurfaceFireError,
-    SurfaceFireWorld, choose_injured,
+    AlarmConfig, CombustionState, CrewSpawn, Evacuation, FireEnsembleConfig, FireFrequencyCell,
+    FireMaterialCatalog, FireRepresentative, FireRepresentativeAssignment, Firefighting,
+    FirefightingConfig, OccupantSpawn, Rehearsal, RehearsalError, RehearsalFrame,
+    SIMULATION_RESULTS_SCHEMA_VERSION, SimulationConfig, SimulationEngine, SimulationResults,
+    SurfaceFireConfig, SurfaceFireError, SurfaceFireWorld, analyze_fire_ensemble, choose_injured,
 };
 // The same types `GET /api/property` suggests values in.
 use tflop_costar::{AlarmTimings, FloorMaterial};
@@ -34,8 +35,14 @@ const MAX_DURATION_SECONDS: f64 = 600.0;
 const DEFAULT_STEP_SECONDS: f64 = 0.5;
 const MIN_STEP_SECONDS: f64 = 0.1;
 const CFAST_OUTPUT_INTERVAL_SECONDS: f64 = 5.0;
+/// Keeps one request from monopolizing the server or producing an unbounded
+/// response. A later job API can raise this without holding an HTTP request.
+const MAX_SIMULATIONS_PER_BATCH: usize = 32;
+/// Surface fire and CFAST are CPU-heavy. More workers than this usually adds
+/// contention rather than throughput, even on machines with many cores.
+const MAX_CONCURRENT_SIMULATIONS: usize = 4;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SimulateFireRequest {
     object_id: String,
     #[serde(default)]
@@ -80,7 +87,7 @@ fn material_catalog(floor: Option<FloorMaterial>) -> FireMaterialCatalog {
     catalog
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum AlarmMode {
     /// Someone near a noticeable fire raises the alarm; it spreads from them.
@@ -97,6 +104,64 @@ struct SimulateFireResponse {
     /// Objects left out of the simulation because they don't stand in a room.
     excluded_object_ids: Vec<String>,
     results: SimulationResults,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct SimulateNRequest {
+    /// Complete, distinct inputs for the existing single-run simulation.
+    simulations: Vec<SimulateFireRequest>,
+    /// When present, analyze successful runs and select this many diverse
+    /// representative fire timelines.
+    #[serde(default)]
+    top_k: Option<usize>,
+    /// Keep only the selected representative timelines in the response. The
+    /// server still runs and ranks the complete batch; this only avoids
+    /// sending unused timelines and analysis internals to the browser.
+    #[serde(default)]
+    representatives_only: bool,
+    /// Optional spacing between frames returned for representative playback.
+    /// Simulation and ranking still use the original full-resolution frames.
+    #[serde(default)]
+    response_interval_seconds: Option<f64>,
+}
+
+#[derive(Debug, Serialize)]
+struct SimulateNResponse {
+    /// Every run uses this snapshot of the world.
+    revision: u64,
+    /// Always ordered like the request, even though runs execute concurrently.
+    runs: Vec<SimulateNRun>,
+    /// Present when the request supplied `top_k` and at least one run
+    /// completed. Representative indexes refer to the original input batch
+    /// and match each returned run's `index` field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fire_ensemble: Option<BatchFireEnsembleAnalysis>,
+}
+
+#[derive(Debug, Serialize)]
+struct BatchFireEnsembleAnalysis {
+    requested_top_k: usize,
+    completed_simulation_count: usize,
+    config: FireEnsembleConfig,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    frequencies: Vec<FireFrequencyCell>,
+    representatives: Vec<FireRepresentative>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    assignments: Vec<FireRepresentativeAssignment>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum SimulateNRun {
+    Completed {
+        index: usize,
+        simulation: SimulateFireResponse,
+    },
+    Failed {
+        index: usize,
+        http_status: u16,
+        error: serde_json::Value,
+    },
 }
 
 pub(crate) async fn simulate(
@@ -134,17 +199,7 @@ pub(crate) async fn simulate_hybrid(
         Err(rejection) => return rejection.into_response(),
     };
     let Some(cfast_path) = resolve_cfast_bin() else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({
-                "code": "cfast_not_configured",
-                "message": "CFAST wasn't built because gfortran was missing when the server \
-                            was compiled. Install it (macOS: `brew install gcc`, Debian/Ubuntu: \
-                            `sudo apt install gfortran`), then `touch crates/cfast/build.rs` and \
-                            restart the server, or set CFAST_BIN to a CFAST 7.7.7 executable"
-            })),
-        )
-            .into_response();
+        return cfast_not_configured();
     };
 
     let snapshot = lock(&world).get_scene();
@@ -155,12 +210,354 @@ pub(crate) async fn simulate_hybrid(
     match result {
         Ok(Ok(response)) => Json(response).into_response(),
         Ok(Err((status, body))) => (status, Json(body)).into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "code": "internal", "message": error.to_string() })),
-        )
-            .into_response(),
+        Err(error) => internal_error(error.to_string()),
     }
+}
+
+/// Runs several ordinary surface-fire simulations against one scene snapshot.
+/// A failed run is returned beside the successful ones instead of failing the
+/// whole batch.
+pub(crate) async fn simulate_n(
+    State(world): State<SharedWorld>,
+    body: Result<Json<SimulateNRequest>, JsonRejection>,
+) -> Response {
+    let request = match decode(body) {
+        Ok(request) => request,
+        Err(rejection) => return rejection.into_response(),
+    };
+    if let Some(response) = validate_simulate_n(&request) {
+        return response;
+    }
+
+    let snapshot = lock(&world).get_scene();
+    let revision = snapshot.revision;
+    let top_k = request.top_k;
+    let representatives_only = request.representatives_only;
+    let response_interval_seconds = request.response_interval_seconds;
+    let simulations = request.simulations;
+    let result = tokio::task::spawn_blocking(move || {
+        run_simulations_bounded(snapshot.scene, revision, simulations, run)
+    })
+    .await;
+    match result {
+        Ok(runs) => batch_response(
+            revision,
+            runs,
+            top_k,
+            representatives_only,
+            response_interval_seconds,
+        ),
+        Err(error) => internal_error(error.to_string()),
+    }
+}
+
+/// Hybrid counterpart to [`simulate_n`]. Each worker gets an independent
+/// CFAST temporary directory through `CfastRunner`.
+pub(crate) async fn simulate_n_hybrid(
+    State(world): State<SharedWorld>,
+    body: Result<Json<SimulateNRequest>, JsonRejection>,
+) -> Response {
+    let request = match decode(body) {
+        Ok(request) => request,
+        Err(rejection) => return rejection.into_response(),
+    };
+    if let Some(response) = validate_simulate_n(&request) {
+        return response;
+    }
+    let Some(cfast_path) = resolve_cfast_bin() else {
+        return cfast_not_configured();
+    };
+
+    let snapshot = lock(&world).get_scene();
+    let revision = snapshot.revision;
+    let top_k = request.top_k;
+    let representatives_only = request.representatives_only;
+    let response_interval_seconds = request.response_interval_seconds;
+    let simulations = request.simulations;
+    let result = tokio::task::spawn_blocking(move || {
+        run_simulations_bounded(
+            snapshot.scene,
+            revision,
+            simulations,
+            |scene, revision, request| run_hybrid(scene, revision, request, &cfast_path),
+        )
+    })
+    .await;
+    match result {
+        Ok(runs) => batch_response(
+            revision,
+            runs,
+            top_k,
+            representatives_only,
+            response_interval_seconds,
+        ),
+        Err(error) => internal_error(error.to_string()),
+    }
+}
+
+fn validate_simulate_n(request: &SimulateNRequest) -> Option<Response> {
+    let count = request.simulations.len();
+    if count == 0 || count > MAX_SIMULATIONS_PER_BATCH {
+        return Some(
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "code": "invalid_simulation_count",
+                    "message": format!(
+                        "simulations must contain between 1 and {MAX_SIMULATIONS_PER_BATCH} runs"
+                    ),
+                    "count": count,
+                })),
+            )
+                .into_response(),
+        );
+    }
+    if request
+        .top_k
+        .is_some_and(|top_k| top_k == 0 || top_k > count)
+    {
+        return Some(
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "code": "invalid_top_k",
+                    "message": "top_k must be between 1 and the number of simulations",
+                    "top_k": request.top_k,
+                    "simulation_count": count,
+                })),
+            )
+                .into_response(),
+        );
+    }
+    if request
+        .response_interval_seconds
+        .is_some_and(|interval| !interval.is_finite() || interval < DEFAULT_STEP_SECONDS)
+    {
+        return Some(
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "code": "invalid_response_interval",
+                    "message": format!(
+                        "response_interval_seconds must be at least {DEFAULT_STEP_SECONDS}"
+                    ),
+                })),
+            )
+                .into_response(),
+        );
+    }
+
+    let mut seen = std::collections::HashMap::new();
+    for (index, simulation) in request.simulations.iter().enumerate() {
+        // Struct serialization is stable here and captures every simulation
+        // input, including the seed and complete occupant/crew layouts.
+        let key = serde_json::to_string(simulation).expect("simulation request serializes");
+        if let Some(first_index) = seen.insert(key, index) {
+            return Some(
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "code": "duplicate_simulation",
+                        "message": "every simulation in the batch must have distinct inputs",
+                        "first_index": first_index,
+                        "duplicate_index": index,
+                    })),
+                )
+                    .into_response(),
+            );
+        }
+    }
+    None
+}
+
+fn batch_response(
+    revision: u64,
+    mut runs: Vec<SimulateNRun>,
+    top_k: Option<usize>,
+    representatives_only: bool,
+    response_interval_seconds: Option<f64>,
+) -> Response {
+    let mut fire_ensemble = top_k.and_then(|top_k| analyze_completed_runs(&runs, top_k));
+    if representatives_only && let Some(ensemble) = &mut fire_ensemble {
+        let selected = ensemble
+            .representatives
+            .iter()
+            .map(|representative| representative.simulation_index)
+            .collect::<std::collections::HashSet<_>>();
+        runs.retain(|run| match run {
+            SimulateNRun::Completed { index, .. } => selected.contains(index),
+            SimulateNRun::Failed { .. } => false,
+        });
+        if let Some(interval_seconds) = response_interval_seconds {
+            for run in &mut runs {
+                if let SimulateNRun::Completed { simulation, .. } = run {
+                    compact_playback_frames(&mut simulation.results, interval_seconds);
+                }
+            }
+        }
+        // The review UI only needs representative indexes and support. These
+        // fields can dwarf the selected timelines and are not rendered.
+        ensemble.frequencies.clear();
+        ensemble.assignments.clear();
+    }
+    Json(SimulateNResponse {
+        revision,
+        runs,
+        fire_ensemble,
+    })
+    .into_response()
+}
+
+/// Shrinks only the serialized playback copy after full-resolution ranking.
+/// The renderer ignores burned-out/extinguished cells, and interpolates agent
+/// movement between returned frames.
+fn compact_playback_frames(results: &mut SimulationResults, interval_seconds: f64) {
+    let frames = std::mem::take(&mut results.frames);
+    let last_index = frames.len().saturating_sub(1);
+    let mut compact = Vec::with_capacity(frames.len());
+    let mut last_kept_time = f64::NEG_INFINITY;
+    for (index, mut frame) in frames.into_iter().enumerate() {
+        let keep = index == 0
+            || index == last_index
+            || frame.time_seconds - last_kept_time + f64::EPSILON >= interval_seconds;
+        if !keep {
+            continue;
+        }
+        frame.surface_fire.retain(|node| {
+            matches!(
+                node.state,
+                CombustionState::Burning | CombustionState::Heating
+            )
+        });
+        last_kept_time = frame.time_seconds;
+        compact.push(frame);
+    }
+    results.frames = compact;
+}
+
+fn analyze_completed_runs(
+    runs: &[SimulateNRun],
+    top_k: usize,
+) -> Option<BatchFireEnsembleAnalysis> {
+    let completed = runs
+        .iter()
+        .filter_map(|run| match run {
+            SimulateNRun::Completed { index, simulation } => Some((*index, &simulation.results)),
+            SimulateNRun::Failed { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    if completed.is_empty() {
+        return None;
+    }
+
+    let completed_results = completed
+        .iter()
+        .map(|(_, results)| *results)
+        .collect::<Vec<_>>();
+    let config = FireEnsembleConfig::default();
+    let mut analysis =
+        analyze_fire_ensemble(&completed_results, top_k.min(completed.len()), config)
+            .expect("completed batch runs share one scene and the default config is valid");
+
+    for representative in &mut analysis.representatives {
+        representative.simulation_index = completed[representative.simulation_index].0;
+    }
+    for assignment in &mut analysis.assignments {
+        assignment.simulation_index = completed[assignment.simulation_index].0;
+        assignment.representative_index = completed[assignment.representative_index].0;
+    }
+
+    Some(BatchFireEnsembleAnalysis {
+        requested_top_k: top_k,
+        completed_simulation_count: completed.len(),
+        config: analysis.config,
+        frequencies: analysis.frequencies,
+        representatives: analysis.representatives,
+        assignments: analysis.assignments,
+    })
+}
+
+/// Executes `run_one` with a bounded number of OS workers and restores input
+/// order in the returned vector. The outer caller already runs this function
+/// on Tokio's blocking pool, keeping all CPU and subprocess work off the async
+/// request threads.
+fn run_simulations_bounded<F>(
+    scene: Scene,
+    revision: u64,
+    simulations: Vec<SimulateFireRequest>,
+    run_one: F,
+) -> Vec<SimulateNRun>
+where
+    F: Fn(Scene, u64, &SimulateFireRequest) -> Result<SimulateFireResponse, Failure> + Sync,
+{
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    let worker_count = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .min(MAX_CONCURRENT_SIMULATIONS)
+        .min(simulations.len());
+    let next = AtomicUsize::new(0);
+    let ordered = Mutex::new(
+        (0..simulations.len())
+            .map(|_| None)
+            .collect::<Vec<Option<SimulateNRun>>>(),
+    );
+
+    std::thread::scope(|scope| {
+        for _ in 0..worker_count {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(request) = simulations.get(index) else {
+                        break;
+                    };
+                    let item = match run_one(scene.clone(), revision, request) {
+                        Ok(simulation) => SimulateNRun::Completed { index, simulation },
+                        Err((status, error)) => SimulateNRun::Failed {
+                            index,
+                            http_status: status.as_u16(),
+                            error,
+                        },
+                    };
+                    ordered
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)[index] = Some(item);
+                }
+            });
+        }
+    });
+
+    ordered
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .into_iter()
+        .map(|item| item.expect("every queued simulation was run"))
+        .collect()
+}
+
+fn internal_error(message: String) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({ "code": "internal", "message": message })),
+    )
+        .into_response()
+}
+
+fn cfast_not_configured() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({
+            "code": "cfast_not_configured",
+            "message": "CFAST wasn't built because gfortran was missing when the server \
+                        was compiled. Install it (macOS: `brew install gcc`, Debian/Ubuntu: \
+                        `sudo apt install gfortran`), then `touch crates/cfast/build.rs` and \
+                        restart the server, or set CFAST_BIN to a CFAST 7.7.7 executable"
+        })),
+    )
+        .into_response()
 }
 
 type Failure = (StatusCode, serde_json::Value);

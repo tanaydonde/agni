@@ -1,6 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_CREW, describeFireError, runFireSimulation } from './api'
-import type { SimulateFireResponse, SpawnOccupantsResponse } from './types'
+import {
+  DEFAULT_BATCH_SIMULATION_COUNT,
+  DEFAULT_CREW,
+  DEFAULT_TOP_K,
+  describeFireError,
+  runFireSimulation,
+  runScenarioBatch,
+} from './api'
+import type {
+  GeneratedFireScenariosResponse,
+  SimulateFireResponse,
+  SimulateNResponse,
+  SpawnOccupantsResponse,
+} from './types'
 
 const agent = {
   id: 'occupant-1',
@@ -48,6 +60,25 @@ const response: SimulateFireResponse = {
   },
 }
 
+const batchResponse: SimulateNResponse = {
+  revision: 3,
+  runs: [{ status: 'completed', index: 0, simulation: response }],
+  fire_ensemble: {
+    requested_top_k: 5,
+    completed_simulation_count: 1,
+    representatives: [{ simulation_index: 0, support_count: 1, support_fraction: 1 }],
+  },
+}
+
+const generatedScenarios: GeneratedFireScenariosResponse = {
+  revision: 3,
+  scenarios: Array.from({ length: DEFAULT_BATCH_SIMULATION_COUNT }, (_, seed) => ({
+    object_id: seed % 2 === 0 ? 'sofa-1' : 'desk-1',
+    occupants: occupants.occupants,
+    seed,
+  })),
+}
+
 afterEach(() => vi.unstubAllGlobals())
 
 describe('DEFAULT_CREW', () => {
@@ -58,7 +89,7 @@ describe('DEFAULT_CREW', () => {
 
 describe('runFireSimulation', () => {
   it('asks for the chosen number and layout of occupants', async () => {
-    const fetch = vi.fn((url: string) =>
+    const fetch = vi.fn((url: string, _init?: RequestInit) =>
       Promise.resolve({
         ok: true,
         status: 200,
@@ -125,5 +156,47 @@ describe('runFireSimulation', () => {
 
     const error = await runFireSimulation('sofa-1').catch((error: unknown) => error)
     expect(describeFireError(error)).toBe('CFAST is not configured on the world server')
+  })
+})
+
+describe('runScenarioBatch', () => {
+  it('sends ten seeded simulations and requests four representatives', async () => {
+    const fetch = vi.fn((url: string, _init?: RequestInit) =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () =>
+          url === '/api/agents/generate_fire_scenarios' ? generatedScenarios : batchResponse,
+      }),
+    )
+    vi.stubGlobal('fetch', fetch)
+
+    await runScenarioBatch({ occupantCount: 50, layout: 'crowded' })
+
+    expect(fetch).toHaveBeenCalledWith('/api/agents/generate_fire_scenarios', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        count: DEFAULT_BATCH_SIMULATION_COUNT,
+        occupant_count: 50,
+      }),
+    })
+
+    const batchCall = fetch.mock.calls.find(([url]) => url === '/api/fire/simulate_n')
+    expect(batchCall).toBeDefined()
+    const payload = JSON.parse(batchCall![1]!.body as string)
+    expect(payload.top_k).toBe(DEFAULT_TOP_K)
+    expect(payload.representatives_only).toBe(true)
+    expect(payload.response_interval_seconds).toBe(2)
+    expect(payload.simulations).toHaveLength(DEFAULT_BATCH_SIMULATION_COUNT)
+    expect(payload.simulations.map((simulation: { seed: number }) => simulation.seed)).toEqual(
+      Array.from({ length: DEFAULT_BATCH_SIMULATION_COUNT }, (_, index) => index),
+    )
+    expect(payload.simulations[0]).toMatchObject({
+      object_id: 'sofa-1',
+      occupants: occupants.occupants,
+      crews: [DEFAULT_CREW],
+      duration_seconds: 360,
+    })
   })
 })

@@ -2,8 +2,8 @@ import { OCCUPANT_COUNTS, type ScenarioOptions } from '../fire/api'
 
 interface ActionBarProps {
   canRunSimulation: boolean
+  hasSelectedOrigin: boolean
   onRunSimulation?: () => void
-  onOptimize?: () => void
   /** Who will be in the building when the simulation runs. */
   scenario: ScenarioOptions
   onScenarioChange: (scenario: Partial<ScenarioOptions>) => void
@@ -11,8 +11,8 @@ interface ActionBarProps {
 
 export function ActionBar({
   canRunSimulation,
+  hasSelectedOrigin,
   onRunSimulation,
-  onOptimize,
   scenario,
   onScenarioChange,
 }: ActionBarProps) {
@@ -30,16 +30,14 @@ export function ActionBar({
           }
           className="h-10 flex-1 rounded-md border border-control-border bg-white font-medium text-ink hover:bg-canvas disabled:cursor-not-allowed disabled:text-placeholder disabled:hover:bg-white"
         >
-          Run simulation
-        </button>
-        <button
-          type="button"
-          onClick={onOptimize}
-          className="h-10 flex-1 rounded-md border border-accent bg-accent font-medium text-white hover:border-accent-strong hover:bg-accent-strong"
-        >
-          Optimize
+          {hasSelectedOrigin ? 'Run simulation' : 'Select fire origin'}
         </button>
       </div>
+      {!hasSelectedOrigin && (
+        <p className="text-xs leading-normal text-muted">
+          In Building → Editor, click a piece of furniture to choose where the single fire starts.
+        </p>
+      )}
       <div className="flex items-center gap-3 text-xs text-ink-secondary">
         <label className="flex items-center gap-1.5">
           Occupants

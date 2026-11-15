@@ -172,6 +172,30 @@ export interface SimulateFireResponse {
   results: SimulationResults
 }
 
+export interface FireRepresentative {
+  /** Index in the original `runs` array. */
+  simulation_index: number
+  support_count: number
+  support_fraction: number
+}
+
+export interface FireEnsembleAnalysis {
+  requested_top_k: number
+  completed_simulation_count: number
+  representatives: FireRepresentative[]
+}
+
+export type SimulateNRun =
+  | { status: 'completed'; index: number; simulation: SimulateFireResponse }
+  | { status: 'failed'; index: number; http_status: number; error: { code?: string; message?: string } }
+
+/** Compact representative response from `POST /api/fire/simulate_n`. */
+export interface SimulateNResponse {
+  revision: number
+  runs: SimulateNRun[]
+  fire_ensemble?: FireEnsembleAnalysis
+}
+
 /**
  * A firefighter crew sent with a fire run (crates/simulation-core `CrewSpawn`).
  * The crew moves as one unit: `{id}/1` leads, the rest follow.
@@ -200,4 +224,13 @@ export interface SpawnOccupantsResponse {
     pre_movement_delay_seconds: number
   }>
   agents: AgentFrame[]
+}
+
+export interface GeneratedFireScenariosResponse {
+  revision: number
+  scenarios: Array<{
+    object_id: string
+    occupants: SpawnOccupantsResponse['occupants']
+    seed: number
+  }>
 }

@@ -1,9 +1,11 @@
 import { WorldApiError, WorldServerUnavailableError } from '../scene/api'
 import {
   type CrewSpawn,
+  type GeneratedFireScenariosResponse,
   type OccupantLayout,
   SIMULATION_RESULTS_SCHEMA_VERSION,
   type SimulateFireResponse,
+  type SimulateNResponse,
   type SpawnOccupantsResponse,
 } from './types'
 
@@ -11,6 +13,8 @@ export const DEFAULT_OCCUPANT_COUNT = 50
 export const OCCUPANT_COUNTS = [10, 50, 100, 200] as const
 /** Crowded by default, so a run shows people queuing at doors. */
 export const DEFAULT_OCCUPANT_LAYOUT: OccupantLayout = 'crowded'
+export const DEFAULT_BATCH_SIMULATION_COUNT = 10
+export const DEFAULT_TOP_K = 4
 
 export interface ScenarioOptions {
   occupantCount: number
@@ -38,6 +42,50 @@ export async function runFireSimulation(
     throw new Error('The building changed while the scenario was being generated. Run it again.')
   }
   return run
+}
+
+/**
+ * Runs a small ensemble with the ordinary surface simulator and asks the
+ * server to return only four representative timelines for browser playback.
+ */
+export async function runScenarioBatch(
+  { occupantCount }: ScenarioOptions,
+  simulationCount = DEFAULT_BATCH_SIMULATION_COUNT,
+  topK = DEFAULT_TOP_K,
+): Promise<SimulateNResponse> {
+  const generated = await requestJson<GeneratedFireScenariosResponse>(
+    '/api/agents/generate_fire_scenarios',
+    { count: simulationCount, occupant_count: occupantCount },
+  )
+  const simulations = generated.scenarios.map((scenario) => ({
+    object_id: scenario.object_id,
+    occupants: scenario.occupants,
+    crews: [DEFAULT_CREW],
+    seed: scenario.seed,
+    duration_seconds: 360,
+  }))
+  const batch = await requestJson<SimulateNResponse>('/api/fire/simulate_n', {
+    top_k: topK,
+    representatives_only: true,
+    response_interval_seconds: 2,
+    simulations,
+  })
+  if (generated.revision !== batch.revision) {
+    throw new Error(
+      'The building changed while the scenarios were being generated. Run them again.',
+    )
+  }
+  for (const run of batch.runs) {
+    if (
+      run.status === 'completed' &&
+      run.simulation.results.schema_version !== SIMULATION_RESULTS_SCHEMA_VERSION
+    ) {
+      throw new Error(
+        `Fire results use schema v${run.simulation.results.schema_version}; this app reads v${SIMULATION_RESULTS_SCHEMA_VERSION}`,
+      )
+    }
+  }
+  return batch
 }
 
 async function spawnOccupants(
@@ -114,6 +162,8 @@ export function describeFireError(error: unknown): string {
       case 'gemini_failed':
       case 'occupant_generation_failed':
         return `Generating occupants failed: ${String(error.body.message ?? 'unknown error')}`
+      case 'scenario_generation_failed':
+        return `Generating scenarios failed: ${String(error.body.message ?? 'unknown error')}`
       case 'evacuation_failed':
         return `Evacuation failed: ${String(error.body.message ?? 'unknown error')}`
       default:
