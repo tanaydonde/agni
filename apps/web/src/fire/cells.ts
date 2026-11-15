@@ -52,3 +52,10 @@ export function fireCellBoxes(
     ]
   })
 }
+
+/** IDs of the furniture that has fire cells (heating or burning) in `frame`. */
+export function burningObjectIds(frame: SimulationFrame | undefined): Set<string> {
+  return new Set(
+    frame?.surface_fire.flatMap((node) => (node.source.type === 'furniture' ? [node.source.object_id] : [])),
+  )
+}

@@ -11,7 +11,7 @@ import {
   useWorld,
 } from '../scene/api'
 import { CameraController } from '../scene/CameraController'
-import { placeModels } from '../scene/modelChoice'
+import { placeModels, type ModelPlacement } from '../scene/modelChoice'
 import { detectedInScene } from '../scene/scanned'
 import { Furniture } from '../scene/Furniture'
 import { buildFloorGeometry } from '../scene/geometry'
@@ -64,6 +64,9 @@ export function SceneViewport({ sceneId }: SceneViewportProps) {
 }
 
 type View = 'editor' | 'textured' | 'furnished'
+
+/** Stable empty list for the furnished view, which draws no stand-in models. */
+const NO_MODELS: ModelPlacement[] = []
 type PanelMode = 'building' | 'review'
 
 const VIEWS: [view: View, label: string][] = [
@@ -132,14 +135,18 @@ function SceneViews({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; mes
           showSimulation={!batch}
         />
       </div>
-      {texturedOpened && (
+      {/* Only one Matterport player runs at a time: this one unmounts while
+          Scenario Review (which has its own) is open. */}
+      {texturedOpened && mode === 'building' && (
         <div
           className={`absolute inset-0 ${mode === 'building' && view !== 'editor' ? '' : 'invisible'}`}
         >
           <ShowcaseViewport
             scene={scene}
             floor={floor}
-            models={models}
+            // Stand-in models fill the defurnished scan; the furnished scan
+            // already shows the real furniture.
+            models={view === 'furnished' ? NO_MODELS : models}
             version={view === 'furnished' ? 'furnished' : 'defurnished'}
           />
         </div>

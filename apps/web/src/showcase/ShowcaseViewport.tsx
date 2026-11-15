@@ -1,6 +1,6 @@
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import { ControlsHint, type Controls } from '../components/ControlsHint'
-import { fireCellBoxes } from '../fire/cells'
+import { burningObjectIds, fireCellBoxes } from '../fire/cells'
 import { useFireFrame, useSimulationAgents } from '../fire/fireStore'
 import { isShownAgent } from '../fire/frames'
 import { FlyIndicator } from '../components/FlyIndicator'
@@ -16,7 +16,15 @@ import { mountFire, type ShowcaseFire } from './fire'
 import { furnitureItems, mountFurniture, type ShowcaseFurniture } from './furniture'
 import { mountEnvironment } from './environment'
 import { mountModels, type ShowcaseModels } from './models'
-import { connectShowcase, hideShowcaseControls, type MpSdk, showcaseUrl, untilPlaying } from './sdk'
+import {
+  connectShowcase,
+  hideShowcaseControls,
+  MODE,
+  type MpSdk,
+  showcaseUrl,
+  type Subscription,
+  untilPlaying,
+} from './sdk'
 
 /** After this long without the space playing, say so (it may still finish). */
 const SLOW_LOAD_MS = 60_000
@@ -106,8 +114,6 @@ export function ShowcaseViewport({
   const furniture = useRef<ShowcaseFurniture | null>(null)
   const sdkRef = useRef<MpSdk | null>(null)
   const latestVersion = useRef(version)
-  const items = useMemo(() => furnitureItems(floor, scene.assets), [floor, scene.assets])
-  const latestItems = useRef(items)
   const furnitureModels = useRef<ShowcaseModels | null>(null)
   const latestModels = useRef(models)
   const storeFrame = useFireFrame()
@@ -115,6 +121,14 @@ export function ShowcaseViewport({
   const fireFrame = timeline ? timeline.frame : storeFrame
   const simulationAgents = timeline ? timeline.agents : storeAgents
   const latestBirdsEye = useRef(birdsEye)
+  // Burning furniture draws see-through. Keyed by the IDs so the boxes are
+  // only rebuilt when that set changes, not on every fire frame.
+  const burningKey = useMemo(() => [...burningObjectIds(fireFrame)].sort().join('\n'), [fireFrame])
+  const items = useMemo(
+    () => furnitureItems(floor, scene.assets, new Set(burningKey ? burningKey.split('\n') : [])),
+    [floor, scene.assets, burningKey],
+  )
+  const latestItems = useRef(items)
   const fireCells = useMemo(() => fireCellBoxes(fireFrame, floor.objects), [fireFrame, floor.objects])
   const fire = useRef<ShowcaseFire | null>(null)
   const latestFireCells = useRef(fireCells)
@@ -168,6 +182,7 @@ export function ShowcaseViewport({
     let driver: CameraDriver | null = null
     let detachKeys = () => {}
     let environment: { dispose(): void } | null = null
+    let dollhouseLock: Subscription | null = null
     setStatus({ kind: 'loading', slow: false })
     const slowTimer = setTimeout(
       () => setStatus((current) => (current.kind === 'loading' ? { kind: 'loading', slow: true } : current)),
@@ -189,6 +204,9 @@ export function ShowcaseViewport({
         hideShowcaseControls(iframe.contentDocument, { birdsEye: latestBirdsEye.current })
       }
       await untilPlaying(sdk, signal)
+      // Bird's-eye still steps inside first: going to the dollhouse from a scan
+      // frames the whole model, while going straight there from Showcase's
+      // intro leaves it small and far away.
       const startSweep = await activateDefurnishedView(sdk)
       signal.throwIfAborted()
       if (latestVersion.current !== 'defurnished') await showSpaceVersion(sdk, latestVersion.current)
@@ -201,8 +219,15 @@ export function ShowcaseViewport({
       environment = await mountEnvironment(sdk)
       signal.throwIfAborted()
       if (latestBirdsEye.current) {
-        await showDollhouse(sdk)
+        await showDollhouse(sdk, signal)
         if (signal.aborted) return
+        // Clicks can't reach Showcase here (see the layer below), but if the
+        // view leaves the dollhouse anyway, put it back.
+        dollhouseLock = sdk.Mode.current.subscribe((mode) => {
+          if (mode === MODE.INSIDE || mode === MODE.FLOORPLAN) {
+            sdk.Mode.moveTo(MODE.DOLLHOUSE).catch(() => {})
+          }
+        })
         clearTimeout(slowTimer)
         setStatus({ kind: 'ready', driver: null })
         return
@@ -239,6 +264,7 @@ export function ShowcaseViewport({
       agentOverlay.current?.dispose()
       agentOverlay.current = null
       environment?.dispose()
+      dollhouseLock?.cancel()
       sdkRef.current = null
       iframe.remove()
     }
@@ -257,6 +283,10 @@ export function ShowcaseViewport({
 
   return (
     <div ref={container} className="absolute inset-0">
+      {/* The bird's-eye view is a fixed picture, like the 3D overview: this
+          layer keeps clicks (which would fly inside) and drags off Showcase,
+          and lets wheel events reach the review for paging. */}
+      {birdsEye && <div aria-hidden className="absolute inset-0" />}
       {freeFlight && (
         <div
           ref={inputLayer}

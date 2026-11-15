@@ -1,5 +1,7 @@
 import { useEffect, useMemo } from 'react'
 import * as THREE from 'three'
+import { burningObjectIds } from '../fire/cells'
+import { useFireFrame } from '../fire/fireStore'
 import { useEditorStore } from './editorStore'
 import { categoryColor, EDGE_COLOR, SELECTED_COLOR } from './furnitureStyle'
 import { FURNITURE_GROUP, Z_UP_TO_Y_UP } from './placement'
@@ -10,6 +12,8 @@ const noRaycast = () => {}
 interface FurnitureProps {
   floor: Floor
   assets: FurnitureAsset[]
+  /** Furniture with fire cells, e.g. for a run under review; defaults to the store's run. */
+  burning?: ReadonlySet<string>
 }
 
 /**
@@ -17,9 +21,14 @@ interface FurnitureProps {
  * single run) is highlighted. Until assets have GLB models, each is a box of
  * its catalog dimensions standing on its origin (the bottom center).
  */
-export function Furniture({ floor, assets }: FurnitureProps) {
+export function Furniture({ floor, assets, burning }: FurnitureProps) {
   const selectedId = useEditorStore((state) => state.selectedObjectId)
   const assetsById = useMemo(() => new Map(assets.map((asset) => [asset.id, asset])), [assets])
+  // Furniture with fire cells turns see-through so the cells inside it show;
+  // walls stay opaque, so fire never shows through them.
+  const fireFrame = useFireFrame()
+  const storeBurning = useMemo(() => burningObjectIds(fireFrame), [fireFrame])
+  const onFire = burning ?? storeBurning
 
   return (
     <group name={FURNITURE_GROUP} rotation={Z_UP_TO_Y_UP}>
@@ -35,6 +44,7 @@ export function Furniture({ floor, assets }: FurnitureProps) {
             rotation={object.transform.rotation}
             scale={object.transform.scale}
             selected={object.id === selectedId}
+            onFire={onFire.has(object.id)}
           />
         )
       })}
@@ -50,9 +60,19 @@ interface FurnitureBoxProps {
   rotation: Quaternion
   scale: Vec3
   selected?: boolean
+  /** Has fire cells; drawn see-through so they show. */
+  onFire?: boolean
 }
 
-function FurnitureBox({ objectId, asset, position, rotation, scale, selected = false }: FurnitureBoxProps) {
+function FurnitureBox({
+  objectId,
+  asset,
+  position,
+  rotation,
+  scale,
+  selected = false,
+  onFire = false,
+}: FurnitureBoxProps) {
   const { width_m: width, depth_m: depth, height_m: height } = asset.dimensions_m
   // Shift the box up so its bottom face sits at the origin, i.e. on the floor.
   const box = useMemo(
@@ -77,6 +97,9 @@ function FurnitureBox({ objectId, asset, position, rotation, scale, selected = f
       <mesh geometry={box} userData={{ objectId }}>
         <meshStandardMaterial
           color={categoryColor(asset.category)}
+          transparent={onFire}
+          opacity={onFire ? 0.3 : 1}
+          depthWrite={!onFire}
           emissive={selected ? SELECTED_COLOR : '#000000'}
           emissiveIntensity={selected ? 0.35 : 0}
         />

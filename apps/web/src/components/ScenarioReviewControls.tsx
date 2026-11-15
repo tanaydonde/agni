@@ -1,6 +1,7 @@
 import { Canvas } from '@react-three/fiber'
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type WheelEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useWorld } from '../scene/api'
+import { burningObjectIds } from '../fire/cells'
 import { agentsAtTime, crewStatus, frameAtTime, occupantCounts } from '../fire/frames'
 import {
   PLAYBACK_RATES,
@@ -114,18 +115,32 @@ export function ScenarioReviewControls({
 
   // One page per scroll gesture, so a trackpad fling doesn't skip runs. A
   // gesture is a run of wheel events less than WHEEL_GESTURE_IDLE_MS apart,
-  // judged by the events' own timestamps so slow frames can't split it.
+  // judged by the events' own timestamps so slow frames can't split it. The
+  // listener is non-passive so it can stop a pinch (ctrl+wheel) from zooming
+  // the page and a sideways swipe from navigating back; pinches never page.
+  const paging = useRef({ canPage, nextRun, previousRun })
+  useEffect(() => {
+    paging.current = { canPage, nextRun, previousRun }
+  })
   const lastWheelAt = useRef(Number.NEGATIVE_INFINITY)
-  const onWheel = (event: WheelEvent) => {
-    if (!canPage) return
-    const delta = Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX
-    if (Math.abs(delta) < MIN_WHEEL_DELTA) return
-    const gestureInProgress = event.timeStamp - lastWheelAt.current < WHEEL_GESTURE_IDLE_MS
-    lastWheelAt.current = event.timeStamp
-    if (gestureInProgress) return
-    if (delta > 0) nextRun()
-    else previousRun()
-  }
+  const wheelArea = useCallback((el: HTMLDivElement | null) => {
+    if (!el) return
+    const onWheel = (event: globalThis.WheelEvent) => {
+      event.preventDefault()
+      if (event.ctrlKey) return
+      const { canPage: pageable, nextRun: next, previousRun: previous } = paging.current
+      if (!pageable) return
+      const delta = Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX
+      if (Math.abs(delta) < MIN_WHEEL_DELTA) return
+      const gestureInProgress = event.timeStamp - lastWheelAt.current < WHEEL_GESTURE_IDLE_MS
+      lastWheelAt.current = event.timeStamp
+      if (gestureInProgress) return
+      if (delta > 0) next()
+      else previous()
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [])
 
   if (status === 'loading') {
     return <ReviewMessage title="Running scenarios…">Preparing four training views.</ReviewMessage>
@@ -154,7 +169,7 @@ export function ScenarioReviewControls({
 
   return (
     <>
-      <div className="absolute inset-0 flex bg-canvas p-2 pt-12 pb-28" onWheel={onWheel}>
+      <div ref={wheelArea} className="absolute inset-0 flex overscroll-none bg-canvas p-2 pt-12 pb-28">
         <ReviewPanel
           run={runs[position]}
           position={position}
@@ -236,10 +251,11 @@ function ReviewPanel({
   )
   const counts = occupantCounts(agents)
   const total = counts.inside + counts.exited
-  const burning = frame?.surface_fire.filter((node) => node.state === 'burning').length ?? 0
+  const burningCells = frame?.surface_fire.filter((node) => node.state === 'burning').length ?? 0
   const activity = crewStatus(agents)
   const timeline = useMemo(() => ({ frame, agents }), [frame, agents])
-  const stats = `Escaped ${counts.exited}/${total} · Fire ${burning} cells${activity ? ` · ${activity}` : ''}`
+  const burning = useMemo(() => burningObjectIds(frame), [frame])
+  const stats = `Escaped ${counts.exited}/${total} · Fire ${burningCells} cells${activity ? ` · ${activity}` : ''}`
 
   return (
     <section
@@ -253,7 +269,7 @@ function ReviewPanel({
           <hemisphereLight args={['#ffffff', '#d5dbe1', 1.6]} />
           <directionalLight position={[8, 14, 6]} intensity={1.4} />
           <SceneModel geometry={geometry} meshUrl={meshUrl} />
-          <Furniture floor={floor} assets={scene.assets} />
+          <Furniture floor={floor} assets={scene.assets} burning={burning} />
           <SurfaceFireView floor={floor} frame={frame} />
           <SimulationAgentsView floor={floor} simulationAgents={agents} />
           <ReviewCamera geometry={geometry} />

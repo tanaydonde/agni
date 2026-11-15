@@ -51,8 +51,9 @@ dots, one scroll gesture per page, or the ←/→ keys move between runs; paging
 never moves the clock, so every run is seen at the same moment. Runs that
 settle before 360 seconds hold their final frame. A 3D / Textured switch shows
 the same run either on the 3D mesh or in Matterport's textured dollhouse, with
-the fire and people drawn into it and Showcase's mode buttons hidden so the
-view stays top-down.
+the fire and people drawn into it. Like the 3D overview it is a fixed
+picture: Showcase's mode buttons are hidden and clicks don't reach it, so it
+can't fly inside, and scrolling over it pages runs as in 3D.
 
 The batch accepts 1–32 distinct inputs. By default its `runs` array stays in
 request order even though the server executes up to four runs concurrently. A

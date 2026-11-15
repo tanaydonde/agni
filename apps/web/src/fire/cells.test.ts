@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fireCellBoxes } from './cells'
+import { burningObjectIds, fireCellBoxes } from './cells'
 import type { SimulationFrame, SurfaceFireNode } from './types'
 
 const node = (overrides: Partial<SurfaceFireNode>): SurfaceFireNode => ({
@@ -78,5 +78,23 @@ describe('fireCellBoxes', () => {
 
   it('draws nothing without a frame', () => {
     expect(fireCellBoxes(undefined, [sofa])).toEqual([])
+  })
+})
+
+describe('burningObjectIds', () => {
+  it('lists each furniture object with fire cells once, ignoring floor cells', () => {
+    const ids = burningObjectIds(
+      frame([
+        node({ id: 'a' }),
+        node({ id: 'b', state: 'heating' }),
+        node({ id: 'c', source: { type: 'furniture', object_id: 'desk-1' } }),
+        node({ id: 'd', source: { type: 'floor_cell', floor_id: 'f', coordinate: { column: 0, row: 0 } } }),
+      ]),
+    )
+    expect([...ids].sort()).toEqual(['desk-1', 'sofa-1'])
+  })
+
+  it('is empty without a frame', () => {
+    expect(burningObjectIds(undefined).size).toBe(0)
   })
 })
