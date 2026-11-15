@@ -68,12 +68,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .and_then(|path| fs::read_to_string(&path).ok().map(|json| (path, json)))
         .and_then(|(path, json)| match load_property(&json, &scene) {
             Ok(brief) => {
+                let p = &brief.profile;
                 println!(
-                    "tflop-server: loaded CoStar {} {} from {} ({} occupants assumed)",
+                    "tflop-server: loaded CoStar {} {} from {}; fire runs default to {:?} floor, \
+                     alarm noticed at {} kW / {} s, {:.0}% need help out ({} occupants suggested)",
                     brief.record.source.dataset,
                     brief.record.source.record_id,
                     path.display(),
-                    brief.profile.occupant_count.value
+                    p.floor_material.value,
+                    p.alarm.value.notice_hrr_kw,
+                    p.alarm.value.same_room_seconds,
+                    p.injured_fraction.value * 100.0,
+                    p.occupant_count.value
                 );
                 Some(brief)
             }

@@ -4,7 +4,7 @@
 //! fire timeline into CFAST and returns the merged renderer contract.
 
 use axum::{
-    Json,
+    Extension, Json,
     extract::{State, rejection::JsonRejection},
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -26,7 +26,7 @@ use tflop_simulation_core::{
 use tflop_costar::{AlarmTimings, FloorMaterial};
 use tflop_world_core::{Scene, resolve_opening_connections};
 
-use crate::{SharedWorld, decode, lock};
+use crate::{SharedProperty, SharedWorld, decode, lock};
 
 const DEFAULT_DURATION_SECONDS: f64 = 180.0;
 const MAX_DURATION_SECONDS: f64 = 600.0;
@@ -71,6 +71,24 @@ pub(crate) struct SimulateFireRequest {
 
 const DEFAULT_INJURED_FRACTION: f64 = 0.1;
 
+impl SimulateFireRequest {
+    /// Fills settings the request leaves out from the scan's CoStar profile,
+    /// computed once at startup, so a plain client (the web app's Run button)
+    /// gets the building's alarm timing, assistance share and floor finish.
+    /// Values the request sends always win.
+    fn fill_from_property(&mut self, property: &SharedProperty) {
+        let Some(brief) = property.as_ref() else {
+            return;
+        };
+        let profile = &brief.profile;
+        self.alarm_config.get_or_insert(profile.alarm.value);
+        self.injured_fraction
+            .get_or_insert(profile.injured_fraction.value);
+        self.floor_material
+            .get_or_insert(profile.floor_material.value);
+    }
+}
+
 /// The material catalog for a run, with the requested floor finish.
 fn material_catalog(floor: Option<FloorMaterial>) -> FireMaterialCatalog {
     let mut catalog = FireMaterialCatalog::default();
@@ -101,12 +119,14 @@ struct SimulateFireResponse {
 
 pub(crate) async fn simulate(
     State(world): State<SharedWorld>,
+    Extension(property): Extension<SharedProperty>,
     body: Result<Json<SimulateFireRequest>, JsonRejection>,
 ) -> Response {
-    let request = match decode(body) {
+    let mut request = match decode(body) {
         Ok(request) => request,
         Err(rejection) => return rejection.into_response(),
     };
+    request.fill_from_property(&property);
     // Snapshot and release the lock: the run can take a moment and must not
     // block edits.
     let snapshot = lock(&world).get_scene();
@@ -127,12 +147,14 @@ pub(crate) async fn simulate(
 /// and merges the room conditions back onto every spatial frame.
 pub(crate) async fn simulate_hybrid(
     State(world): State<SharedWorld>,
+    Extension(property): Extension<SharedProperty>,
     body: Result<Json<SimulateFireRequest>, JsonRejection>,
 ) -> Response {
-    let request = match decode(body) {
+    let mut request = match decode(body) {
         Ok(request) => request,
         Err(rejection) => return rejection.into_response(),
     };
+    request.fill_from_property(&property);
     let Some(cfast_path) = resolve_cfast_bin() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -517,4 +539,49 @@ fn clamp(value: Option<f64>, default: f64, min: f64, max: f64) -> f64 {
         .filter(|value| value.is_finite())
         .unwrap_or(default)
         .clamp(min, max)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{path::Path, sync::Arc};
+
+    use super::*;
+    use crate::{PropertyBrief, load_scene};
+
+    fn bungalow() -> SharedProperty {
+        let kit = Path::new(env!("CARGO_MANIFEST_DIR")).join("../costar/fixtures/kit");
+        let record = tflop_costar::find_by_model_id(&kit, "zvKHR9DHNjJ").expect("fixture joins");
+        let scene = load_scene(crate::DEMO_SCENE_JSON).expect("demo scene");
+        Arc::new(Some(PropertyBrief::new(record, &scene)))
+    }
+
+    fn request(json: serde_json::Value) -> SimulateFireRequest {
+        serde_json::from_value(json).expect("valid request")
+    }
+
+    #[test]
+    fn omitted_settings_come_from_the_costar_profile() {
+        let mut r = request(json!({ "object_id": "chair-1" }));
+        r.fill_from_property(&bungalow());
+        assert_eq!(r.floor_material, Some(FloorMaterial::Hardwood));
+        assert_eq!(r.injured_fraction, Some(0.15));
+        assert_eq!(r.alarm_config.map(|a| a.same_room_seconds), Some(30.0));
+    }
+
+    #[test]
+    fn sent_settings_win_and_no_property_changes_nothing() {
+        let mut r = request(json!({
+            "object_id": "chair-1",
+            "floor_material": "carpet",
+            "injured_fraction": 0.0
+        }));
+        r.fill_from_property(&bungalow());
+        assert_eq!(r.floor_material, Some(FloorMaterial::Carpet));
+        assert_eq!(r.injured_fraction, Some(0.0));
+
+        let mut bare = request(json!({ "object_id": "chair-1" }));
+        bare.fill_from_property(&Arc::new(None));
+        assert!(bare.floor_material.is_none() && bare.alarm_config.is_none());
+        assert!(bare.injured_fraction.is_none());
+    }
 }
