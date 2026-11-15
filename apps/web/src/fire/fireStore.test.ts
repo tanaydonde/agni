@@ -1,8 +1,8 @@
 import { createElement } from 'react'
 import { renderToString } from 'react-dom/server'
 import { afterEach, describe, expect, it } from 'vitest'
-import { DEFAULT_PLAYBACK_RATE, useFireStore, useSimulationAgents } from './fireStore'
-import type { SimulateFireResponse } from './types'
+import { DEFAULT_PLAYBACK_RATE, PLAYBACK_RATES, useFireStore, useSimulationAgents } from './fireStore'
+import type { SimulateFireResponse, SimulateNResponse } from './types'
 
 const run: SimulateFireResponse = {
   revision: 0,
@@ -20,6 +20,32 @@ const run: SimulateFireResponse = {
       openings: [],
       agents: [],
     })),
+  },
+}
+
+const shorterRun: SimulateFireResponse = {
+  ...run,
+  results: {
+    ...run.results,
+    scenario_id: 'surface-fire:desk',
+    frames: run.results.frames.slice(0, 2),
+  },
+}
+
+const batch: SimulateNResponse = {
+  revision: 0,
+  runs: [
+    { status: 'completed', index: 1, simulation: run },
+    { status: 'failed', index: 2, http_status: 422, error: { code: 'simulation_failed' } },
+    { status: 'completed', index: 4, simulation: shorterRun },
+  ],
+  fire_ensemble: {
+    requested_top_k: 2,
+    completed_simulation_count: 2,
+    representatives: [
+      { simulation_index: 1, support_count: 1, support_fraction: 0.5 },
+      { simulation_index: 4, support_count: 1, support_fraction: 0.5 },
+    ],
   },
 }
 
@@ -45,9 +71,10 @@ describe('fire playback', () => {
 
   it('advances at the chosen playback rate', () => {
     useFireStore.setState({ status: 'playing', run, clockSeconds: 0 })
-    useFireStore.getState().setPlaybackRate(4)
+    expect(PLAYBACK_RATES).toEqual([1, 2, 4, 8, 16])
+    useFireStore.getState().setPlaybackRate(16)
     useFireStore.getState().tick(0.05)
-    expect(useFireStore.getState().clockSeconds).toBeCloseTo(0.2)
+    expect(useFireStore.getState().clockSeconds).toBeCloseTo(0.8)
     useFireStore.getState().setPlaybackRate(DEFAULT_PLAYBACK_RATE)
   })
 
@@ -68,5 +95,46 @@ describe('fire playback', () => {
     useFireStore.setState({ status: 'paused', run, clockSeconds: 2 })
     useFireStore.getState().play()
     expect(useFireStore.getState()).toMatchObject({ clockSeconds: 0, status: 'playing' })
+  })
+
+  it('switches representatives by original batch index and keeps comparable time', () => {
+    useFireStore.setState({
+      status: 'paused',
+      batch,
+      run,
+      representativePosition: 0,
+      clockSeconds: 1.5,
+    })
+
+    useFireStore.getState().nextRepresentative()
+    expect(useFireStore.getState()).toMatchObject({
+      run: shorterRun,
+      representativePosition: 1,
+      clockSeconds: 1,
+      status: 'paused',
+    })
+
+    useFireStore.getState().nextRepresentative()
+    expect(useFireStore.getState()).toMatchObject({
+      run,
+      representativePosition: 0,
+      clockSeconds: 1,
+    })
+  })
+
+  it('seeks within the active simulation bounds', () => {
+    useFireStore.setState({ status: 'paused', run, clockSeconds: 1 })
+    useFireStore.getState().seekBy(10)
+    expect(useFireStore.getState().clockSeconds).toBe(2)
+    useFireStore.getState().seekBy(-10)
+    expect(useFireStore.getState().clockSeconds).toBe(0)
+  })
+
+  it('uses the longest representative timeline for synchronized batch playback', () => {
+    useFireStore.setState({ status: 'paused', batch, run: shorterRun, clockSeconds: 1 })
+    useFireStore.getState().seekBy(10)
+    expect(useFireStore.getState().clockSeconds).toBe(2)
+    useFireStore.getState().play()
+    expect(useFireStore.getState().status).toBe('playing')
   })
 })

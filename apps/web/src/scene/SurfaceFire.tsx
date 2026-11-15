@@ -3,6 +3,7 @@ import { useEffect, useMemo } from 'react'
 import * as THREE from 'three'
 import { FIRE_COLOR, HEATING_OPACITY, fireCellBoxes, type FireCellBox } from '../fire/cells'
 import { useFireFrame } from '../fire/fireStore'
+import type { SimulationFrame } from '../fire/types'
 import { Z_UP_TO_Y_UP } from './placement'
 import type { Floor } from './types'
 
@@ -22,6 +23,17 @@ const noRaycast = () => {}
  */
 export function SurfaceFire({ floor }: { floor: Floor }) {
   const frame = useFireFrame()
+  return <SurfaceFireView floor={floor} frame={frame} />
+}
+
+/** Surface fire for an explicitly supplied review timeline. */
+export function SurfaceFireView({
+  floor,
+  frame,
+}: {
+  floor: Floor
+  frame: SimulationFrame | undefined
+}) {
   const boxes = useMemo(() => fireCellBoxes(frame, floor.objects), [frame, floor.objects])
   // The canvas renders on demand; the clock runs outside it (usePlaybackClock).
   const invalidate = useThree((state) => state.invalidate)

@@ -189,6 +189,20 @@ async fn occupant_agent_rejects_an_invalid_count_before_calling_gemini() {
 }
 
 #[tokio::test]
+async fn scenario_agent_rejects_an_invalid_count_before_calling_gemini() {
+    let (status, body) = call(
+        app(),
+        "POST",
+        "/api/agents/generate_fire_scenarios",
+        Some(json!({ "count": 0, "occupant_count": 50 })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "invalid_scenario_count");
+}
+
+#[tokio::test]
 async fn a_crowded_layout_spawns_without_gemini_and_queues_at_the_door() {
     let (status, spawned) = call(
         app(),
@@ -240,6 +254,22 @@ async fn a_crowded_layout_spawns_without_gemini_and_queues_at_the_door() {
 }
 
 #[tokio::test]
+async fn occupant_target_is_capped_to_the_buildings_safe_capacity() {
+    let (status, body) = call(
+        app(),
+        "POST",
+        "/api/agents/spawn_occupants",
+        Some(json!({ "count": 200, "layout": "crowded" })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let occupants = body["occupants"].as_array().expect("occupants");
+    assert!(!occupants.is_empty());
+    assert!(occupants.len() < 200, "demo room should cap the target");
+}
+
+#[tokio::test]
 async fn hybrid_fire_route_rejects_a_malformed_request() {
     let (status, body) = call(
         app(),
@@ -279,6 +309,179 @@ async fn simulate_fire_returns_a_growing_timeline() {
         .collect();
     assert!(times.windows(2).all(|pair| pair[0] < pair[1]), "{times:?}");
     assert!(*times.last().expect("last") <= 30.0 + 1e-9);
+}
+
+#[tokio::test]
+async fn simulate_n_returns_ordered_successes_and_failures() {
+    let (status, body) = call(
+        app(),
+        "POST",
+        "/api/fire/simulate_n",
+        Some(json!({
+            "top_k": 2,
+            "simulations": [
+                { "object_id": "chair-1", "duration_seconds": 1.0, "seed": 11 },
+                { "object_id": "missing", "duration_seconds": 1.0, "seed": 12 },
+                { "object_id": "chair-1", "duration_seconds": 1.0, "seed": 13 }
+            ]
+        })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["revision"], 0);
+    let runs = body["runs"].as_array().expect("runs");
+    assert_eq!(runs.len(), 3);
+    assert_eq!(runs[0]["index"], 0);
+    assert_eq!(runs[0]["status"], "completed");
+    assert_eq!(runs[0]["simulation"]["results"]["scene_id"], "demo-room");
+    assert_eq!(runs[1]["index"], 1);
+    assert_eq!(runs[1]["status"], "failed");
+    assert_eq!(runs[1]["http_status"], 404);
+    assert_eq!(runs[1]["error"]["code"], "object_not_found");
+    assert_eq!(runs[2]["index"], 2);
+    assert_eq!(runs[2]["status"], "completed");
+    let ensemble = &body["fire_ensemble"];
+    assert_eq!(ensemble["requested_top_k"], 2);
+    assert_eq!(ensemble["completed_simulation_count"], 2);
+    assert_eq!(ensemble["representatives"][0]["simulation_index"], 0);
+    assert_eq!(ensemble["representatives"][1]["simulation_index"], 2);
+    assert_eq!(ensemble["assignments"][0]["simulation_index"], 0);
+    assert_eq!(ensemble["assignments"][1]["simulation_index"], 2);
+    assert!(
+        ensemble["frequencies"]
+            .as_array()
+            .is_some_and(|frequencies| !frequencies.is_empty())
+    );
+}
+
+#[tokio::test]
+async fn simulate_n_can_return_only_compact_representative_timelines() {
+    let (status, body) = call(
+        app(),
+        "POST",
+        "/api/fire/simulate_n",
+        Some(json!({
+            "top_k": 1,
+            "representatives_only": true,
+            "response_interval_seconds": 1.0,
+            "simulations": [
+                { "object_id": "chair-1", "duration_seconds": 1.0, "seed": 21 },
+                { "object_id": "chair-1", "duration_seconds": 1.0, "seed": 22 }
+            ]
+        })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let runs = body["runs"].as_array().expect("runs");
+    assert_eq!(runs.len(), 1, "only the selected timeline is returned");
+    let ensemble = &body["fire_ensemble"];
+    assert_eq!(ensemble["completed_simulation_count"], 2);
+    assert_eq!(
+        ensemble["representatives"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert!(ensemble.get("frequencies").is_none());
+    assert!(ensemble.get("assignments").is_none());
+    assert_eq!(
+        runs[0]["index"],
+        ensemble["representatives"][0]["simulation_index"]
+    );
+    let frames = runs[0]["simulation"]["results"]["frames"]
+        .as_array()
+        .expect("frames");
+    assert!(
+        frames.len() <= 2,
+        "one-second playback sampling: {frames:?}"
+    );
+    assert!(
+        frames
+            .iter()
+            .flat_map(|frame| {
+                frame["surface_fire"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|node| node["state"].as_str().unwrap_or_default())
+            })
+            .all(|state| matches!(state, "burning" | "heating"))
+    );
+}
+
+#[tokio::test]
+async fn simulate_n_requires_a_nonempty_distinct_batch() {
+    let (status, body) = call(
+        app(),
+        "POST",
+        "/api/fire/simulate_n",
+        Some(json!({ "simulations": [] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "invalid_simulation_count");
+
+    let simulation = json!({ "object_id": "chair-1", "duration_seconds": 1.0, "seed": 7 });
+    let (status, body) = call(
+        app(),
+        "POST",
+        "/api/fire/simulate_n",
+        Some(json!({ "simulations": [simulation.clone(), simulation] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "duplicate_simulation");
+    assert_eq!(body["first_index"], 0);
+    assert_eq!(body["duplicate_index"], 1);
+
+    let (status, body) = call(
+        app(),
+        "POST",
+        "/api/fire/simulate_n",
+        Some(json!({
+            "top_k": 3,
+            "simulations": [
+                { "object_id": "chair-1", "seed": 1 },
+                { "object_id": "chair-1", "seed": 2 }
+            ]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "invalid_top_k");
+}
+
+#[tokio::test]
+async fn simulate_n_hybrid_runs_multiple_cfast_simulations() {
+    if tflop_cfast::resolve_cfast_bin().is_none() {
+        return;
+    }
+
+    let (status, body) = call(
+        app(),
+        "POST",
+        "/api/fire/simulate_n/hybrid",
+        Some(json!({
+            "simulations": [
+                { "object_id": "chair-1", "duration_seconds": 1.0, "seed": 21 },
+                { "object_id": "chair-1", "duration_seconds": 1.0, "seed": 22 }
+            ]
+        })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let runs = body["runs"].as_array().expect("runs");
+    assert_eq!(runs.len(), 2);
+    assert!(
+        runs.iter().all(|run| run["status"] == "completed"),
+        "{body}"
+    );
+    assert!(runs.iter().all(|run| {
+        run["simulation"]["results"]["frames"]
+            .as_array()
+            .is_some_and(|frames| !frames.is_empty())
+    }));
 }
 
 #[tokio::test]
@@ -506,7 +709,11 @@ async fn scanned_furniture_becomes_scene_objects_that_can_burn() {
     let objects = body["scene"]["floors"][0]["objects"]
         .as_array()
         .expect("objects");
-    assert!(objects.iter().any(|object| object["id"] == "scan-detected-001"));
+    assert!(
+        objects
+            .iter()
+            .any(|object| object["id"] == "scan-detected-001")
+    );
 
     let (status, body) = call(
         app,
@@ -523,7 +730,10 @@ fn detection_for_another_scene_is_ignored() {
     let (scene, outcome) =
         load_scene_with_detection(DEMO_SCENE_JSON, Some(&demo_detection("other-scene")))
             .expect("scene still loads");
-    assert!(matches!(outcome, DetectionOutcome::Ignored(_)), "{outcome:?}");
+    assert!(
+        matches!(outcome, DetectionOutcome::Ignored(_)),
+        "{outcome:?}"
+    );
     assert!(
         scene.floors[0]
             .objects

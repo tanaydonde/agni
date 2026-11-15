@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 import * as THREE from 'three'
 import { useSimulationAgents } from '../fire/fireStore'
 import { AGENT_COLORS, isShownAgent } from '../fire/frames'
+import type { AgentFrame } from '../fire/types'
 import {
   type AgentKind,
   type AgentPose,
@@ -61,14 +62,44 @@ const ON_ITS_SIDE: [number, number, number] = [0, Math.PI / 2, 0]
  * Injured people lie on the floor; people being carried lie across their
  * firefighter's shoulder. A spraying firefighter's stream is a blue cone.
  */
-export function SimulationAgents({ floor }: { floor: Floor }) {
+export function SimulationAgents({
+  floor,
+  hideLeadFirefighter = false,
+}: {
+  floor: Floor
+  hideLeadFirefighter?: boolean
+}) {
   const simulationAgents = useSimulationAgents()
+  return (
+    <SimulationAgentsView
+      floor={floor}
+      simulationAgents={simulationAgents}
+      hideLeadFirefighter={hideLeadFirefighter}
+    />
+  )
+}
+
+/** Agent rendering for an explicitly supplied review timeline. */
+export function SimulationAgentsView({
+  floor,
+  simulationAgents,
+  hideLeadFirefighter = false,
+}: {
+  floor: Floor
+  simulationAgents: AgentFrame[]
+  hideLeadFirefighter?: boolean
+}) {
   const agents = useMemo(
     () =>
       simulationAgents.filter((agent) => isShownAgent(agent, floor.id)),
     [simulationAgents, floor.id],
   )
   const bodies = useAgentBodies()
+  const leadFirefighterId = hideLeadFirefighter
+    ? agents
+        .filter((agent) => agent.role.type === 'firefighter')
+        .sort((left, right) => left.id.localeCompare(right.id))[0]?.id
+    : undefined
   // Headings carry over between frames so a stopped agent keeps facing
   // where it walked.
   const [turned, setTurned] = useState(() => ({ agents, headings: nextHeadings(agents, new Map()) }))
@@ -80,6 +111,7 @@ export function SimulationAgents({ floor }: { floor: Floor }) {
   return (
     <group name="simulation-agents" rotation={Z_UP_TO_Y_UP}>
       {agents.map((agent) => {
+        if (agent.id === leadFirefighterId) return null
         const tint = agentTint(agent)
         const pose = agentPose(agent)
         const body = bodies[agent.role.type]?.[tint]

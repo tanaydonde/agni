@@ -27,6 +27,7 @@ use crate::{SharedWorld, decode, lock};
 const DEFAULT_GEMINI_MODEL: &str = "gemini-3.5-flash-lite";
 const MAX_ATTEMPTS: usize = 3;
 const MAX_OCCUPANTS: usize = 200;
+const MAX_SCENARIOS: usize = 32;
 const MAX_SPAWN_SITES_FOR_MODEL: usize = 2_000;
 /// Hurried evacuation walking speeds, for crowded layouts and the prompt.
 const MIN_HURRIED_SPEED_M_PER_S: f64 = 1.2;
@@ -60,6 +61,42 @@ struct SpawnOccupantsResponse {
     attempts: usize,
     occupants: Vec<OccupantSpawn>,
     agents: Vec<AgentFrame>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct GenerateScenariosRequest {
+    count: usize,
+    occupant_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct GenerateScenariosResponse {
+    revision: u64,
+    scenarios: Vec<GeneratedScenario>,
+}
+
+#[derive(Debug, Serialize)]
+struct GeneratedScenario {
+    object_id: String,
+    occupants: Vec<OccupantSpawn>,
+    seed: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct FireOriginCandidate {
+    object_id: String,
+    category: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GenerateScenariosArguments {
+    scenarios: Vec<ProposedScenario>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProposedScenario {
+    ignition_object_id: String,
+    occupied_room_ids: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -113,8 +150,12 @@ pub(crate) async fn spawn_occupants(
         Ok(simulation) => simulation,
         Err(error) => return error_response(AgentError::Simulation(error.to_string())),
     };
+    let count = match build_spawn_sites(&simulation, 1) {
+        Ok(sites) => request.count.min(sites.len()),
+        Err(error) => return error_response(error),
+    };
     if request.layout == OccupantLayout::Crowded {
-        return match spawn_crowded(&mut simulation, request.count) {
+        return match spawn_crowded(&mut simulation, count) {
             Ok(generated) => Json(SpawnOccupantsResponse {
                 revision: snapshot.revision,
                 attempts: generated.attempts,
@@ -130,7 +171,7 @@ pub(crate) async fn spawn_occupants(
         Err(error) => return error_response(error),
     };
 
-    match generate_and_spawn(&mut simulation, request.count, &provider).await {
+    match generate_and_spawn(&mut simulation, count, &provider).await {
         Ok(generated) => Json(SpawnOccupantsResponse {
             revision: snapshot.revision,
             attempts: generated.attempts,
@@ -140,6 +181,93 @@ pub(crate) async fn spawn_occupants(
         .into_response(),
         Err(error) => error_response(error),
     }
+}
+
+/// Gemini chooses the fire origin and occupied rooms for each scenario. Rust
+/// resolves those bounded choices into exact collision-free occupant spawns.
+pub(crate) async fn generate_scenarios(
+    State(world): State<SharedWorld>,
+    body: Result<Json<GenerateScenariosRequest>, JsonRejection>,
+) -> Response {
+    let request = match decode(body) {
+        Ok(request) => request,
+        Err(rejection) => return rejection.into_response(),
+    };
+    if request.count == 0 || request.count > MAX_SCENARIOS {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "code": "invalid_scenario_count",
+                "message": format!("count must be between 1 and {MAX_SCENARIOS}"),
+            })),
+        )
+            .into_response();
+    }
+    if request.occupant_count == 0 || request.occupant_count > MAX_OCCUPANTS {
+        return error_response(AgentError::InvalidCount {
+            count: request.occupant_count,
+        });
+    }
+
+    let snapshot = lock(&world).get_scene();
+    let simulation = match Simulation::new(snapshot.scene.clone(), SimulationConfig::default()) {
+        Ok(simulation) => simulation,
+        Err(error) => return error_response(AgentError::Simulation(error.to_string())),
+    };
+    // Scenario generation treats the requested occupant count as a target.
+    // A small building may physically have fewer mutually non-overlapping
+    // verified sites; use its safe capacity instead of failing all N runs.
+    let sites = match build_spawn_sites(&simulation, 1) {
+        Ok(sites) => sites,
+        Err(error) => return error_response(error),
+    };
+    let occupant_count = request.occupant_count.min(sites.len());
+    let origins = fire_origin_candidates(&simulation);
+    if origins.is_empty() {
+        return error_response(AgentError::InvalidToolCall(
+            "the scene has no furniture that can be selected as a fire origin".into(),
+        ));
+    }
+    let provider = match GeminiProvider::from_env() {
+        Ok(provider) => provider,
+        Err(error) => return error_response(error),
+    };
+    let mut feedback = None;
+    for _ in 0..MAX_ATTEMPTS {
+        let proposals = match provider
+            .propose_scenarios(request.count, &origins, &sites, feedback.as_deref())
+            .await
+        {
+            Ok(proposals) => proposals,
+            Err(error @ AgentError::GeminiRequest(_))
+            | Err(error @ AgentError::GeminiApi { .. }) => return error_response(error),
+            Err(error) => {
+                feedback = Some(error.to_string());
+                continue;
+            }
+        };
+        match resolve_scenarios(
+            &snapshot.scene,
+            proposals,
+            &origins,
+            &sites,
+            request.count,
+            occupant_count,
+        ) {
+            Ok(scenarios) => {
+                return Json(GenerateScenariosResponse {
+                    revision: snapshot.revision,
+                    scenarios,
+                })
+                .into_response();
+            }
+            Err(error) => feedback = Some(error.to_string()),
+        }
+    }
+    error_response(AgentError::ScenarioAttemptsExhausted {
+        attempts: MAX_ATTEMPTS,
+        last_failure: feedback.unwrap_or_else(|| "Gemini did not produce scenarios".into()),
+    })
 }
 
 async fn generate_and_spawn<P: OccupantProposalProvider>(
@@ -343,6 +471,150 @@ fn format_validation_feedback(errors: &ScenarioValidationErrors) -> String {
     format!("spawn_occupants rejected the placement: {details}")
 }
 
+fn fire_origin_candidates(simulation: &Simulation) -> Vec<FireOriginCandidate> {
+    let scene = simulation.scene();
+    scene
+        .floors
+        .iter()
+        .flat_map(|floor| {
+            let grid = simulation.grid(&floor.id);
+            floor.objects.iter().filter_map(move |object| {
+                let grid = grid?;
+                let coordinate = grid.world_to_cell(object.transform.position_m)?;
+                if grid.cell(coordinate)?.room_ids.is_empty() {
+                    return None;
+                }
+                let asset = scene
+                    .assets
+                    .iter()
+                    .find(|asset| asset.id == object.asset_id)?;
+                Some(FireOriginCandidate {
+                    object_id: object.id.clone(),
+                    category: asset.category.clone(),
+                })
+            })
+        })
+        .collect()
+}
+
+fn resolve_scenarios(
+    scene: &tflop_world_core::Scene,
+    proposals: Vec<ProposedScenario>,
+    origins: &[FireOriginCandidate],
+    sites: &[SpawnSite],
+    count: usize,
+    occupant_count: usize,
+) -> Result<Vec<GeneratedScenario>, AgentError> {
+    if proposals.len() != count {
+        return Err(AgentError::InvalidToolCall(format!(
+            "create_fire_scenarios requires exactly {count} scenarios, but Gemini supplied {}",
+            proposals.len()
+        )));
+    }
+    let known_rooms = sites
+        .iter()
+        .flat_map(|site| site.room_ids.iter().map(String::as_str))
+        .collect::<std::collections::HashSet<_>>();
+    let mut scenarios = Vec::with_capacity(count);
+    let mut fingerprints = std::collections::HashSet::new();
+    for (index, proposal) in proposals.into_iter().enumerate() {
+        if !origins
+            .iter()
+            .any(|origin| origin.object_id == proposal.ignition_object_id)
+        {
+            return Err(AgentError::InvalidToolCall(format!(
+                "unknown ignition_object_id {}",
+                proposal.ignition_object_id
+            )));
+        }
+        if proposal.occupied_room_ids.is_empty()
+            || proposal
+                .occupied_room_ids
+                .iter()
+                .any(|room| !known_rooms.contains(room.as_str()))
+        {
+            return Err(AgentError::InvalidToolCall(format!(
+                "scenario {index} contains no rooms or an unknown occupied_room_id"
+            )));
+        }
+        let seed = index as u64;
+        let occupants =
+            occupants_for_rooms(sites, &proposal.occupied_room_ids, occupant_count, seed)?;
+        let mut validation = Simulation::new(scene.clone(), SimulationConfig::default())
+            .map_err(|error| AgentError::Simulation(error.to_string()))?;
+        validation
+            .spawn_occupants(&occupants)
+            .map_err(|error| AgentError::InvalidToolCall(error.to_string()))?;
+        let fingerprint = format!(
+            "{}:{}",
+            proposal.ignition_object_id,
+            occupants
+                .iter()
+                .map(|occupant| format!(
+                    "{:.3},{:.3}",
+                    occupant.position_m.x, occupant.position_m.y
+                ))
+                .collect::<Vec<_>>()
+                .join(";")
+        );
+        if !fingerprints.insert(fingerprint) {
+            return Err(AgentError::InvalidToolCall(
+                "Gemini produced duplicate scenarios".into(),
+            ));
+        }
+        scenarios.push(GeneratedScenario {
+            object_id: proposal.ignition_object_id,
+            occupants,
+            seed,
+        });
+    }
+    Ok(scenarios)
+}
+
+fn occupants_for_rooms(
+    sites: &[SpawnSite],
+    room_ids: &[String],
+    count: usize,
+    seed: u64,
+) -> Result<Vec<OccupantSpawn>, AgentError> {
+    let mut eligible = sites
+        .iter()
+        .enumerate()
+        .filter(|(_, site)| site.room_ids.iter().any(|room| room_ids.contains(room)))
+        .collect::<Vec<_>>();
+    if eligible.len() < count {
+        eligible = sites.iter().enumerate().collect();
+    }
+    if eligible.len() < count {
+        return Err(AgentError::InsufficientSpawnSites {
+            requested: count,
+            available: eligible.len(),
+        });
+    }
+    eligible.sort_by(|(left_index, _), (right_index, _)| {
+        unit(seed.wrapping_add(*left_index as u64 + 1), 11)
+            .total_cmp(&unit(seed.wrapping_add(*right_index as u64 + 1), 11))
+    });
+    Ok(eligible
+        .into_iter()
+        .take(count)
+        .enumerate()
+        .map(|(index, (_, site))| {
+            let number = index as u64 + 1;
+            OccupantSpawn {
+                id: format!("occupant-{number}"),
+                floor_id: site.floor_id.clone(),
+                position_m: site.position_m,
+                walking_speed_m_per_s: MIN_HURRIED_SPEED_M_PER_S
+                    + (MAX_HURRIED_SPEED_M_PER_S - MIN_HURRIED_SPEED_M_PER_S)
+                        * unit(seed.wrapping_add(number), 12),
+                pre_movement_delay_seconds: 45.0 * unit(seed.wrapping_add(number), 13),
+                injured: false,
+            }
+        })
+        .collect())
+}
+
 struct GeminiProvider {
     api_key: String,
     model: String,
@@ -438,6 +710,122 @@ impl GeminiProvider {
         })
     }
 
+    async fn propose_scenarios(
+        &self,
+        count: usize,
+        origins: &[FireOriginCandidate],
+        sites: &[SpawnSite],
+        feedback: Option<&str>,
+    ) -> Result<Vec<ProposedScenario>, AgentError> {
+        let mut rooms = std::collections::BTreeMap::<String, usize>::new();
+        for site in sites {
+            for room_id in &site.room_ids {
+                *rooms.entry(room_id.clone()).or_default() += 1;
+            }
+        }
+        let correction = feedback.map_or_else(String::new, |feedback| {
+            format!("Your previous tool call was rejected: {feedback}. Correct every issue. ")
+        });
+        let prompt = format!(
+            "{correction}Create exactly {count} distinct hypothetical fire-training scenarios for this building. For every scenario choose one ignition_object_id from the verified fire-origin catalog and one or more occupied_room_ids from the verified room catalog. Vary fire origins and occupied rooms across the set. Never invent IDs. These are bounded simulator inputs, not real-world predictions.\n\nVerified fire-origin catalog:\n{}\n\nVerified room catalog (room ID to available occupant positions):\n{}",
+            serde_json::to_string(origins).expect("origins serialize"),
+            serde_json::to_string(&rooms).expect("rooms serialize"),
+        );
+        let body = json!({
+            "systemInstruction": {
+                "parts": [{
+                    "text": "You create varied, bounded inputs for a deterministic firefighter training simulator. You must use only the supplied IDs and call create_fire_scenarios exactly once."
+                }]
+            },
+            "contents": [{ "role": "user", "parts": [{ "text": prompt }] }],
+            "tools": [{
+                "functionDeclarations": [{
+                    "name": "create_fire_scenarios",
+                    "description": "Create the complete requested set of distinct simulator scenarios.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "scenarios": {
+                                "type": "array",
+                                "description": format!("Exactly {count} scenario specifications"),
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "ignition_object_id": { "type": "string" },
+                                        "occupied_room_ids": {
+                                            "type": "array",
+                                            "items": { "type": "string" }
+                                        }
+                                    },
+                                    "required": ["ignition_object_id", "occupied_room_ids"]
+                                }
+                            }
+                        },
+                        "required": ["scenarios"]
+                    }
+                }]
+            }],
+            "toolConfig": {
+                "functionCallingConfig": {
+                    "mode": "ANY",
+                    "allowedFunctionNames": ["create_fire_scenarios"]
+                }
+            },
+            "generationConfig": { "temperature": 0.9 }
+        });
+        let response = self.send(body).await?;
+        let parts = response
+            .pointer("/candidates/0/content/parts")
+            .and_then(Value::as_array)
+            .ok_or_else(|| AgentError::InvalidToolCall("response has no candidate parts".into()))?;
+        let call = parts
+            .iter()
+            .filter_map(|part| part.get("functionCall"))
+            .find(|call| call.get("name").and_then(Value::as_str) == Some("create_fire_scenarios"))
+            .ok_or_else(|| {
+                AgentError::InvalidToolCall("Gemini did not call create_fire_scenarios".into())
+            })?;
+        let arguments: GenerateScenariosArguments = serde_json::from_value(
+            call.get("args")
+                .cloned()
+                .ok_or_else(|| AgentError::InvalidToolCall("tool call has no arguments".into()))?,
+        )
+        .map_err(|error| AgentError::InvalidToolCall(error.to_string()))?;
+        Ok(arguments.scenarios)
+    }
+
+    async fn send(&self, body: Value) -> Result<Value, AgentError> {
+        let url = format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
+            self.model
+        );
+        let response = self
+            .http
+            .post(url)
+            .header("x-goog-api-key", &self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|error| AgentError::GeminiRequest(error.to_string()))?;
+        let status = response.status();
+        let body: Value = response
+            .json()
+            .await
+            .map_err(|error| AgentError::GeminiRequest(error.to_string()))?;
+        if !status.is_success() {
+            let message = body
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("Gemini returned an unknown error")
+                .to_owned();
+            return Err(AgentError::GeminiApi {
+                status: status.as_u16(),
+                message,
+            });
+        }
+        Ok(body)
+    }
+
     fn parse_response(
         body: &Value,
         spawn_sites: &[SpawnSite],
@@ -491,34 +879,7 @@ impl OccupantProposalProvider for GeminiProvider {
         request: ProposalRequest,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<OccupantSpawn>, AgentError>> + Send + '_>> {
         Box::pin(async move {
-            let url = format!(
-                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
-                self.model
-            );
-            let response = self
-                .http
-                .post(url)
-                .header("x-goog-api-key", &self.api_key)
-                .json(&Self::request_body(&request))
-                .send()
-                .await
-                .map_err(|error| AgentError::GeminiRequest(error.to_string()))?;
-            let status = response.status();
-            let body: Value = response
-                .json()
-                .await
-                .map_err(|error| AgentError::GeminiRequest(error.to_string()))?;
-            if !status.is_success() {
-                let message = body
-                    .pointer("/error/message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Gemini returned an unknown error")
-                    .to_owned();
-                return Err(AgentError::GeminiApi {
-                    status: status.as_u16(),
-                    message,
-                });
-            }
+            let body = self.send(Self::request_body(&request)).await?;
             Self::parse_response(&body, &request.spawn_sites)
         })
     }
@@ -564,6 +925,10 @@ enum AgentError {
         attempts: usize,
         last_failure: String,
     },
+    ScenarioAttemptsExhausted {
+        attempts: usize,
+        last_failure: String,
+    },
 }
 
 impl std::fmt::Display for AgentError {
@@ -594,6 +959,13 @@ impl std::fmt::Display for AgentError {
                 formatter,
                 "Gemini failed to produce a valid layout after {attempts} attempts: {last_failure}"
             ),
+            Self::ScenarioAttemptsExhausted {
+                attempts,
+                last_failure,
+            } => write!(
+                formatter,
+                "Gemini failed to produce valid scenarios after {attempts} attempts: {last_failure}"
+            ),
         }
     }
 }
@@ -613,6 +985,10 @@ fn error_response(error: AgentError) -> Response {
         | AgentError::InsufficientSpawnSites { .. } => (
             StatusCode::UNPROCESSABLE_ENTITY,
             "occupant_generation_failed",
+        ),
+        AgentError::ScenarioAttemptsExhausted { .. } => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "scenario_generation_failed",
         ),
         AgentError::Simulation(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
     };
@@ -744,6 +1120,55 @@ mod tests {
         assert_eq!(occupants.len(), 1);
         assert_eq!(occupants[0].id, "occupant-1");
         assert_eq!(occupants[0].position_m, sites[0].position_m);
+    }
+
+    #[test]
+    fn resolves_agent_scenarios_into_distinct_valid_inputs() {
+        let simulation = simulation();
+        let sites = build_spawn_sites(&simulation, 5).expect("demo has spawn sites");
+        let origins = fire_origin_candidates(&simulation);
+        let proposals = vec![
+            ProposedScenario {
+                ignition_object_id: origins[0].object_id.clone(),
+                occupied_room_ids: vec!["room-1".into()],
+            },
+            ProposedScenario {
+                ignition_object_id: origins[1].object_id.clone(),
+                occupied_room_ids: vec!["room-1".into()],
+            },
+        ];
+
+        let scenarios = resolve_scenarios(simulation.scene(), proposals, &origins, &sites, 2, 5)
+            .expect("bounded agent choices resolve");
+
+        assert_eq!(scenarios.len(), 2);
+        assert_eq!(scenarios[0].occupants.len(), 5);
+        assert_eq!(scenarios[1].occupants.len(), 5);
+        assert_ne!(
+            scenarios[0].occupants[0].position_m, scenarios[1].occupants[0].position_m,
+            "scenario seeds produce different exact layouts"
+        );
+    }
+
+    #[test]
+    fn rejects_agent_scenarios_with_invented_ids() {
+        let simulation = simulation();
+        let sites = build_spawn_sites(&simulation, 1).expect("demo has spawn sites");
+        let origins = fire_origin_candidates(&simulation);
+        let error = resolve_scenarios(
+            simulation.scene(),
+            vec![ProposedScenario {
+                ignition_object_id: "invented-fire".into(),
+                occupied_room_ids: vec!["room-1".into()],
+            }],
+            &origins,
+            &sites,
+            1,
+            1,
+        )
+        .expect_err("invented IDs are rejected");
+
+        assert!(error.to_string().contains("unknown ignition_object_id"));
     }
 
     #[test]

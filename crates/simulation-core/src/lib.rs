@@ -2,6 +2,7 @@
 
 mod agent;
 mod crowd;
+mod ensemble;
 mod evacuation;
 mod exit_field;
 mod firefighting;
@@ -21,6 +22,10 @@ pub use agent::{
     FirefighterState, Movement, OCCUPANT_RADIUS_M, OccupantPhase, OccupantState,
 };
 pub use crowd::{CROWD_GIVE_M, CrowdConfig, CrowdConfigError, SINGLE_FILE_MAX_WIDTH_M};
+pub use ensemble::{
+    FireEnsembleAnalysis, FireEnsembleConfig, FireEnsembleError, FireFrequencyCell,
+    FireRepresentative, FireRepresentativeAssignment, analyze_fire_ensemble,
+};
 pub use evacuation::{AlarmConfig, Evacuation, EvacuationError, reachable_exit_cells};
 pub use firefighting::{
     CrewMemory, CrewReport, Firefighting, FirefightingConfig, FirefightingError, InjuredSighting,

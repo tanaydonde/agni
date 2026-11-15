@@ -36,6 +36,8 @@ interface CameraControllerProps {
   geometry: FloorGeometry
   /** Called when fly mode starts (pointer captured) or ends (pointer released). */
   onActiveChange?: (active: boolean) => void
+  /** False while another controller owns the Three.js camera. */
+  enabled?: boolean
 }
 
 /**
@@ -51,7 +53,12 @@ interface CameraControllerProps {
  *
  * F returns to the overview in either mode.
  */
-export function CameraController({ element, geometry, onActiveChange }: CameraControllerProps) {
+export function CameraController({
+  element,
+  geometry,
+  onActiveChange,
+  enabled = true,
+}: CameraControllerProps) {
   const get = useThree((state) => state.get)
   const pose = useRef<CameraPose | null>(null)
   const keys = useRef(new Set<string>())
@@ -85,7 +92,14 @@ export function CameraController({ element, geometry, onActiveChange }: CameraCo
 
   useLayoutEffect(goHome, [goHome])
 
+  // Review cameras overwrite the actual camera but not this controller's
+  // stored pose. Restore it when Building mode becomes active again.
   useEffect(() => {
+    if (enabled) apply()
+  }, [apply, enabled])
+
+  useEffect(() => {
+    if (!enabled) return
     const el = element.current
     if (!el) return
     const isActive = () => document.pointerLockElement === el
@@ -245,9 +259,10 @@ export function CameraController({ element, geometry, onActiveChange }: CameraCo
       document.removeEventListener('pointerlockchange', onPointerLockChange)
       if (isActive()) document.exitPointerLock()
     }
-  }, [apply, element, get, goHome])
+  }, [apply, element, enabled, get, goHome])
 
   useFrame((_, rawDelta) => {
+    if (!enabled) return
     const p = pose.current
     if (!p) return
     // After idle time (frameloop="demand") the first delta can be huge.

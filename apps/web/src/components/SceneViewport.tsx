@@ -1,5 +1,7 @@
 import { Canvas } from '@react-three/fiber'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useFireStore } from '../fire/fireStore'
+import { usePlaybackClock } from '../fire/usePlaybackClock'
 import {
   WorldServerUnavailableError,
   sceneMeshUrl,
@@ -22,10 +24,10 @@ import { SimulationAgents } from '../scene/SimulationAgents'
 import { TransformGizmo } from '../scene/TransformGizmo'
 import type { DetectedObject, Floor, Scene } from '../scene/types'
 import { ShowcaseViewport } from '../showcase/ShowcaseViewport'
-import { usePlaybackClock } from '../fire/usePlaybackClock'
 import { ControlsHint, type Controls } from './ControlsHint'
 import { FireControls } from './FireControls'
 import { FlyIndicator } from './FlyIndicator'
+import { ScenarioReviewControls } from './ScenarioReviewControls'
 
 interface SceneViewportProps {
   /** Scene the dev setup expects; only used in setup instructions. */
@@ -65,6 +67,7 @@ export function SceneViewport({ sceneId }: SceneViewportProps) {
 }
 
 type View = 'editor' | 'textured' | 'furnished'
+type PanelMode = 'building' | 'review'
 
 /** Stable empty list, so hiding scanned furniture doesn't rebuild every render. */
 const NO_DETECTED: DetectedObject[] = []
@@ -84,7 +87,10 @@ const VIEWS: [view: View, label: string][] = [
  */
 function SceneViews({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; meshUrl?: string }) {
   const [view, setView] = useState<View>('editor')
+  const [mode, setMode] = useState<PanelMode>('building')
   const [texturedOpened, setTexturedOpened] = useState(false)
+  const batch = useFireStore((state) => state.batch)
+  const pause = useFireStore((state) => state.pause)
   const { data: detection } = useDetectedFurniture(scene.id)
   // Where the scene has them now, so moving or deleting a scanned piece in the
   // editor moves or removes its model in the Matterport views too.
@@ -99,6 +105,8 @@ function SceneViews({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; mes
   const [showScanned, setShowScanned] = useState(true)
   const detected = showScanned ? scanned : NO_DETECTED
   const { data: furnitureModels } = useFurnitureModels()
+  const { elevation_m, rooms } = floor
+  const geometry = useMemo(() => buildFloorGeometry({ elevation_m, rooms }), [elevation_m, rooms])
   const models = useMemo(
     () =>
       placeModels(
@@ -114,14 +122,28 @@ function SceneViews({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; mes
     if (next !== 'editor') setTexturedOpened(true)
     setView(next)
   }
+  const showMode = (next: PanelMode) => {
+    pause()
+    setMode(next)
+  }
+  const editorVisible = mode === 'building' && view === 'editor'
 
   return (
     <>
-      <div className={`absolute inset-0 ${view === 'editor' ? '' : 'invisible'}`}>
-        <SceneCanvas scene={scene} floor={floor} meshUrl={meshUrl} />
+      <div className={`absolute inset-0 ${editorVisible ? '' : 'invisible'}`}>
+        <SceneCanvas
+          scene={scene}
+          floor={floor}
+          meshUrl={meshUrl}
+          geometry={geometry}
+          enabled={mode === 'building'}
+          showSimulation={!batch}
+        />
       </div>
       {texturedOpened && (
-        <div className={`absolute inset-0 ${view === 'editor' ? 'invisible' : ''}`}>
+        <div
+          className={`absolute inset-0 ${mode === 'building' && view !== 'editor' ? '' : 'invisible'}`}
+        >
           <ShowcaseViewport
             scene={scene}
             floor={floor}
@@ -131,31 +153,53 @@ function SceneViews({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; mes
         </div>
       )}
       <div
-        role="radiogroup"
-        aria-label="View"
-        className="absolute top-3 left-1/2 flex -translate-x-1/2 rounded-md border border-hairline bg-white p-0.5 text-xs font-medium shadow-[0_4px_12px_rgba(26,31,54,0.08)]"
+        role="tablist"
+        aria-label="Panel mode"
+        className="absolute top-3 left-3 z-30 flex rounded-md border border-hairline bg-white p-0.5 text-xs font-medium shadow-[0_4px_12px_rgba(26,31,54,0.08)]"
       >
-        {VIEWS.map(([value, label]) => (
-          <button
-            key={value}
-            type="button"
-            role="radio"
-            aria-checked={view === value}
-            onClick={() => show(value)}
-            className={
-              view === value
-                ? 'rounded bg-accent px-2.5 py-1 text-white'
-                : 'rounded px-2.5 py-1 text-ink-secondary hover:text-ink'
-            }
-          >
-            {label}
-          </button>
-        ))}
+        <PanelModeButton active={mode === 'building'} onClick={() => showMode('building')}>
+          Building
+        </PanelModeButton>
+        <PanelModeButton active={mode === 'review'} onClick={() => showMode('review')}>
+          Scenario Review
+        </PanelModeButton>
       </div>
-      <FireControls />
+      {mode === 'building' && (
+        <div
+          role="radiogroup"
+          aria-label="View"
+          className="absolute top-3 left-1/2 z-20 flex -translate-x-1/2 rounded-md border border-hairline bg-white p-0.5 text-xs font-medium shadow-[0_4px_12px_rgba(26,31,54,0.08)]"
+        >
+          {VIEWS.map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              role="radio"
+              aria-checked={view === value}
+              onClick={() => show(value)}
+              className={
+                view === value
+                  ? 'rounded bg-accent px-2.5 py-1 text-white'
+                  : 'rounded px-2.5 py-1 text-ink-secondary hover:text-ink'
+              }
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+      {mode === 'building' && !batch && <FireControls />}
+      {mode === 'review' && (
+        <ScenarioReviewControls
+          scene={scene}
+          floor={floor}
+          geometry={geometry}
+          meshUrl={meshUrl}
+        />
+      )}
       {/* The editor shows scanned furniture as scene objects (merged by the
           server); this toggle only affects the Matterport views. */}
-      {scanned.length > 0 && view !== 'editor' && (
+      {mode === 'building' && scanned.length > 0 && view !== 'editor' && (
         <button
           type="button"
           aria-pressed={showScanned}
@@ -173,14 +217,23 @@ function SceneViews({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; mes
  * The canvas plus its controls. Clicking captures the pointer for flying
  * around; Esc gives it back.
  */
-function SceneCanvas({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; meshUrl?: string }) {
+function SceneCanvas({
+  scene,
+  floor,
+  meshUrl,
+  geometry,
+  enabled,
+  showSimulation,
+}: {
+  scene: Scene
+  floor: Floor
+  meshUrl?: string
+  geometry: ReturnType<typeof buildFloorGeometry>
+  enabled: boolean
+  showSimulation: boolean
+}) {
   const focusTarget = useRef<HTMLDivElement>(null)
   const [active, setActive] = useState(false)
-  // Depend on the room data only: furniture edits replace `floor` but must
-  // not rebuild the room or reset the camera.
-  const { elevation_m, rooms } = floor
-  const geometry = useMemo(() => buildFloorGeometry({ elevation_m, rooms }), [elevation_m, rooms])
-
   return (
     <div
       ref={focusTarget}
@@ -193,20 +246,53 @@ function SceneCanvas({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; me
         <directionalLight position={[8, 14, 6]} intensity={1.4} />
         <SceneModel geometry={geometry} meshUrl={meshUrl} />
         <Furniture floor={floor} assets={scene.assets} />
-        <SurfaceFire floor={floor} />
-        <SimulationAgents floor={floor} />
-        <TransformGizmo floor={floor} />
-        <CameraController element={focusTarget} geometry={geometry} onActiveChange={setActive} />
-        <SelectionController element={focusTarget} floor={floor} />
-        <PlacementController scene={scene} floor={floor} />
+        {showSimulation && <SurfaceFire floor={floor} />}
+        {showSimulation && <SimulationAgents floor={floor} />}
+        {enabled && <TransformGizmo floor={floor} />}
+        <CameraController
+          element={focusTarget}
+          geometry={geometry}
+          onActiveChange={setActive}
+          enabled={enabled}
+        />
+        {enabled && <SelectionController element={focusTarget} floor={floor} />}
+        {enabled && <PlacementController scene={scene} floor={floor} />}
       </Canvas>
-      {active && <FlyIndicator />}
-      <PlacementStatus />
-      <ControlsHint
-        title={active ? 'Flying' : 'Editing'}
-        controls={active ? FLY_CONTROLS : EDIT_CONTROLS}
-      />
+      {enabled && active && <FlyIndicator />}
+      {enabled && <PlacementStatus />}
+      {enabled && (
+        <ControlsHint
+          title={active ? 'Flying' : 'Editing'}
+          controls={active ? FLY_CONTROLS : EDIT_CONTROLS}
+        />
+      )}
     </div>
+  )
+}
+
+function PanelModeButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean
+  onClick: () => void
+  children: ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      onClick={onClick}
+      className={
+        active
+          ? 'rounded bg-ink px-3 py-1 text-white'
+          : 'rounded px-3 py-1 text-ink-secondary hover:text-ink'
+      }
+    >
+      {children}
+    </button>
   )
 }
 

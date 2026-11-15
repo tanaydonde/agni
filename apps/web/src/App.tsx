@@ -26,6 +26,7 @@ export default function App() {
       <aside className="flex w-[400px] flex-none flex-col gap-3">
         <ActionBar
           canRunSimulation={selectedObjectId !== null && !fireLoading}
+          hasSelectedOrigin={selectedObjectId !== null}
           onRunSimulation={() => selectedObjectId && void startFire(selectedObjectId)}
           scenario={scenario}
           onScenarioChange={setScenario}
