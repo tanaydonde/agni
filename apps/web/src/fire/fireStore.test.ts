@@ -80,8 +80,8 @@ describe('fire playback', () => {
 
   it('keeps scenario choices it was not given', () => {
     const before = useFireStore.getState().scenario
-    useFireStore.getState().setScenario({ occupantCount: 200 })
-    expect(useFireStore.getState().scenario).toEqual({ ...before, occupantCount: 200 })
+    useFireStore.getState().setScenario({ occupantCount: 20 })
+    expect(useFireStore.getState().scenario).toEqual({ ...before, occupantCount: 20 })
     useFireStore.getState().setScenario(before)
   })
 

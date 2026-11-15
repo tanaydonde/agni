@@ -1,5 +1,5 @@
 import { Canvas } from '@react-three/fiber'
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { useFireStore } from '../fire/fireStore'
 import { usePlaybackClock } from '../fire/usePlaybackClock'
 import {
@@ -13,15 +13,12 @@ import {
 import { CameraController } from '../scene/CameraController'
 import { placeModels } from '../scene/modelChoice'
 import { detectedInScene } from '../scene/scanned'
-import { useEditorStore } from '../scene/editorStore'
 import { Furniture } from '../scene/Furniture'
 import { buildFloorGeometry } from '../scene/geometry'
-import { PlacementController } from '../scene/PlacementController'
 import { SceneModel } from '../scene/SceneModel'
 import { SelectionController } from '../scene/SelectionController'
 import { SurfaceFire } from '../scene/SurfaceFire'
 import { SimulationAgents } from '../scene/SimulationAgents'
-import { TransformGizmo } from '../scene/TransformGizmo'
 import type { DetectedObject, Floor, Scene } from '../scene/types'
 import { ShowcaseViewport } from '../showcase/ShowcaseViewport'
 import { ControlsHint, type Controls } from './ControlsHint'
@@ -152,42 +149,6 @@ function SceneViews({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; mes
           />
         </div>
       )}
-      <div
-        role="tablist"
-        aria-label="Panel mode"
-        className="absolute top-3 left-3 z-30 flex rounded-md border border-hairline bg-white p-0.5 text-xs font-medium shadow-[0_4px_12px_rgba(26,31,54,0.08)]"
-      >
-        <PanelModeButton active={mode === 'building'} onClick={() => showMode('building')}>
-          Building
-        </PanelModeButton>
-        <PanelModeButton active={mode === 'review'} onClick={() => showMode('review')}>
-          Scenario Review
-        </PanelModeButton>
-      </div>
-      {mode === 'building' && (
-        <div
-          role="radiogroup"
-          aria-label="View"
-          className="absolute top-3 left-1/2 z-20 flex -translate-x-1/2 rounded-md border border-hairline bg-white p-0.5 text-xs font-medium shadow-[0_4px_12px_rgba(26,31,54,0.08)]"
-        >
-          {VIEWS.map(([value, label]) => (
-            <button
-              key={value}
-              type="button"
-              role="radio"
-              aria-checked={view === value}
-              onClick={() => show(value)}
-              className={
-                view === value
-                  ? 'rounded bg-accent px-2.5 py-1 text-white'
-                  : 'rounded px-2.5 py-1 text-ink-secondary hover:text-ink'
-              }
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      )}
       {mode === 'building' && !batch && <FireControls />}
       {mode === 'review' && (
         <ScenarioReviewControls
@@ -197,18 +158,64 @@ function SceneViews({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; mes
           meshUrl={meshUrl}
         />
       )}
-      {/* The editor shows scanned furniture as scene objects (merged by the
-          server); this toggle only affects the Matterport views. */}
-      {mode === 'building' && scanned.length > 0 && view !== 'editor' && (
-        <button
-          type="button"
-          aria-pressed={showScanned}
-          onClick={() => setShowScanned((shown) => !shown)}
-          className="absolute top-3 right-3 rounded-md border border-hairline bg-white px-2.5 py-1 text-xs font-medium text-ink-secondary shadow-[0_4px_12px_rgba(26,31,54,0.08)] hover:text-ink aria-pressed:text-ink"
-        >
-          {showScanned ? 'Hide' : 'Show'} scanned furniture ({scanned.length})
-        </button>
-      )}
+      {/* One top bar: left, center and right slots share a row while there's
+          room and wrap onto a second row (instead of overlapping) when narrow. */}
+      <div className="pointer-events-none absolute inset-x-3 top-3 z-30 flex flex-wrap items-start gap-2 text-xs font-medium whitespace-nowrap">
+        <div className="flex flex-1 basis-0 justify-start">
+          <div
+            role="tablist"
+            aria-label="Panel mode"
+            className="pointer-events-auto flex shrink-0 rounded-md border border-hairline bg-white p-0.5 shadow-[0_4px_12px_rgba(26,31,54,0.08)]"
+          >
+            <PanelModeButton active={mode === 'building'} onClick={() => showMode('building')}>
+              Building
+            </PanelModeButton>
+            <PanelModeButton active={mode === 'review'} onClick={() => showMode('review')}>
+              Scenario Review
+            </PanelModeButton>
+          </div>
+        </div>
+        {mode === 'building' && (
+          <div
+            role="radiogroup"
+            aria-label="View"
+            className="pointer-events-auto flex shrink-0 rounded-md border border-hairline bg-white p-0.5 shadow-[0_4px_12px_rgba(26,31,54,0.08)]"
+          >
+            {VIEWS.map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={view === value}
+                onClick={() => show(value)}
+                className={
+                  view === value
+                    ? 'rounded bg-accent px-2.5 py-1 text-white'
+                    : 'rounded px-2.5 py-1 text-ink-secondary hover:text-ink'
+                }
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+        {mode === 'building' && (
+          <div className="flex flex-1 basis-0 justify-end">
+            {/* The editor shows scanned furniture as scene objects (merged by
+                the server); this toggle only affects the Matterport views. */}
+            {scanned.length > 0 && view !== 'editor' && (
+              <button
+                type="button"
+                aria-pressed={showScanned}
+                onClick={() => setShowScanned((shown) => !shown)}
+                className="pointer-events-auto shrink-0 rounded-md border border-hairline bg-white px-2.5 py-1 text-ink-secondary shadow-[0_4px_12px_rgba(26,31,54,0.08)] hover:text-ink aria-pressed:text-ink"
+              >
+                {showScanned ? 'Hide' : 'Show'} scanned furniture ({scanned.length})
+              </button>
+            )}
+          </div>
+        )}
+      </div>
     </>
   )
 }
@@ -238,7 +245,7 @@ function SceneCanvas({
     <div
       ref={focusTarget}
       tabIndex={-1}
-      aria-label="3D view. Click to select furniture; right-click to fly, Escape to stop."
+      aria-label="3D view. Click furniture to choose the fire origin; right-click to fly, Escape to stop."
       className="absolute inset-0 rounded-lg outline-none"
     >
       <Canvas frameloop="demand" dpr={[1, 2]} camera={{ fov: 50 }}>
@@ -248,18 +255,15 @@ function SceneCanvas({
         <Furniture floor={floor} assets={scene.assets} />
         {showSimulation && <SurfaceFire floor={floor} />}
         {showSimulation && <SimulationAgents floor={floor} />}
-        {enabled && <TransformGizmo floor={floor} />}
         <CameraController
           element={focusTarget}
           geometry={geometry}
           onActiveChange={setActive}
           enabled={enabled}
         />
-        {enabled && <SelectionController element={focusTarget} floor={floor} />}
-        {enabled && <PlacementController scene={scene} floor={floor} />}
+        {enabled && <SelectionController element={focusTarget} />}
       </Canvas>
       {enabled && active && <FlyIndicator />}
-      {enabled && <PlacementStatus />}
       {enabled && (
         <ControlsHint
           title={active ? 'Flying' : 'Editing'}
@@ -296,45 +300,8 @@ function PanelModeButton({
   )
 }
 
-const NOTICE_MS = 3500
-
-/**
- * Says why the furniture being dragged can't go where it is (live, from the
- * world's dry run), or why the last edit was rejected (briefly).
- */
-function PlacementStatus() {
-  const liveIssue = useEditorStore((state) =>
-    (state.drag || state.placing) && state.liveCheck && !state.liveCheck.valid
-      ? (state.liveCheck.message ?? "Can't go here")
-      : null,
-  )
-  const notice = useEditorStore((state) => state.notice)
-  const dismissNotice = useEditorStore((state) => state.dismissNotice)
-
-  useEffect(() => {
-    if (!notice) return
-    const timer = setTimeout(() => dismissNotice(notice.id), NOTICE_MS)
-    return () => clearTimeout(timer)
-  }, [notice, dismissNotice])
-
-  const text = liveIssue ?? notice?.text
-  if (!text) return null
-  return (
-    <div
-      role="status"
-      className="pointer-events-none absolute top-14 left-1/2 -translate-x-1/2 rounded-md border border-danger/30 bg-white px-3 py-1.5 text-xs font-medium text-danger shadow-[0_4px_12px_rgba(26,31,54,0.08)]"
-    >
-      {text}
-    </div>
-  )
-}
-
 const EDIT_CONTROLS: Controls = [
-  [['Click'], 'Select'],
-  [['Drag', 'Arrow'], 'Move along X / Y'],
-  [['Drag', 'Square'], 'Move freely'],
-  [['Drag', 'Ring'], 'Rotate (⇧ snaps 15°)'],
-  [['Del'], 'Delete selected'],
+  [['Click'], 'Select fire origin'],
   [['Esc'], 'Deselect'],
   [['Pinch'], 'Move to cursor'],
   [['Swipe'], 'Look around'],
