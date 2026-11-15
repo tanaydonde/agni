@@ -21,9 +21,9 @@ pub use agent::{
     FirefighterState, Movement, OCCUPANT_RADIUS_M, OccupantPhase, OccupantState,
 };
 pub use crowd::{CROWD_GIVE_M, CrowdConfig, CrowdConfigError, SINGLE_FILE_MAX_WIDTH_M};
-pub use evacuation::{Evacuation, EvacuationError, reachable_exit_cells};
+pub use evacuation::{AlarmConfig, Evacuation, EvacuationError, reachable_exit_cells};
 pub use firefighting::{
-    CrewMemory, CrewReport, Firefighting, FirefightingConfig, FirefightingError,
+    CrewMemory, CrewReport, Firefighting, FirefightingConfig, FirefightingError, InjuredSighting,
 };
 pub use grid::{
     GridBounds, GridBuildError, GridCell, GridCellKind, GridCoordinate, GridSummary, SimulationGrid,
@@ -37,14 +37,14 @@ pub use results::{
 pub use scenario::{
     CrewSpawn, DEFAULT_FIREFIGHTER_WALKING_SPEED_M_PER_S, DEFAULT_OCCUPANT_WALKING_SPEED_M_PER_S,
     MAX_CREW_MEMBERS, OccupantSpawn, SCENARIO_SCHEMA_VERSION, Scenario, ScenarioValidationError,
-    ScenarioValidationErrors, exterior_exits,
+    ScenarioValidationErrors, choose_injured, exterior_exits,
 };
 pub use surface_fire::{
-    CombustionState, DEFAULT_NOZZLE_COOLING_KW, DEFAULT_NOZZLE_REACH_M, FURNITURE_FIRE_CELL_SIZE_M,
-    FireMaterialCatalog, FireMaterialProfile, FurnitureFireCell, FurnitureFireMaterial,
-    RoomHeatRelease, SURFACE_FIRE_SCHEMA_VERSION, Suppression, SuppressionOutcome,
-    SurfaceFireConfig, SurfaceFireError, SurfaceFireFrame, SurfaceFireNode, SurfaceFireNodeFrame,
-    SurfaceFireNodeSource, SurfaceFireWorld,
+    CombustionState, DEFAULT_NOZZLE_COOLING_KW, DEFAULT_NOZZLE_HALF_ANGLE_DEGREES,
+    DEFAULT_NOZZLE_REACH_M, FURNITURE_FIRE_CELL_SIZE_M, FireMaterialCatalog, FireMaterialProfile,
+    FurnitureFireCell, FurnitureFireMaterial, RoomHeatRelease, SURFACE_FIRE_SCHEMA_VERSION,
+    Suppression, SuppressionOutcome, SurfaceFireConfig, SurfaceFireError, SurfaceFireFrame,
+    SurfaceFireNode, SurfaceFireNodeFrame, SurfaceFireNodeSource, SurfaceFireWorld,
 };
 
 /// Inputs that remain fixed for one simulation run.

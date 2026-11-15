@@ -64,6 +64,18 @@ describe('fireCellBoxes', () => {
     expect(floor.position.z).toBeGreaterThan(0.1)
   })
 
+  it('draws nothing once the fire is out, however warm cells still are', () => {
+    const out = fireCellBoxes(
+      frame([
+        node({ id: 'a', state: 'heating' }),
+        node({ id: 'b', state: 'extinguished' }),
+        node({ id: 'c', state: 'burned_out' }),
+      ]),
+      [sofa],
+    )
+    expect(out).toEqual([])
+  })
+
   it('draws nothing without a frame', () => {
     expect(fireCellBoxes(undefined, [sofa])).toEqual([])
   })

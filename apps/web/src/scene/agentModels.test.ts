@@ -7,7 +7,9 @@ import { describe, expect, it } from 'vitest'
 import type { AgentFrame } from '../fire/types'
 import {
   AGENT_MODEL_URLS,
+  agentPose,
   agentScale,
+  nozzleStream,
   type BodyModel,
   type BodyPart,
   extractParts,
@@ -103,6 +105,43 @@ describe.each([
       for (let i = 0; i < eye.positions.length; i += 3) x += eye.positions[i]
       expect(x / (eye.positions.length / 3)).toBeGreaterThan(0.4)
     }
+  })
+})
+
+describe('agentPose', () => {
+  const occupant = (phase: 'injured' | 'carried' | 'moving_to_exit') =>
+    ({ role: { type: 'occupant', phase } }) as AgentFrame
+
+  it('lays injured people down and puts carried people over a shoulder', () => {
+    expect(agentPose(occupant('injured'))).toBe('lying')
+    expect(agentPose(occupant('carried'))).toBe('carried')
+    expect(agentPose(occupant('moving_to_exit'))).toBe('standing')
+  })
+})
+
+describe('nozzleStream', () => {
+  const firefighter = (target?: { x: number; y: number; z: number }) =>
+    ({
+      position_m: { x: 0, y: 0, z: 0 },
+      role: { type: 'firefighter', crew_id: 'engine-1', phase: 'suppressing', nozzle_target_m: target },
+    }) as AgentFrame
+
+  it('draws nothing unless the hose is aimed', () => {
+    expect(nozzleStream(firefighter())).toBeNull()
+  })
+
+  it('runs from the nozzle to the target, tip at the nozzle, widening with distance', () => {
+    const stream = nozzleStream(firefighter({ x: 4, y: 0, z: 0.8 }))!
+    // Nozzle at 1.1 m, target 0.3 m above its fire: both at 1.1 m here.
+    expect(stream.position).toEqual([2, 0, 1.1])
+    expect(stream.scale[1]).toBeCloseTo(4)
+    expect(stream.scale[0]).toBeCloseTo(4 * Math.tan((15 * Math.PI) / 180))
+    // The cone's tip (+Y) turned toward the nozzle (-X).
+    const tip = new THREE.Vector3(0, 1, 0).applyQuaternion(
+      new THREE.Quaternion(...stream.quaternion),
+    )
+    expect(tip.x).toBeCloseTo(-1)
+    expect(tip.y).toBeCloseTo(0)
   })
 })
 

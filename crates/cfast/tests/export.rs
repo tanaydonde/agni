@@ -44,6 +44,17 @@ fn normalizes_translated_world_coordinates_into_the_compartment() {
 }
 
 #[test]
+fn pulls_a_fire_just_past_the_room_into_it() {
+    let mut scenario = scenario_fixture();
+    scenario.fires[0].fire.position_m = point(5.4, 2.0);
+
+    let input = export_single_room(&scene_fixture(), &scenario)
+        .expect("a fire 0.4 m past the wall is still this room's");
+
+    assert!(input.contains("LOCATION = 5, 2"), "{input}");
+}
+
+#[test]
 fn rejects_fires_outside_the_selected_room() {
     let mut scenario = scenario_fixture();
     scenario.fires[0].fire.position_m = point(20.0, 20.0);

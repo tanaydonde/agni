@@ -102,6 +102,7 @@ fn validates_agent_frames() {
         movement: Movement::Walking,
         role: AgentFrameRole::Occupant {
             phase: OccupantPhase::MovingToExit,
+            injured: false,
         },
     };
     results.frames[0].agents = vec![agent.clone(), agent];

@@ -5,14 +5,19 @@ import { useSimulationAgents } from '../fire/fireStore'
 import { AGENT_COLORS, isShownAgent } from '../fire/frames'
 import {
   type AgentKind,
+  type AgentPose,
   type AgentTint,
   type BodyModel,
+  CARRY_HEIGHT_M,
+  CARRY_SCALE,
   TINT_COLORS,
+  agentPose,
   agentScale,
   agentTint,
   byTint,
   loadAgentModels,
   nextHeadings,
+  nozzleStream,
   partGeometry,
   partMaterial,
 } from './agentModels'
@@ -21,6 +26,15 @@ import type { Floor } from './types'
 
 const BODY_HEIGHT_M = 1.7
 const UNIT_SPHERE = new THREE.SphereGeometry(1, 16, 12)
+/** Unit cone, tip up; scaled and turned per stream by `nozzleStream`. */
+const STREAM_CONE = new THREE.ConeGeometry(1, 1, 24, 1, true)
+const STREAM_MATERIAL = new THREE.MeshBasicMaterial({
+  color: '#60a5fa',
+  transparent: true,
+  opacity: 0.35,
+  depthWrite: false,
+  side: THREE.DoubleSide,
+})
 function ovalMaterials(color: string): Record<AgentTint, THREE.Material> {
   return byTint(
     (tint) =>
@@ -36,12 +50,16 @@ const MATERIALS = {
   firefighter: ovalMaterials(AGENT_COLORS.firefighter),
 }
 const noRaycast = () => {}
+/** Turns a standing body (Z-up, footprint radius 1) onto its side, resting on the floor. */
+const ON_ITS_SIDE: [number, number, number] = [0, Math.PI / 2, 0]
 
 /**
  * Simulation agents as their role's blob model (see ./agentModels), drawn
  * AGENT_DRAW_SCALE times their collision circle and turned to face where they
  * walk. Upright ovals stand in until a model loads, or if it fails to.
  * People held up in the crowd glow red; people squeezing past glow amber.
+ * Injured people lie on the floor; people being carried lie across their
+ * firefighter's shoulder. A spraying firefighter's stream is a blue cone.
  */
 export function SimulationAgents({ floor }: { floor: Floor }) {
   const simulationAgents = useSimulationAgents()
@@ -63,18 +81,28 @@ export function SimulationAgents({ floor }: { floor: Floor }) {
     <group name="simulation-agents" rotation={Z_UP_TO_Y_UP}>
       {agents.map((agent) => {
         const tint = agentTint(agent)
+        const pose = agentPose(agent)
         const body = bodies[agent.role.type]?.[tint]
+        const lift = pose === 'carried' ? CARRY_HEIGHT_M : 0
+        const position: [number, number, number] = [
+          agent.position_m.x,
+          agent.position_m.y,
+          agent.position_m.z + lift,
+        ]
+        const shrink = pose === 'carried' ? CARRY_SCALE : 1
         return body ? (
           <group
             key={agent.id}
             name={agent.id}
-            position={[agent.position_m.x, agent.position_m.y, agent.position_m.z]}
+            position={position}
             rotation={[0, 0, headings.get(agent.id) ?? 0]}
-            scale={agentScale(agent.radius_m)}
+            scale={agentScale(agent.radius_m) * shrink}
           >
-            {body.map((part, index) => (
-              <mesh key={index} geometry={part.geometry} material={part.material} raycast={noRaycast} />
-            ))}
+            <group {...sideways(pose)}>
+              {body.map((part, index) => (
+                <mesh key={index} geometry={part.geometry} material={part.material} raycast={noRaycast} />
+              ))}
+            </group>
           </group>
         ) : (
           <mesh
@@ -83,17 +111,43 @@ export function SimulationAgents({ floor }: { floor: Floor }) {
             geometry={UNIT_SPHERE}
             material={MATERIALS[agent.role.type][tint]}
             position={[
-              agent.position_m.x,
-              agent.position_m.y,
-              agent.position_m.z + BODY_HEIGHT_M / 2,
+              position[0],
+              position[1],
+              position[2] + (pose === 'standing' ? BODY_HEIGHT_M / 2 : agent.radius_m),
             ]}
-            scale={[agent.radius_m, agent.radius_m, BODY_HEIGHT_M / 2]}
+            scale={
+              pose === 'standing'
+                ? [agent.radius_m, agent.radius_m, BODY_HEIGHT_M / 2]
+                : [(BODY_HEIGHT_M / 2) * shrink, agent.radius_m * shrink, agent.radius_m * shrink]
+            }
             raycast={noRaycast}
           />
         )
       })}
+      {agents.map((agent) => {
+        const stream = nozzleStream(agent)
+        return stream ? (
+          <mesh
+            key={`${agent.id}/stream`}
+            geometry={STREAM_CONE}
+            material={STREAM_MATERIAL}
+            position={stream.position}
+            quaternion={stream.quaternion}
+            scale={stream.scale}
+            raycast={noRaycast}
+          />
+        ) : null
+      })}
     </group>
   )
+}
+
+/** Lays a body on its side for lying and carried poses; a standing body is left alone. */
+function sideways(pose: AgentPose): {
+  position?: [number, number, number]
+  rotation?: [number, number, number]
+} {
+  return pose === 'standing' ? {} : { position: [0, 0, 1], rotation: ON_ITS_SIDE }
 }
 
 type BodyMeshes = { geometry: THREE.BufferGeometry; material: THREE.Material }[]

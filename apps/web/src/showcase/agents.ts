@@ -10,11 +10,15 @@ import {
   type AgentTint,
   type BodyModel,
   TINT_COLORS,
+  CARRY_HEIGHT_M,
+  CARRY_SCALE,
+  agentPose,
   agentScale,
   agentTint,
   byTint,
   loadAgentModels,
   nextHeadings,
+  nozzleStream,
   partGeometry,
   partMaterial,
 } from '../scene/agentModels'
@@ -37,6 +41,8 @@ class AgentComponent implements SceneComponent<AgentInputs> {
     geometry: THREE.SphereGeometry
     materials: Record<AgentKind, Record<AgentTint, THREE.Material>>
   }
+  /** Unit cone (tip up) and its material, for hose streams. */
+  private stream?: { geometry: THREE.ConeGeometry; material: THREE.Material }
   /** Built with Showcase's three.js once the models arrive, in every tint. */
   private bodies: Partial<
     Record<AgentKind, Record<AgentTint, { geometry: THREE.BufferGeometry; material: THREE.Material }[]>>
@@ -58,6 +64,16 @@ class AgentComponent implements SceneComponent<AgentInputs> {
       byTint(
         (tint) => new three.MeshBasicMaterial({ color: tint === 'none' ? color : TINT_COLORS[tint] }),
       )
+    this.stream = {
+      geometry: new three.ConeGeometry(1, 1, 24, 1, true),
+      material: new three.MeshBasicMaterial({
+        color: '#60a5fa',
+        transparent: true,
+        opacity: 0.35,
+        depthWrite: false,
+        side: three.DoubleSide,
+      }),
+    }
     this.oval = {
       geometry: new three.SphereGeometry(1, 16, 12),
       materials: {
@@ -90,6 +106,8 @@ class AgentComponent implements SceneComponent<AgentInputs> {
     this.destroyed = true
     this.root?.clear()
     this.oval?.geometry.dispose()
+    this.stream?.geometry.dispose()
+    this.stream?.material.dispose()
     for (const tints of Object.values(this.oval?.materials ?? {})) {
       for (const material of Object.values(tints)) material.dispose()
     }
@@ -111,25 +129,56 @@ class AgentComponent implements SceneComponent<AgentInputs> {
 
     for (const agent of this.inputs.agents) {
       const tint = agentTint(agent)
+      const pose = agentPose(agent)
+      const lift = pose === 'carried' ? CARRY_HEIGHT_M : 0
+      const shrink = pose === 'carried' ? CARRY_SCALE : 1
+      const stream = nozzleStream(agent)
+      if (stream && this.stream) {
+        const cone = new three.Mesh(this.stream.geometry, this.stream.material)
+        cone.position.set(...stream.position)
+        cone.quaternion.set(...stream.quaternion)
+        cone.scale.set(...stream.scale)
+        this.root.add(cone)
+      }
       const body = this.bodies[agent.role.type]?.[tint]
       if (body) {
         const group = new three.Group()
         group.name = agent.id
-        group.position.set(agent.position_m.x, agent.position_m.y, agent.position_m.z)
+        group.position.set(agent.position_m.x, agent.position_m.y, agent.position_m.z + lift)
         group.rotation.set(0, 0, this.headings.get(agent.id) ?? 0)
-        group.scale.setScalar(agentScale(agent.radius_m))
-        for (const part of body) group.add(new three.Mesh(part.geometry, part.material))
+        group.scale.setScalar(agentScale(agent.radius_m) * shrink)
+        // Lying hurt or carried: the body on its side, resting on the floor.
+        const posed = new three.Group()
+        if (pose !== 'standing') {
+          posed.position.set(0, 0, 1)
+          posed.rotation.set(0, Math.PI / 2, 0)
+        }
+        for (const part of body) posed.add(new three.Mesh(part.geometry, part.material))
+        group.add(posed)
         this.root.add(group)
         continue
       }
       const mesh = new three.Mesh(this.oval.geometry, this.oval.materials[agent.role.type][tint])
       mesh.name = agent.id
-      mesh.position.set(
-        agent.position_m.x,
-        agent.position_m.y,
-        agent.position_m.z + BODY_HEIGHT_M / 2,
-      )
-      mesh.scale.set(agent.radius_m, agent.radius_m, BODY_HEIGHT_M / 2)
+      if (pose === 'standing') {
+        mesh.position.set(
+          agent.position_m.x,
+          agent.position_m.y,
+          agent.position_m.z + BODY_HEIGHT_M / 2,
+        )
+        mesh.scale.set(agent.radius_m, agent.radius_m, BODY_HEIGHT_M / 2)
+      } else {
+        mesh.position.set(
+          agent.position_m.x,
+          agent.position_m.y,
+          agent.position_m.z + lift + agent.radius_m,
+        )
+        mesh.scale.set(
+          (BODY_HEIGHT_M / 2) * shrink,
+          agent.radius_m * shrink,
+          agent.radius_m * shrink,
+        )
+      }
       this.root.add(mesh)
     }
   }

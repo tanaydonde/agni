@@ -236,7 +236,7 @@ fn reports_every_scenario_problem() {
         crew("not-an-exit", "door-9", 2),
         crew("empty-crew", "door-1", 0),
         CrewSpawn {
-            search_order: vec![
+            route: vec![
                 "room-9".to_owned(),
                 "room-1".to_owned(),
                 "room-1".to_owned(),
@@ -261,8 +261,8 @@ fn reports_every_scenario_problem() {
         ("occupants[3].id", "unique"),
         ("crews[0].entry_opening_id", "exterior door"),
         ("crews[1].member_count", "between 1 and"),
-        ("crews[2].search_order[0]", "does not exist"),
-        ("crews[2].search_order[2]", "unique"),
+        ("crews[2].route[0]", "does not exist"),
+        ("crews[2].route[2]", "unique"),
     ] {
         assert!(
             has_error(&errors.0, path, message),
@@ -314,6 +314,7 @@ fn occupant(id: &str, floor_id: &str, x: f64, y: f64) -> OccupantSpawn {
         position_m: position(x, y),
         walking_speed_m_per_s: DEFAULT_OCCUPANT_WALKING_SPEED_M_PER_S,
         pre_movement_delay_seconds: 0.0,
+        injured: false,
     }
 }
 
@@ -321,7 +322,7 @@ fn crew(id: &str, entry_opening_id: &str, member_count: u32) -> CrewSpawn {
     CrewSpawn {
         id: id.to_owned(),
         entry_opening_id: Some(entry_opening_id.to_owned()),
-        search_order: vec![],
+        route: vec![],
         arrival_time_seconds: 30.0,
         member_count,
         walking_speed_m_per_s: 1.0,
@@ -411,4 +412,47 @@ fn edge(id: &str, start: Vec3, end: Vec3, openings: Vec<Opening>) -> BoundaryEdg
 
 fn position(x: f64, y: f64) -> Vec3 {
     Vec3 { x, y, z: 0.0 }
+}
+
+#[test]
+fn crews_accept_the_old_search_order_name_and_default_to_one_member() {
+    let crew: tflop_simulation_core::CrewSpawn = serde_json::from_value(serde_json::json!({
+        "id": "engine-1",
+        "search_order": ["west", "east"]
+    }))
+    .expect("crew parses");
+    assert_eq!(crew.route, ["west", "east"]);
+    assert_eq!(crew.member_count, 1);
+}
+
+#[test]
+fn choose_injured_is_repeatable_and_marks_the_requested_share() {
+    let mut people = (0..20)
+        .map(|index| occupant(&format!("occupant-{index}"), "floor-1", 1.0, 1.0))
+        .collect::<Vec<_>>();
+    tflop_simulation_core::choose_injured(&mut people, 0.25, 7);
+    let marked = people
+        .iter()
+        .map(|person| person.injured)
+        .collect::<Vec<_>>();
+    assert_eq!(marked.iter().filter(|&&injured| injured).count(), 5);
+
+    tflop_simulation_core::choose_injured(&mut people, 0.25, 7);
+    assert_eq!(
+        people
+            .iter()
+            .map(|person| person.injured)
+            .collect::<Vec<_>>(),
+        marked
+    );
+    tflop_simulation_core::choose_injured(&mut people, 0.25, 8);
+    assert_ne!(
+        people
+            .iter()
+            .map(|person| person.injured)
+            .collect::<Vec<_>>(),
+        marked
+    );
+    tflop_simulation_core::choose_injured(&mut people, 0.0, 7);
+    assert!(people.iter().all(|person| !person.injured));
 }

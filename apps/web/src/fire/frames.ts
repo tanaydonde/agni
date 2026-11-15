@@ -31,8 +31,9 @@ export function isShownAgent(agent: AgentFrame, floorId: string): boolean {
 const CREW_PHASE_LABELS: Record<FirefighterPhase, string> = {
   staging: 'arriving',
   advancing: 'moving in',
-  searching: 'searching',
   suppressing: 'spraying',
+  rescuing: 'reaching someone',
+  carrying: 'carrying someone out',
   withdrawing: 'leaving',
   exited: 'out',
   incapacitated: 'down',
@@ -74,6 +75,18 @@ export function agentsAtTime(frames: SimulationFrame[], seconds: number): AgentF
       },
     }
   })
+}
+
+/** How many occupants started injured, and how many of them are out. */
+export function rescueCounts(agents: AgentFrame[]): { rescued: number; injured: number } {
+  let rescued = 0
+  let injured = 0
+  for (const agent of agents) {
+    if (agent.role.type !== 'occupant' || !agent.role.injured) continue
+    injured++
+    if (agent.role.phase === 'exited') rescued++
+  }
+  return { rescued, injured }
 }
 
 /** How many people inside are held up: queued, or squeezing past someone. */

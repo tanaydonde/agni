@@ -47,11 +47,31 @@ pub struct OccupantSpawn {
     pub position_m: Vec3,
     #[serde(default = "default_occupant_speed")]
     pub walking_speed_m_per_s: f64,
-    /// Time from ignition until the occupant starts moving (perceiving a cue,
-    /// seeking information, preparing).
+    /// Time from hearing the alarm until the occupant starts moving
+    /// (seeking information, preparing). See [`AlarmConfig`](crate::AlarmConfig).
     #[serde(default)]
     pub pre_movement_delay_seconds: f64,
+    /// Hurt and unable to move; waits for a firefighter to carry them out.
+    #[serde(default)]
+    pub injured: bool,
 }
+
+/// Marks a repeatable random `fraction` of `occupants` injured (rounded to
+/// the nearest whole person) and the rest not.
+pub fn choose_injured(occupants: &mut [OccupantSpawn], fraction: f64, seed: u64) {
+    let count = (occupants.len() as f64 * fraction.clamp(0.0, 1.0)).round() as usize;
+    let mut order = (0..occupants.len()).collect::<Vec<_>>();
+    order.sort_by(|&left, &right| {
+        let roll = |index: usize| crate::crowd::unit(seed, INJURY_ROLL, index as u64, 0);
+        roll(left).total_cmp(&roll(right)).then(left.cmp(&right))
+    });
+    for (rank, index) in order.into_iter().enumerate() {
+        occupants[index].injured = rank < count;
+    }
+}
+
+/// Keeps injury rolls apart from other random draws.
+const INJURY_ROLL: u64 = 0x014A_0BED;
 
 /// One firefighter crew. Members are spawned as agents `"{id}/1"`,
 /// `"{id}/2"`, ... just inside the entry opening.
@@ -63,16 +83,24 @@ pub struct CrewSpawn {
     /// absent, the first usable exterior exit by ID is used.
     #[serde(default)]
     pub entry_opening_id: Option<String>,
-    /// Rooms to search first, in order. Rooms not listed are searched
-    /// afterwards, nearest first. Empty means nearest first throughout.
-    #[serde(default)]
-    pub search_order: Vec<String>,
-    /// Seconds after ignition when the crew reaches the entry.
+    /// Rooms to walk into, in order, while looking for the fire. Rooms not
+    /// listed are entered afterwards, nearest first. Empty means nearest
+    /// first throughout. Accepts the old name `search_order`.
+    #[serde(default, alias = "search_order")]
+    pub route: Vec<String>,
+    /// Seconds from the crew being called to it reaching the entry. In a
+    /// [`Rehearsal`](crate::Rehearsal) with occupants the crew is called when
+    /// someone notices the fire and raises the alarm; otherwise at ignition.
     #[serde(default)]
     pub arrival_time_seconds: f64,
+    #[serde(default = "default_member_count")]
     pub member_count: u32,
     #[serde(default = "default_firefighter_speed")]
     pub walking_speed_m_per_s: f64,
+}
+
+const fn default_member_count() -> u32 {
+    1
 }
 
 const fn default_occupant_speed() -> f64 {
@@ -213,10 +241,10 @@ fn validate_crews_into(
             );
         }
         let mut room_ids = HashSet::new();
-        for (room_index, room_id) in crew.search_order.iter().enumerate() {
+        for (room_index, room_id) in crew.route.iter().enumerate() {
             require_unique(
                 room_id,
-                &format!("{path}.search_order[{room_index}]"),
+                &format!("{path}.route[{room_index}]"),
                 &mut room_ids,
                 errors,
             );
@@ -297,19 +325,19 @@ fn create_crews(
             );
             continue;
         };
-        for (room_index, room_id) in crew.search_order.iter().enumerate() {
+        for (room_index, room_id) in crew.route.iter().enumerate() {
             let floor = scene
                 .floors
                 .iter()
                 .find(|floor| floor.rooms.iter().any(|room| room.id == *room_id));
             match floor {
                 None => push_error(
-                    &format!("{path}.search_order[{room_index}]"),
+                    &format!("{path}.route[{room_index}]"),
                     "room does not exist in the scene",
                     errors,
                 ),
                 Some(floor) if floor.id != entry.floor_id => push_error(
-                    &format!("{path}.search_order[{room_index}]"),
+                    &format!("{path}.route[{room_index}]"),
                     "room is not on the crew's entry floor",
                     errors,
                 ),
@@ -335,6 +363,7 @@ fn create_crews(
                     entry_opening_id: entry.id.clone(),
                     arrival_time_seconds: crew.arrival_time_seconds,
                     target_fire_node_id: None,
+                    nozzle_target_m: None,
                 }),
             });
         }
@@ -423,7 +452,12 @@ fn create_occupants(
             exposure: Exposure::NONE,
             movement: Movement::Stopped,
             role: AgentRole::Occupant(OccupantState {
-                phase: OccupantPhase::Unaware,
+                phase: if occupant.injured {
+                    OccupantPhase::Injured
+                } else {
+                    OccupantPhase::Unaware
+                },
+                injured: occupant.injured,
                 walking_speed_m_per_s: occupant.walking_speed_m_per_s,
                 pre_movement_delay_seconds: occupant.pre_movement_delay_seconds,
                 target_exit_id: None,

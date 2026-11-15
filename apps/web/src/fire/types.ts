@@ -67,12 +67,19 @@ export type OccupantPhase =
   | 'rerouting'
   | 'exited'
   | 'incapacitated'
+  /** Hurt and unable to move; waiting for a firefighter. */
+  | 'injured'
+  /** Being carried out by a firefighter. */
+  | 'carried'
 
 export type FirefighterPhase =
   | 'staging'
   | 'advancing'
-  | 'searching'
   | 'suppressing'
+  /** Going to pick up an injured occupant. */
+  | 'rescuing'
+  /** Carrying an injured occupant out. */
+  | 'carrying'
   | 'withdrawing'
   | 'exited'
   | 'incapacitated'
@@ -88,8 +95,19 @@ export type Movement = 'stopped' | 'walking' | 'queued' | 'squeezing'
 export type OccupantLayout = 'spread' | 'crowded'
 
 export type AgentRole =
-  | { type: 'occupant'; phase: OccupantPhase }
-  | { type: 'firefighter'; crew_id: string; phase: FirefighterPhase }
+  | {
+      type: 'occupant'
+      phase: OccupantPhase
+      /** Started the run injured; once exited, they were carried out. */
+      injured?: boolean
+    }
+  | {
+      type: 'firefighter'
+      crew_id: string
+      phase: FirefighterPhase
+      /** Where the hose is aimed, while spraying. Canonical Z-up metres. */
+      nozzle_target_m?: Vec3
+    }
 
 /** Fractional effective doses; reaching 1 in either means incapacitated. */
 export interface Exposure {
@@ -162,8 +180,8 @@ export interface CrewSpawn {
   id: string
   /** Exterior door or passage to enter by. Omitted: the first exterior exit. */
   entry_opening_id?: string
-  /** Rooms to search first, in order; the rest are searched nearest first. */
-  search_order?: string[]
+  /** Rooms to walk into first, in order; the rest are entered nearest first. */
+  route?: string[]
   /** Seconds after ignition when the crew reaches the entry. */
   arrival_time_seconds?: number
   member_count: number

@@ -1,5 +1,12 @@
 //! Deterministic occupant evacuation over the static simulation grid.
 //!
+//! Nobody reacts at ignition. Once a fire in some room is big enough to
+//! notice and someone is in that room, they raise the alarm; everyone else
+//! hears it later the farther they are from them by walking distance (see
+//! [`AlarmConfig`]). Each person then takes their own pre-movement delay
+//! before moving. A fire in an empty room alerts nobody until it spreads to
+//! a room with people in it.
+//!
 //! Not everyone heads for the same door: each occupant is given a random
 //! exit, among those reachable from where they start, and keeps it unless
 //! fire cuts it off; then they head for the nearest exit they can still
@@ -14,20 +21,49 @@ use std::{
     sync::Arc,
 };
 
-use tflop_world_core::{OpeningTopologyError, Scene};
+use tflop_world_core::{OpeningTopologyError, Scene, Vec3};
 use thiserror::Error;
 
 use crate::{
-    Agent, AgentFrame, AgentRole, GridCoordinate, OCCUPANT_RADIUS_M, OccupantPhase, OccupantSpawn,
-    Simulation, SimulationConfig, SimulationError, SimulationGrid, SurfaceFireNodeFrame,
+    Agent, AgentFrame, AgentRole, CombustionState, GridCoordinate, OCCUPANT_RADIUS_M,
+    OccupantPhase, OccupantSpawn, Simulation, SimulationConfig, SimulationError, SimulationGrid,
+    SurfaceFireNodeFrame,
     crowd::{
         Crowd, CrowdConfig, CrowdGroup, Goal, Intent, PassageMap, SINGLE_FILE_MAX_WIDTH_M, unit,
     },
     exit_field::ExitField,
     nav::{
-        HazardMap, NavProfile, body_walkable_cells, exit_target_list, neighbors, room_floor_index,
+        HazardMap, NORMAL_STEP_COST, NavProfile, body_walkable_cells, distance_2d,
+        exit_target_list, neighbors, room_floor_index,
     },
 };
+
+/// When occupants learn about the fire.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AlarmConfig {
+    /// Everyone knows from ignition.
+    Immediate,
+    /// Someone in a room whose fire reaches `notice_hrr_kw` raises the
+    /// alarm. People in that room hear it after `same_room_seconds`, and
+    /// everyone else `seconds_per_metre` later for each metre they are from
+    /// whoever raised it, by walking distance.
+    Detected {
+        notice_hrr_kw: f64,
+        same_room_seconds: f64,
+        seconds_per_metre: f64,
+    },
+}
+
+impl Default for AlarmConfig {
+    fn default() -> Self {
+        Self::Detected {
+            // A small furniture fire: flames clearly visible across a room.
+            notice_hrr_kw: 50.0,
+            same_room_seconds: 2.0,
+            seconds_per_metre: 0.2,
+        }
+    }
+}
 
 /// Cells around a body's center that its crowding cost covers.
 const CROWDING_RADIUS_M: f64 = 0.5;
@@ -45,6 +81,11 @@ pub struct Evacuation {
     exit_cells: HashMap<String, Vec<(GridCoordinate, u32)>>,
     /// The exit each occupant is heading for, by exit index.
     assigned_exits: Vec<Option<u32>>,
+    alarm: AlarmConfig,
+    /// When the alarm was raised, once it has been.
+    alarm_raised_at: Option<f64>,
+    /// When each occupant hears the alarm, once it has been raised.
+    alerted_at: Vec<Option<f64>>,
     room_floors: HashMap<String, String>,
     /// What this frame's plan wants, one per agent.
     intents: Vec<Intent>,
@@ -94,6 +135,9 @@ impl Evacuation {
         Ok(Self {
             walkable,
             assigned_exits,
+            alarm: AlarmConfig::default(),
+            alarm_raised_at: None,
+            alerted_at: vec![None; agents.len()],
             passages: grids
                 .iter()
                 .map(|grid| PassageMap::build(grid, SINGLE_FILE_MAX_WIDTH_M))
@@ -108,6 +152,30 @@ impl Evacuation {
             crowd: Crowd::new(CrowdConfig::default(), config.random_seed),
             time_seconds: 0.0,
         })
+    }
+
+    /// Changes when occupants learn about the fire. Call before the run
+    /// starts.
+    #[must_use]
+    pub fn with_alarm(mut self, alarm: AlarmConfig) -> Self {
+        self.alarm = alarm;
+        if alarm == AlarmConfig::Immediate {
+            self.alarm_raised_at = Some(0.0);
+            self.alerted_at.fill(Some(0.0));
+        }
+        self
+    }
+
+    /// When the alarm was raised, if it has been.
+    #[must_use]
+    pub const fn alarm_raised_at(&self) -> Option<f64> {
+        self.alarm_raised_at
+    }
+
+    /// When each occupant heard the alarm, in agent order.
+    #[must_use]
+    pub fn alerted_at(&self) -> &[Option<f64>] {
+        &self.alerted_at
     }
 
     /// Uses `config` for crowd movement and routing. Validated by the caller.
@@ -171,6 +239,9 @@ impl Evacuation {
             fire,
             NavProfile::OCCUPANT.body_radius_m,
         );
+        if self.alarm_raised_at.is_none() {
+            self.notice(time_seconds, fire);
+        }
         let fields = self.exit_fields(others);
 
         for index in 0..self.agents.len() {
@@ -188,6 +259,36 @@ impl Evacuation {
             passages: &self.passages,
             hazards: &self.hazards,
             walk_radius_m: NavProfile::OCCUPANT.body_radius_m,
+        }
+    }
+
+    /// Moves people a firefighter is carrying with them, and lets go of those
+    /// carried out.
+    pub(crate) fn apply_carries(&mut self, carries: &[Carry]) {
+        for carry in carries {
+            let Some(agent) = self
+                .agents
+                .iter_mut()
+                .find(|agent| agent.id == carry.occupant_id)
+            else {
+                continue;
+            };
+            match carry.state {
+                CarryState::Holding {
+                    position_m,
+                    velocity_m_per_s,
+                } => {
+                    agent.velocity_m_per_s = velocity_m_per_s;
+                    agent.position_m = position_m;
+                    agent.movement = crate::Movement::Walking;
+                    set_phase(agent, OccupantPhase::Carried);
+                }
+                CarryState::Delivered => {
+                    agent.velocity_m_per_s = ZERO;
+                    agent.movement = crate::Movement::Stopped;
+                    set_phase(agent, OccupantPhase::Exited);
+                }
+            }
         }
     }
 
@@ -216,6 +317,120 @@ impl Evacuation {
             }
         }
         self.time_seconds = time_seconds;
+    }
+
+    /// Raises the alarm if someone is in a room whose fire is big enough to
+    /// notice, and works out when everyone hears it.
+    fn notice(&mut self, time_seconds: f64, fire: &[SurfaceFireNodeFrame]) {
+        let AlarmConfig::Detected {
+            notice_hrr_kw,
+            same_room_seconds,
+            seconds_per_metre,
+        } = self.alarm
+        else {
+            return;
+        };
+        let mut room_hrr = HashMap::<&str, f64>::new();
+        for node in fire {
+            if node.state == CombustionState::Burning {
+                *room_hrr.entry(node.room_id.as_str()).or_default() += node.heat_release_rate_kw;
+            }
+        }
+        let noticeable = room_hrr
+            .into_iter()
+            .filter(|&(_, hrr)| hrr >= notice_hrr_kw)
+            .map(|(room, _)| room)
+            .collect::<HashSet<_>>();
+        if noticeable.is_empty() {
+            return;
+        }
+        let noticers = (0..self.agents.len())
+            .filter(|&index| {
+                self.agents[index].is_active()
+                    && self
+                        .rooms_of(index)
+                        .iter()
+                        .any(|room| noticeable.contains(room.as_str()))
+            })
+            .collect::<Vec<_>>();
+        if noticers.is_empty() {
+            return;
+        }
+
+        // Walking distance from whoever noticed, per floor.
+        let distances = self
+            .grids
+            .iter()
+            .zip(&self.walkable)
+            .map(|(grid, walkable)| {
+                let targets = noticers
+                    .iter()
+                    .filter(|&&index| self.agents[index].floor_id == grid.floor_id)
+                    .filter_map(|&index| grid.world_to_cell(self.agents[index].position_m))
+                    .map(|cell| (cell, 0))
+                    .collect::<Vec<_>>();
+                (!targets.is_empty()).then(|| {
+                    ExitField::build(
+                        grid,
+                        walkable,
+                        &targets,
+                        &HazardMap::default(),
+                        NavProfile::OCCUPANT,
+                        &[],
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        for index in 0..self.agents.len() {
+            let delay = if noticers.contains(&index) {
+                0.0
+            } else {
+                same_room_seconds
+                    + self.metres_from_noticers(index, &noticers, &distances) * seconds_per_metre
+            };
+            self.alerted_at[index] = Some(time_seconds + delay);
+        }
+        self.alarm_raised_at = Some(time_seconds);
+    }
+
+    /// Walking distance from the nearest person who noticed the fire, or the
+    /// straight-line distance where no walk reaches.
+    fn metres_from_noticers(
+        &self,
+        index: usize,
+        noticers: &[usize],
+        distances: &[Option<ExitField>],
+    ) -> f64 {
+        let agent = &self.agents[index];
+        let walked = self
+            .grids
+            .iter()
+            .position(|grid| grid.floor_id == agent.floor_id)
+            .and_then(|grid| {
+                let field = distances[grid].as_ref()?;
+                let cell = self.grids[grid].world_to_cell(agent.position_m)?;
+                let cost = field
+                    .cost(cell)
+                    .or_else(|| field.next_cell(cell).and_then(|next| field.cost(next)))?;
+                Some(cost as f64 / NORMAL_STEP_COST as f64 * self.grids[grid].cell_size_m)
+            });
+        walked.unwrap_or_else(|| {
+            noticers
+                .iter()
+                .map(|&noticer| distance_2d(agent.position_m, self.agents[noticer].position_m))
+                .fold(f64::INFINITY, f64::min)
+        })
+    }
+
+    /// The rooms of the cell occupant `index` stands on.
+    fn rooms_of(&self, index: usize) -> Vec<String> {
+        let agent = &self.agents[index];
+        self.grids
+            .iter()
+            .find(|grid| grid.floor_id == agent.floor_id)
+            .and_then(|grid| grid.cell(grid.world_to_cell(agent.position_m)?))
+            .map(|cell| cell.room_ids.clone())
+            .unwrap_or_default()
     }
 
     /// Per grid: a field to the nearest exit, and one to each exit someone
@@ -288,12 +503,23 @@ impl Evacuation {
             state.walking_speed_m_per_s,
             state.phase,
         );
-        if matches!(phase, OccupantPhase::Exited | OccupantPhase::Incapacitated) {
+        if matches!(
+            phase,
+            OccupantPhase::Exited
+                | OccupantPhase::Incapacitated
+                | OccupantPhase::Injured
+                | OccupantPhase::Carried
+        ) {
             return Intent::HOLD;
         }
-        let movement_seconds = (time_seconds - self.time_seconds.max(delay)).max(0.0);
+        let Some(alerted_at) = self.alerted_at[index] else {
+            return Intent::HOLD;
+        };
+        // Their pre-movement delay runs from when they hear the alarm.
+        let start = alerted_at + delay;
+        let movement_seconds = (time_seconds - self.time_seconds.max(start)).max(0.0);
         if movement_seconds == 0.0 || delta_seconds == 0.0 {
-            if time_seconds > 0.0 {
+            if time_seconds >= alerted_at && time_seconds > 0.0 {
                 set_phase(agent, OccupantPhase::Preparing);
             }
             return Intent::HOLD;
@@ -440,7 +666,9 @@ const EXIT_ROLL: u64 = 0x0E_C17;
 /// Whether a body takes up floor space others must route around.
 fn blocks_the_way(agent: &Agent) -> bool {
     match &agent.role {
-        AgentRole::Occupant(state) => !matches!(state.phase, OccupantPhase::Exited),
+        AgentRole::Occupant(state) => {
+            !matches!(state.phase, OccupantPhase::Exited | OccupantPhase::Carried)
+        }
         AgentRole::Firefighter(state) => !matches!(
             state.phase,
             crate::FirefighterPhase::Staging | crate::FirefighterPhase::Exited
@@ -523,7 +751,25 @@ pub enum EvacuationError {
     InvalidTime { time_seconds: f64 },
 }
 
-const ZERO: tflop_world_core::Vec3 = tflop_world_core::Vec3 {
+/// A firefighter carrying an occupant, after the crowd has moved.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Carry {
+    pub occupant_id: String,
+    pub state: CarryState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum CarryState {
+    /// Being carried, moving with the firefighter.
+    Holding {
+        position_m: Vec3,
+        velocity_m_per_s: Vec3,
+    },
+    /// Carried out of the building.
+    Delivered,
+}
+
+const ZERO: Vec3 = Vec3 {
     x: 0.0,
     y: 0.0,
     z: 0.0,

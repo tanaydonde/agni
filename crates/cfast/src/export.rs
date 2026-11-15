@@ -117,6 +117,10 @@ fn export_rooms(
     render_input(scenario, &compartments, &fires, &vents)
 }
 
+/// How far past a room's bounding box a room fire may sit and still be
+/// pulled into it.
+const FIRE_POSITION_TOLERANCE_M: f64 = 1.0;
+
 #[derive(Debug, Error)]
 pub enum CfastExportError {
     #[error(transparent)]
@@ -386,7 +390,16 @@ fn map_fires<'a>(
                     fire_id: room_fire.fire.id.clone(),
                     room_id: room_fire.room_id.clone(),
                 })?;
-            if !point_in_room(room_fire.fire.position_m, compartment.room) {
+            // A CFAST compartment is the room's bounding box. A room fire is
+            // placed at the heat-weighted centre of its burning cells, which
+            // in an L-shaped room, or with furniture against a wall, can land
+            // outside the room's outline or just past its box: pull it into
+            // the box. Far outside means the fire isn't in this room at all.
+            let position = room_fire.fire.position_m;
+            let bounds = &compartment.bounds;
+            let x = position.x.clamp(bounds.min_x, bounds.max_x);
+            let y = position.y.clamp(bounds.min_y, bounds.max_y);
+            if (x - position.x).hypot(y - position.y) > FIRE_POSITION_TOLERANCE_M {
                 return Err(CfastExportError::FireOutsideRoom {
                     fire_id: room_fire.fire.id.clone(),
                     room_id: room_fire.room_id.clone(),
@@ -394,18 +407,8 @@ fn map_fires<'a>(
             }
             Ok(FireMapping {
                 room_fire,
-                x_m: scale_coordinate(
-                    room_fire.fire.position_m.x,
-                    compartment.bounds.min_x,
-                    compartment.bounds.max_x,
-                    compartment.width_m,
-                ),
-                y_m: scale_coordinate(
-                    room_fire.fire.position_m.y,
-                    compartment.bounds.min_y,
-                    compartment.bounds.max_y,
-                    compartment.depth_m,
-                ),
+                x_m: scale_coordinate(x, bounds.min_x, bounds.max_x, compartment.width_m),
+                y_m: scale_coordinate(y, bounds.min_y, bounds.max_y, compartment.depth_m),
             })
         })
         .collect()
@@ -839,34 +842,6 @@ fn nearest_face(point: Vec3, bounds: Bounds) -> VentFace {
 
 fn scale_coordinate(value: f64, source_min: f64, source_max: f64, target_length: f64) -> f64 {
     ((value - source_min) / (source_max - source_min) * target_length).clamp(0.0, target_length)
-}
-
-fn point_in_room(point: Vec3, room: &Room) -> bool {
-    let mut inside = false;
-    for edge in &room.boundary {
-        if point_on_edge(point, edge) {
-            return true;
-        }
-        if (edge.start.y > point.y) != (edge.end.y > point.y) {
-            let crossing_x = (edge.end.x - edge.start.x) * (point.y - edge.start.y)
-                / (edge.end.y - edge.start.y)
-                + edge.start.x;
-            if point.x < crossing_x {
-                inside = !inside;
-            }
-        }
-    }
-    inside
-}
-
-fn point_on_edge(point: Vec3, edge: &BoundaryEdge) -> bool {
-    let cross = (edge.end.x - edge.start.x) * (point.y - edge.start.y)
-        - (edge.end.y - edge.start.y) * (point.x - edge.start.x);
-    cross.abs() <= POSITION_EPSILON_M
-        && point.x >= edge.start.x.min(edge.end.x) - POSITION_EPSILON_M
-        && point.x <= edge.start.x.max(edge.end.x) + POSITION_EPSILON_M
-        && point.y >= edge.start.y.min(edge.end.y) - POSITION_EPSILON_M
-        && point.y <= edge.start.y.max(edge.end.y) + POSITION_EPSILON_M
 }
 
 fn quote(value: &str) -> String {

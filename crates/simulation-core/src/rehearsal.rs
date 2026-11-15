@@ -74,6 +74,11 @@ impl Rehearsal {
     #[must_use]
     pub fn with_firefighting(mut self, mut firefighting: Firefighting) -> Self {
         firefighting.set_crowd_config(self.crowd.config());
+        // With people in the building, the crew is called when one of them
+        // notices the fire. With nobody to notice, it is called at ignition.
+        if self.evacuation.is_some() {
+            firefighting.await_call();
+        }
         self.firefighting = Some(firefighting);
         self
     }
@@ -102,9 +107,11 @@ impl Rehearsal {
         self.firefighting.as_ref()
     }
 
-    /// Ignites an object without advancing time and records the frame.
+    /// Starts a fire on an object (a small patch of it, see
+    /// [`SurfaceFireWorld::start_fire`]) without advancing time and records
+    /// the frame.
     pub fn ignite_object(&mut self, object_id: &str) -> Result<RehearsalFrame, RehearsalError> {
-        let fire = self.fire.ignite_object(object_id)?;
+        let fire = self.fire.start_fire(object_id)?;
         self.record(fire)
     }
 
@@ -133,7 +140,10 @@ impl Rehearsal {
         let time_seconds = self.fire.time_seconds() + delta_seconds;
         let mut water = Vec::new();
         if let Some(firefighting) = &mut self.firefighting {
-            water = firefighting.plan(time_seconds, &self.last_fire)?.0;
+            let occupants = self.evacuation.as_ref().map_or(&[][..], Evacuation::agents);
+            water = firefighting
+                .plan(time_seconds, &self.last_fire, occupants)?
+                .0;
             for suppression in &water {
                 suppression.validate()?;
             }
@@ -149,6 +159,11 @@ impl Rehearsal {
                 .as_ref()
                 .map_or(&[][..], Firefighting::agents);
             evacuation.plan(fire.time_seconds, &fire.active_nodes, crews)?;
+            if let (Some(alarm), Some(firefighting)) =
+                (evacuation.alarm_raised_at(), &mut self.firefighting)
+            {
+                firefighting.call(alarm);
+            }
         }
         let mut groups = Vec::with_capacity(2);
         if let Some(evacuation) = &mut self.evacuation {
@@ -164,6 +179,9 @@ impl Rehearsal {
         }
         if let Some(firefighting) = &mut self.firefighting {
             firefighting.finish(fire.time_seconds);
+            if let Some(evacuation) = &mut self.evacuation {
+                evacuation.apply_carries(&firefighting.carries());
+            }
         }
         self.record(fire)
     }

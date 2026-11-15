@@ -229,6 +229,63 @@ export function partMaterial(
 }
 
 /**
+ * How an agent's body is posed: standing, lying hurt on the floor, or
+ * carried over a firefighter's shoulder.
+ */
+export type AgentPose = 'standing' | 'lying' | 'carried'
+
+/** A carried occupant is drawn this high, and this much smaller, beside their carrier. */
+export const CARRY_HEIGHT_M = 1.0
+export const CARRY_SCALE = 0.7
+
+export function agentPose(agent: AgentFrame): AgentPose {
+  if (agent.role.type !== 'occupant') return 'standing'
+  if (agent.role.phase === 'injured') return 'lying'
+  if (agent.role.phase === 'carried') return 'carried'
+  return 'standing'
+}
+
+/** Half the spread of the drawn hose stream; matches the simulation's nozzle. */
+const STREAM_HALF_ANGLE_RADIANS = (15 * Math.PI) / 180
+const NOZZLE_HEIGHT_M = 1.1
+const STREAM_TARGET_HEIGHT_M = 0.3
+
+/**
+ * Where to draw a firefighter's hose stream: a cone with its tip at the
+ * nozzle, widening toward where it's aimed. For a unit cone pointing along
+ * +Y with its tip at +Y (three.js's ConeGeometry), in Z-up world metres.
+ * Null when the firefighter isn't spraying.
+ */
+export function nozzleStream(agent: AgentFrame): {
+  position: [number, number, number]
+  quaternion: [number, number, number, number]
+  scale: [number, number, number]
+} | null {
+  if (agent.role.type !== 'firefighter' || !agent.role.nozzle_target_m) return null
+  const target = agent.role.nozzle_target_m
+  const start = {
+    x: agent.position_m.x,
+    y: agent.position_m.y,
+    z: agent.position_m.z + NOZZLE_HEIGHT_M,
+  }
+  const end = { x: target.x, y: target.y, z: target.z + STREAM_TARGET_HEIGHT_M }
+  const d = { x: end.x - start.x, y: end.y - start.y, z: end.z - start.z }
+  const length = Math.hypot(d.x, d.y, d.z)
+  if (length < 1e-6) return null
+  const b = { x: d.x / length, y: d.y / length, z: d.z / length }
+  // Turn -Y (away from the cone's tip) onto the stream direction, so the tip
+  // sits at the nozzle: q = (a × b, 1 + a · b) for a = (0, -1, 0), normalized.
+  const raw: [number, number, number, number] = [-b.z, 0, b.x, 1 - b.y]
+  const norm = Math.hypot(...raw) || 1
+  const radius = length * Math.tan(STREAM_HALF_ANGLE_RADIANS)
+  return {
+    position: [(start.x + end.x) / 2, (start.y + end.y) / 2, (start.z + end.z) / 2],
+    quaternion: raw.map((component) => component / norm) as [number, number, number, number],
+    scale: [radius, length, radius],
+  }
+}
+
+/**
  * Which way each agent faces, as a turn about Z from +X: along its velocity
  * while walking, else wherever it faced before (or +X if never seen moving).
  */

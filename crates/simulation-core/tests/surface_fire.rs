@@ -1,6 +1,7 @@
 use tflop_simulation_core::{
-    CombustionState, FireMaterialCatalog, FireMaterialProfile, FurnitureFireMaterial, Suppression,
-    SurfaceFireConfig, SurfaceFireError, SurfaceFireNodeSource, SurfaceFireWorld,
+    CombustionState, DEFAULT_NOZZLE_COOLING_KW, DEFAULT_NOZZLE_HALF_ANGLE_DEGREES,
+    DEFAULT_NOZZLE_REACH_M, FireMaterialCatalog, FireMaterialProfile, FurnitureFireMaterial,
+    Suppression, SurfaceFireConfig, SurfaceFireError, SurfaceFireNodeSource, SurfaceFireWorld,
 };
 use tflop_world_core::{
     BoundaryEdge, BoundaryKind, Dimensions3, Floor, FurnitureAsset, FurnitureObject, Mobility,
@@ -46,9 +47,8 @@ fn builds_floor_cells_and_three_dimensional_cells_for_furniture() {
 #[test]
 fn fire_climbs_furniture_one_section_at_a_time() {
     let scene = scene_with_chairs(&[("chair-1", 1.5, 2.0)]);
-    let mut world =
-        SurfaceFireWorld::from_scene(&scene, &fast_catalog(false), SurfaceFireConfig::default())
-            .expect("surface world should build");
+    let mut world = SurfaceFireWorld::from_scene(&scene, &fast_catalog(false), neighbours_only())
+        .expect("surface world should build");
 
     let initial = world
         .ignite_object("chair-1")
@@ -92,9 +92,8 @@ fn fire_climbs_furniture_one_section_at_a_time() {
 #[test]
 fn fire_spreads_from_floor_into_bottom_of_furniture_then_upward() {
     let scene = scene_with_chairs(&[("chair-1", 1.5, 2.0)]);
-    let mut world =
-        SurfaceFireWorld::from_scene(&scene, &fast_catalog(true), SurfaceFireConfig::default())
-            .expect("surface world should build");
+    let mut world = SurfaceFireWorld::from_scene(&scene, &fast_catalog(true), neighbours_only())
+        .expect("surface world should build");
     let ignition_cell_position = world
         .node("object:chair-1")
         .expect("default chair ignition cell")
@@ -148,9 +147,8 @@ fn wide_furniture_burns_across_its_base_cell_by_cell() {
         depth_m: 0.25,
         height_m: 0.25,
     };
-    let mut world =
-        SurfaceFireWorld::from_scene(&scene, &fast_catalog(false), SurfaceFireConfig::default())
-            .expect("surface world should build");
+    let mut world = SurfaceFireWorld::from_scene(&scene, &fast_catalog(false), neighbours_only())
+        .expect("surface world should build");
 
     world
         .ignite_object_cell("bench-1", 0, 0, 0)
@@ -391,10 +389,11 @@ fn knockdown_takes_longer_than_one_step_when_cooling_barely_beats_the_fire() {
         .expect("chair ignites")
         .active_nodes[0]
         .heat_release_rate_kw;
-    // The default knockdown needs three seconds' worth of the fire's output.
+    // Knockdown needs the configured seconds' worth of the fire's output.
+    let seconds = SurfaceFireConfig::default().suppression_knockdown_seconds;
     let barely_enough = nozzle("room-1", 1.5, 1.5, 1.0, hrr_kw * 1.01);
 
-    for _ in 0..2 {
+    for _ in 0..(seconds as usize - 1) {
         let outcome = world.suppress(&barely_enough, 1.0).expect("applies");
         assert!(outcome.extinguished_node_ids.is_empty());
     }
@@ -520,12 +519,311 @@ fn rejects_invalid_suppression_without_changing_the_fire() {
     );
 }
 
+#[test]
+fn an_aimed_stream_wets_only_what_it_points_at() {
+    let scene = scene_with_chairs(&[("left", 1.0, 2.0), ("right", 3.0, 2.0)]);
+    let mut world =
+        SurfaceFireWorld::from_scene(&scene, &fast_catalog(false), SurfaceFireConfig::default())
+            .expect("surface world should build");
+    world.ignite_object("left").expect("left ignites");
+    world.ignite_object("right").expect("right ignites");
+
+    // From the middle, pointing right.
+    let aimed = Suppression {
+        direction: Some((1.0, 0.0)),
+        ..nozzle("room-1", 2.0, 2.0, 3.0, 1.0e9)
+    };
+    let outcome = world.suppress(&aimed, 1.0).expect("applies");
+
+    assert_eq!(outcome.burning_reached, 1);
+    assert_eq!(outcome.extinguished_node_ids, ["object:right"]);
+    assert_eq!(
+        world.node("object:left").expect("left").state,
+        CombustionState::Burning
+    );
+}
+
+#[test]
+fn an_aimed_stream_wets_whatever_is_right_at_the_nozzle() {
+    let scene = scene_with_chairs(&[("chair-1", 1.5, 2.0)]);
+    let mut world =
+        SurfaceFireWorld::from_scene(&scene, &fast_catalog(false), SurfaceFireConfig::default())
+            .expect("surface world should build");
+    world.ignite_object("chair-1").expect("chair ignites");
+    let behind = Suppression {
+        direction: Some((1.0, 0.0)),
+        ..nozzle("room-1", 1.8, 2.0, 3.0, 1.0e9)
+    };
+    let outcome = world.suppress(&behind, 1.0).expect("applies");
+    assert_eq!(
+        outcome.burning_reached, 1,
+        "0.3 m behind the nozzle still gets wet"
+    );
+}
+
+#[test]
+fn a_burning_sofa_takes_tens_of_seconds_to_knock_down() {
+    let mut scene = scene_with_chairs(&[("sofa-1", 2.0, 2.0)]);
+    scene.assets[0].category = "sofa".to_owned();
+    scene.assets[0].dimensions_m = Dimensions3 {
+        width_m: 2.0,
+        depth_m: 0.9,
+        height_m: 0.8,
+    };
+    let mut world = SurfaceFireWorld::from_scene(
+        &scene,
+        &FireMaterialCatalog::default(),
+        SurfaceFireConfig::default(),
+    )
+    .expect("surface world should build");
+    world.ignite_object("sofa-1").expect("sofa ignites");
+    // Let it grow until it's fully involved.
+    let mut peak_kw = 0.0;
+    for _ in 0..600 {
+        let frame = world.step(1.0).expect("steps");
+        let total = frame
+            .active_nodes
+            .iter()
+            .map(|node| node.heat_release_rate_kw)
+            .sum::<f64>();
+        if total < peak_kw * 0.98 {
+            break;
+        }
+        peak_kw = f64::max(peak_kw, total);
+    }
+
+    // Aim at the nearest burning cell each second, as a firefighter does.
+    let nozzle_at = point(0.5, 2.0);
+    let mut seconds = 0;
+    while let Some(target) = world
+        .snapshot()
+        .active_nodes
+        .iter()
+        .filter(|node| node.state == CombustionState::Burning)
+        .map(|node| node.position_m)
+        .min_by(|left, right| {
+            let distance = |p: &Vec3| (p.x - nozzle_at.x).hypot(p.y - nozzle_at.y);
+            distance(left).total_cmp(&distance(right))
+        })
+    {
+        let offset = (target.x - nozzle_at.x, target.y - nozzle_at.y);
+        let length = offset.0.hypot(offset.1).max(1.0e-9);
+        let hose = Suppression {
+            direction: Some((offset.0 / length, offset.1 / length)),
+            ..nozzle(
+                "room-1",
+                nozzle_at.x,
+                nozzle_at.y,
+                DEFAULT_NOZZLE_REACH_M,
+                DEFAULT_NOZZLE_COOLING_KW,
+            )
+        };
+        world.suppress(&hose, 1.0).expect("applies");
+        world.step(1.0).expect("steps");
+        seconds += 1;
+        assert!(seconds < 120, "a {peak_kw:.0} kW sofa never went out");
+    }
+    // The carpet around the sofa burns too, so this is a room fire of
+    // over a megawatt.
+    assert!(
+        (10..=60).contains(&seconds),
+        "a {peak_kw:.0} kW sofa fire took {seconds} s to knock down"
+    );
+}
+
+#[test]
+fn a_sofa_fire_takes_over_its_room_in_about_a_minute() {
+    let mut scene = scene_with_chairs(&[("chair-near", 2.0, 2.45), ("chair-far", 3.3, 3.3)]);
+    scene.assets.push(FurnitureAsset {
+        id: "sofa-basic".to_owned(),
+        category: "sofa".to_owned(),
+        model_uri: None,
+        dimensions_m: Dimensions3 {
+            width_m: 2.0,
+            depth_m: 0.9,
+            height_m: 0.8,
+        },
+    });
+    let mut sofa = scene.floors[0].objects[0].clone();
+    sofa.id = "sofa-1".to_owned();
+    sofa.asset_id = "sofa-basic".to_owned();
+    sofa.transform.position_m = point(2.0, 0.8);
+    scene.floors[0].objects.push(sofa);
+    let mut world = SurfaceFireWorld::from_scene(
+        &scene,
+        &FireMaterialCatalog::default(),
+        SurfaceFireConfig::default(),
+    )
+    .expect("surface world should build");
+    let floor_cells = world
+        .nodes()
+        .iter()
+        .filter(|node| matches!(node.source, SurfaceFireNodeSource::FloorCell { .. }))
+        .count() as f64;
+    world.start_fire("sofa-1").expect("sofa ignites");
+
+    let mut caught_at = std::collections::BTreeMap::new();
+    let mut chair_lit_at = None;
+    for step in 1..=150 {
+        let frame = world.step(0.5).expect("steps");
+        let seconds = f64::from(step) * 0.5;
+        let caught = frame
+            .active_nodes
+            .iter()
+            .filter(|node| {
+                matches!(node.source, SurfaceFireNodeSource::FloorCell { .. })
+                    && matches!(
+                        node.state,
+                        CombustionState::Burning | CombustionState::BurnedOut
+                    )
+            })
+            .count() as f64;
+        caught_at.insert(step, caught / floor_cells);
+        let chair_burning = frame.active_nodes.iter().any(|node| {
+            node.state == CombustionState::Burning
+                && matches!(&node.source, SurfaceFireNodeSource::Furniture { object_id } if object_id == "chair-near")
+        });
+        if chair_lit_at.is_none() && chair_burning {
+            chair_lit_at = Some(seconds);
+        }
+    }
+
+    let at = |seconds: u32| caught_at[&(seconds * 2)];
+    assert!(
+        at(15) < 0.5,
+        "{:.0}% of the floor caught by 15 s",
+        at(15) * 100.0
+    );
+    let chair = chair_lit_at.expect("the nearby chair catches");
+    assert!(chair <= 30.0, "the chair 1.5 m away caught at {chair} s");
+    assert!(
+        at(75) >= 0.8,
+        "only {:.0}% of the floor caught by 75 s",
+        at(75) * 100.0
+    );
+    assert!(at(45) < 1.0, "the whole room flashed over by 45 s");
+}
+
+#[test]
+fn room_heat_does_not_pass_through_walls() {
+    // Two rooms side by side; carpet only, so heat can only cross by the
+    // room-wide term if it leaks.
+    let mut scene = scene_with_chairs(&[("chair-1", 1.0, 2.0)]);
+    let room = scene.floors[0].rooms[0].clone();
+    let mut next_door = room.clone();
+    next_door.id = "room-2".to_owned();
+    for edge in &mut next_door.boundary {
+        edge.id = format!("2-{}", edge.id);
+        edge.start.x += 4.0;
+        edge.end.x += 4.0;
+    }
+    scene.floors[0].rooms.push(next_door);
+    let mut world = SurfaceFireWorld::from_scene(
+        &scene,
+        &FireMaterialCatalog::default(),
+        SurfaceFireConfig {
+            room_heat_fraction: 1.0,
+            ..SurfaceFireConfig::default()
+        },
+    )
+    .expect("surface world should build");
+    world.ignite_object("chair-1").expect("chair ignites");
+    for _ in 0..20 {
+        world.step(0.5).expect("steps");
+    }
+    let warmed_next_door = world
+        .nodes()
+        .iter()
+        .filter(|node| node.room_id == "room-2")
+        .any(|node| node.absorbed_heat_kj > 0.0);
+    assert!(!warmed_next_door);
+}
+
+#[test]
+fn burning_cells_burn_out_instead_of_smouldering_forever() {
+    let scene = scene_with_chairs(&[("chair-1", 2.0, 2.0)]);
+    let mut world = SurfaceFireWorld::from_scene(
+        &scene,
+        &FireMaterialCatalog::default(),
+        SurfaceFireConfig::default(),
+    )
+    .expect("surface world should build");
+    world.start_fire("chair-1").expect("chair ignites");
+    let mut frame = world.snapshot();
+    for _ in 0..1_200 {
+        frame = world.step(0.5).expect("steps");
+    }
+    let still_burning = frame
+        .active_nodes
+        .iter()
+        .filter(|node| node.state == CombustionState::Burning)
+        .map(|node| node.heat_release_rate_kw)
+        .collect::<Vec<_>>();
+    assert!(
+        still_burning.is_empty(),
+        "still 'burning' at {still_burning:?} kW"
+    );
+}
+
+#[test]
+fn a_desk_fire_grows_into_a_noticeable_one() {
+    // Wood is harder to light than upholstery; a desk fire must still grow
+    // rather than die out on the few cells it started on.
+    let mut scene = scene_with_chairs(&[("desk-1", 2.0, 2.0)]);
+    scene.assets[0].category = "desk".to_owned();
+    scene.assets[0].dimensions_m = Dimensions3 {
+        width_m: 1.2,
+        depth_m: 0.6,
+        height_m: 0.75,
+    };
+    let mut world = SurfaceFireWorld::from_scene(
+        &scene,
+        &FireMaterialCatalog::default(),
+        SurfaceFireConfig::default(),
+    )
+    .expect("surface world should build");
+    world.start_fire("desk-1").expect("desk ignites");
+    let mut peak_kw = 0.0;
+    let mut noticeable_at = None;
+    for step in 1..=240 {
+        let frame = world.step(0.5).expect("steps");
+        let total = frame
+            .active_nodes
+            .iter()
+            .map(|node| node.heat_release_rate_kw)
+            .sum::<f64>();
+        peak_kw = f64::max(peak_kw, total);
+        if noticeable_at.is_none() && total >= 50.0 {
+            noticeable_at = Some(f64::from(step) * 0.5);
+        }
+    }
+    let noticeable_at = noticeable_at.expect("the desk fire gets noticeable");
+    assert!(noticeable_at <= 45.0, "50 kW only at {noticeable_at} s");
+    assert!(
+        peak_kw >= 200.0,
+        "the desk fire peaked at {peak_kw:.0} kW in two minutes"
+    );
+}
+
+/// Spread only between touching neighbours: no room-wide heat and no
+/// furniture radiating onto the floor around it, so tests of how fire moves
+/// cell by cell aren't swamped by them.
+fn neighbours_only() -> SurfaceFireConfig {
+    SurfaceFireConfig {
+        room_heat_fraction: 0.0,
+        furniture_floor_radiation_m: 0.0,
+        ..SurfaceFireConfig::default()
+    }
+}
+
 fn nozzle(room_id: &str, x: f64, y: f64, reach_m: f64, cooling_kw: f64) -> Suppression {
     Suppression {
         room_id: room_id.to_owned(),
         position_m: point(x, y),
         reach_m,
         cooling_kw,
+        direction: None,
+        half_angle_degrees: DEFAULT_NOZZLE_HALF_ANGLE_DEGREES,
     }
 }
 

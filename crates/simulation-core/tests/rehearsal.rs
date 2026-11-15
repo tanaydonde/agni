@@ -1,7 +1,8 @@
 use tflop_simulation_core::{
-    AgentFrameRole, CombustionState, DEFAULT_NOZZLE_COOLING_KW, DEFAULT_NOZZLE_REACH_M, Evacuation,
-    FireMaterialCatalog, FireMaterialProfile, FurnitureFireMaterial, OccupantPhase, OccupantSpawn,
-    Rehearsal, RehearsalError, RehearsalFrame, SimulationConfig, Suppression, SurfaceFireConfig,
+    AgentFrameRole, AlarmConfig, CombustionState, DEFAULT_NOZZLE_COOLING_KW,
+    DEFAULT_NOZZLE_HALF_ANGLE_DEGREES, DEFAULT_NOZZLE_REACH_M, Evacuation, FireMaterialCatalog,
+    FireMaterialProfile, FurnitureFireMaterial, OccupantPhase, OccupantSpawn, Rehearsal,
+    RehearsalError, RehearsalFrame, SimulationConfig, Suppression, SurfaceFireConfig,
     SurfaceFireError, SurfaceFireWorld,
 };
 use tflop_world_core::{
@@ -24,8 +25,9 @@ fn matches_replaying_occupants_over_a_finished_fire() {
 
     let mut fire = fire_world(&scene, &catalog);
     let mut evacuation = Evacuation::new(&scene, &occupants, SimulationConfig::default())
-        .expect("evacuation builds");
-    let mut fire_frames = vec![fire.ignite_object("chair-1").expect("chair ignites")];
+        .expect("evacuation builds")
+        .with_alarm(AlarmConfig::Immediate);
+    let mut fire_frames = vec![fire.start_fire("chair-1").expect("chair ignites")];
     for _ in 0..8 {
         fire_frames.push(fire.step(1.0).expect("fire steps"));
     }
@@ -198,6 +200,8 @@ fn room_nozzle() -> Suppression {
         position_m: point(3.0, 2.0),
         reach_m: DEFAULT_NOZZLE_REACH_M,
         cooling_kw: DEFAULT_NOZZLE_COOLING_KW,
+        direction: None,
+        half_angle_degrees: DEFAULT_NOZZLE_HALF_ANGLE_DEGREES,
     }
 }
 
@@ -206,8 +210,9 @@ fn rehearsal(
     catalog: &FireMaterialCatalog,
     occupants: &[OccupantSpawn],
 ) -> Rehearsal {
-    let evacuation =
-        Evacuation::new(scene, occupants, SimulationConfig::default()).expect("evacuation builds");
+    let evacuation = Evacuation::new(scene, occupants, SimulationConfig::default())
+        .expect("evacuation builds")
+        .with_alarm(AlarmConfig::Immediate);
     Rehearsal::new(fire_world(scene, catalog), Some(evacuation))
 }
 
@@ -226,7 +231,7 @@ fn fire_active(frame: &RehearsalFrame) -> bool {
 }
 
 fn phase(frame: &RehearsalFrame) -> OccupantPhase {
-    let AgentFrameRole::Occupant { phase } = frame.agents[0].role else {
+    let AgentFrameRole::Occupant { phase, .. } = frame.agents[0].role else {
         panic!("expected occupant")
     };
     phase
@@ -261,6 +266,7 @@ fn occupant(id: &str, x: f64, y: f64, delay: f64) -> OccupantSpawn {
         position_m: point(x, y),
         walking_speed_m_per_s: 1.2,
         pre_movement_delay_seconds: delay,
+        injured: false,
     }
 }
 

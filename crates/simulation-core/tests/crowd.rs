@@ -2,7 +2,7 @@
 //! doors and hallways, and squeeze past each other.
 
 use tflop_simulation_core::{
-    AgentFrame, AgentFrameRole, CROWD_GIVE_M, CrewSpawn, CrowdConfig, Evacuation,
+    AgentFrame, AgentFrameRole, AlarmConfig, CROWD_GIVE_M, CrewSpawn, CrowdConfig, Evacuation,
     FireMaterialCatalog, FirefighterPhase, Firefighting, FirefightingConfig, Movement,
     OccupantPhase, OccupantSpawn, Rehearsal, RehearsalFrame, SimulationConfig, SurfaceFireConfig,
     SurfaceFireWorld,
@@ -160,8 +160,9 @@ fn a_packed_office_and_a_crew_never_gridlock() {
             random_seed: seed,
             ..SimulationConfig::default()
         };
-        let evacuation =
-            Evacuation::new(&scene, &occupants(45), config).expect("evacuation builds");
+        let evacuation = Evacuation::new(&scene, &occupants(45), config)
+            .expect("evacuation builds")
+            .with_alarm(AlarmConfig::Immediate);
         let crew = Firefighting::new(&scene, &[crew(5.0)], config, FirefightingConfig::default())
             .expect("crew is valid");
         let mut rehearsal =
@@ -198,7 +199,8 @@ fn a_different_seed_changes_who_goes_first() {
                 ..SimulationConfig::default()
             },
         )
-        .expect("evacuation builds");
+        .expect("evacuation builds")
+        .with_alarm(AlarmConfig::Immediate);
         let mut rehearsal = Rehearsal::new(fire_world(&scene), Some(evacuation));
         rehearsal
             .run_until(60.0, STEP_SECONDS)
@@ -221,7 +223,9 @@ fn rejects_an_invalid_crowd_config() {
 fn run(occupants: &[OccupantSpawn], crew: Option<CrewSpawn>, until: f64) -> Vec<RehearsalFrame> {
     let scene = scene_fixture();
     let evacuation = (!occupants.is_empty()).then(|| {
-        Evacuation::new(&scene, occupants, SimulationConfig::default()).expect("evacuation builds")
+        Evacuation::new(&scene, occupants, SimulationConfig::default())
+            .expect("evacuation builds")
+            .with_alarm(AlarmConfig::Immediate)
     });
     let mut rehearsal = Rehearsal::new(fire_world(&scene), evacuation);
     if let Some(crew) = crew {
@@ -278,6 +282,7 @@ fn occupants(count: usize) -> Vec<OccupantSpawn> {
             position_m,
             walking_speed_m_per_s: 1.4,
             pre_movement_delay_seconds: 0.0,
+            injured: false,
         })
         .collect()
 }
@@ -286,7 +291,7 @@ fn crew(arrival_time_seconds: f64) -> CrewSpawn {
     CrewSpawn {
         id: "engine-1".to_owned(),
         entry_opening_id: Some("exit-east".to_owned()),
-        search_order: vec!["office".to_owned()],
+        route: vec!["office".to_owned()],
         arrival_time_seconds,
         member_count: 2,
         walking_speed_m_per_s: 1.0,
@@ -298,7 +303,7 @@ fn inside(frame: &RehearsalFrame) -> Vec<&AgentFrame> {
         .agents
         .iter()
         .filter(|agent| match &agent.role {
-            AgentFrameRole::Occupant { phase } => *phase != OccupantPhase::Exited,
+            AgentFrameRole::Occupant { phase, .. } => *phase != OccupantPhase::Exited,
             AgentFrameRole::Firefighter { phase, .. } => {
                 !matches!(phase, FirefighterPhase::Staging | FirefighterPhase::Exited)
             }
@@ -315,7 +320,7 @@ fn occupant_frames(frame: &RehearsalFrame) -> impl Iterator<Item = &AgentFrame> 
 
 fn phase(agent: &AgentFrame) -> OccupantPhase {
     match agent.role {
-        AgentFrameRole::Occupant { phase } => phase,
+        AgentFrameRole::Occupant { phase, .. } => phase,
         AgentFrameRole::Firefighter { .. } => panic!("{} is not an occupant", agent.id),
     }
 }

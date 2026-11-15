@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { crewStatus, heldUpCount, occupantCounts } from '../fire/frames'
+import { crewStatus, heldUpCount, occupantCounts, rescueCounts } from '../fire/frames'
 import { PLAYBACK_RATES, endSeconds, useFireStore, useSimulationAgents } from '../fire/fireStore'
 import { useWorld } from '../scene/api'
 
@@ -24,6 +24,7 @@ export function FireControls() {
   const agents = useSimulationAgents()
   const counts = occupantCounts(agents)
   const heldUp = heldUpCount(agents)
+  const rescue = rescueCounts(agents)
   const crew = crewStatus(agents)
   const revision = useWorld().data?.revision
 
@@ -54,6 +55,7 @@ export function FireControls() {
                 {` · Held up ${heldUp}`}
               </span>
             )}
+            {rescue.injured > 0 && ` · Rescued ${rescue.rescued}/${rescue.injured}`}
             {crew && ` · ${crew}`}
           </span>
           <span className="font-mono text-ink tabular-nums">

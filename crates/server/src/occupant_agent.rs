@@ -247,6 +247,7 @@ fn spawn_crowded(
                 walking_speed_m_per_s: MIN_HURRIED_SPEED_M_PER_S
                     + (MAX_HURRIED_SPEED_M_PER_S - MIN_HURRIED_SPEED_M_PER_S) * unit(number, 1),
                 pre_movement_delay_seconds: MAX_CROWDED_DELAY_SECONDS * unit(number, 2),
+                injured: false,
             }
         })
         .collect::<Vec<_>>();
@@ -477,6 +478,7 @@ impl GeminiProvider {
                     position_m: site.position_m,
                     walking_speed_m_per_s: occupant.walking_speed_m_per_s,
                     pre_movement_delay_seconds: occupant.pre_movement_delay_seconds,
+                    injured: false,
                 })
             })
             .collect()
@@ -821,6 +823,7 @@ mod tests {
             position_m: Vec3 { x, y, z: 0.0 },
             walking_speed_m_per_s: 1.2,
             pre_movement_delay_seconds: 0.0,
+            injured: false,
         }
     }
 }

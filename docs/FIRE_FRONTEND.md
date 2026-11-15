@@ -13,7 +13,10 @@ POST /api/fire/simulate/hybrid
   "duration_seconds": 180,
   "step_seconds": 0.5,
   "occupants": [/* OccupantSpawn records from /api/agents/spawn_occupants */],
-  "crews": [{ "id": "engine-1", "member_count": 2, "arrival_time_seconds": 30 }]
+  "crews": [{ "id": "engine-1", "arrival_time_seconds": 10, "route": ["kitchen", "hall"] }],
+  "alarm": "detected",        // or "immediate": everyone knows at ignition
+  "injured_fraction": 0.1,    // share of occupants who start injured
+  "seed": 0                   // repeatable randomness for the run
 }
 → { "revision": 4, "excluded_object_ids": [], "results": SimulationResults }
 ```
@@ -22,8 +25,9 @@ It ignites the object, advances the surface fire, occupants, and firefighter
 crews together frame by frame on a snapshot of the current scene (crews' water
 changes how the fire spreads), feeds the resulting room heat-release curves
 through CFAST, and returns the merged timeline. A crew may also give
-`entry_opening_id` (default: the first exterior exit) and `search_order` (room
-IDs to search first; the rest are searched nearest first). The server uses the CFAST 7.7.7 solver that `cargo build`
+`entry_opening_id` (default: the first exterior exit), `route` (room IDs to
+walk into first; the rest are entered nearest first; `search_order` is
+accepted as the old name), and `member_count` (default 1). The server uses the CFAST 7.7.7 solver that `cargo build`
 compiles from `crates/cfast/vendor/` (this needs `gfortran`), or the
 executable in `CFAST_BIN` if that is set. Objects that don't stand inside a room are left out of the run and
 listed in `excluded_object_ids`. Errors: 404 `object_not_found`, 422
@@ -41,8 +45,12 @@ The final payload is `SimulationResults`. Choose a frame using
 - `frame.rooms`: CFAST smoke and gas conditions for each room.
 - `frame.openings`: CFAST flow through doors, windows, and passages.
 - `frame.fires`: CFAST's room-level representation of the Rust heat output.
-- `frame.agents`: occupants advanced by the Rust evacuation engine. It honors
-  pre-movement delay and walking speed, routes to exterior doors/passages,
+- `frame.agents`: occupants advanced by the Rust evacuation engine. Nobody
+  reacts at ignition: once a room's fire reaches about 50 kW, whoever is in
+  that room raises the alarm, and everyone else hears it later the farther
+  they are (about 0.2 s per metre of walk); a fire in an empty room alerts
+  nobody until it spreads to someone. Each person's pre-movement delay runs
+  from when they hear it. It honors walking speed, routes to exterior doors/passages,
   replans around fire and crowds, and uses `rerouting` when fire makes it
   change exit or no safe path is available. Nobody walks into burning
   cells. Occupants and firefighters move through one
@@ -50,12 +58,23 @@ The final payload is `SimulationResults`. Choose a frame using
   `stopped`, `walking`, `queued` (held up by people in the way), or
   `squeezing` (pressing past someone). The web app tints queued blobs red and
   squeezing blobs amber.
+  Occupants who start injured (`role.injured`) lie `injured` and can't move;
+  a firefighter carries them out (`carried`, then `exited`). The web app
+  lays them on the floor, and carries them over the firefighter's shoulder.
   Firefighters follow the occupants in the same array (`role.type ===
   'firefighter'`, IDs `{crew_id}/{n}`, `/1` leads). A crew doesn't know where
-  the fire is: it stages at its entry until `arrival_time_seconds`, searches
-  room by room (`advancing`, `searching`), fights fire it sees or feels nearby
-  (`suppressing`), then leaves (`withdrawing`, `exited`). Put-out cells appear
-  in `surface_fire` as `extinguished`.
+  the fire is: it stages outside until it is called (when the occupants'
+  alarm is raised; at ignition if nobody is in the building), arrives
+  `arrival_time_seconds` after the call, then walks
+  into the rooms on its `route` in order without stopping (`advancing`, at
+  1.5 m/s until it knows of fire), sees whatever is in a room once inside it,
+  and enters the remaining rooms nearest first. Fire it sees or feels nearby
+  comes first (`suppressing`): the hose is aimed at one burning spot at a time
+  (`role.nozzle_target_m`, drawn as a blue cone) and wets a 30° cone, so a
+  burning sofa takes about 25 s to knock down. Then it picks up injured people
+  it has seen (`rescuing`) and carries each to the nearest exit at 0.6 m/s
+  (`carrying`), and finally leaves (`withdrawing`, `exited`). Put-out cells
+  appear in `surface_fire` as `extinguished`.
 
 ### Crowds
 

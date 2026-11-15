@@ -14,10 +14,15 @@ pub const FURNITURE_FIRE_CELL_SIZE_M: f64 = 0.25;
 const MAX_FURNITURE_FIRE_CELLS_PER_OBJECT: usize = 100_000;
 /// Horizontal distance a hose stream reaches inside a room.
 pub const DEFAULT_NOZZLE_REACH_M: f64 = 5.0;
-/// Effective cooling of one handline. Large next to a single room fire, so
-/// knockdown is quick once the fire is in reach: reaching it is what takes
-/// time.
-pub const DEFAULT_NOZZLE_COOLING_KW: f64 = 2_000.0;
+/// Effective cooling of one handline: a 1.75-inch line flows about 9.5 kg/s,
+/// of which a fraction actually absorbs heat from the fire.
+pub const DEFAULT_NOZZLE_COOLING_KW: f64 = 1_000.0;
+/// Half the spread of a nozzle's stream: a 30 degree cone.
+pub const DEFAULT_NOZZLE_HALF_ANGLE_DEGREES: f64 = 15.0;
+/// A burning cell with less than this share of its fuel left has burned out.
+const BURNOUT_FUEL_FRACTION: f64 = 0.01;
+/// Burning cells this close to the nozzle are wetted whichever way it points.
+const NOZZLE_SPLASH_RADIUS_M: f64 = 0.5;
 
 /// Approximate combustion properties used by the fast Rust surface model.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -138,13 +143,48 @@ pub struct SurfaceFireConfig {
     pub furniture_radiation_range_m: f64,
     /// A burning node goes out once the suppression cooling it has received
     /// adds up to its current heat release over this many seconds, so larger
-    /// fires take longer to knock down.
+    /// fires take longer to knock down. With the default nozzle, a burning
+    /// sofa takes about 20 seconds.
     #[serde(default = "default_knockdown_seconds")]
     pub suppression_knockdown_seconds: f64,
+    /// Share of every burning node's output that heats the whole room it is
+    /// in, as hot smoke gathering under the ceiling does. Spread over the
+    /// room's unburnt fuel by area, it is what lets a room fire take over
+    /// the whole room.
+    #[serde(default = "default_room_heat_fraction")]
+    pub room_heat_fraction: f64,
+    /// Burning furniture heats floor within this distance of it, so a
+    /// burning sofa lights the carpet around it.
+    #[serde(default = "default_furniture_floor_radiation_m")]
+    pub furniture_floor_radiation_m: f64,
+    /// Share of a burning cell's output radiated across the gap between
+    /// furniture and the floor within `furniture_floor_radiation_m`, in
+    /// either direction. It comes on top of the heat passed to touching
+    /// cells, so radiating never starves a fire of what carries it across
+    /// the object it is on.
+    #[serde(default = "default_radiation_fraction")]
+    pub radiation_fraction: f64,
+}
+
+/// With this share (and the room heat) a sofa fire takes over a 4 x 4 m
+/// carpeted room in under a minute, and a wooden desk fire grows into the
+/// carpet instead of dying out on the desk.
+const fn default_radiation_fraction() -> f64 {
+    0.3
 }
 
 const fn default_knockdown_seconds() -> f64 {
-    3.0
+    30.0
+}
+
+/// Small on purpose: every unburnt cell in a room warms at the same rate,
+/// so much more and a whole room flashes over at once.
+const fn default_room_heat_fraction() -> f64 {
+    0.005
+}
+
+const fn default_furniture_floor_radiation_m() -> f64 {
+    1.0
 }
 
 impl Default for SurfaceFireConfig {
@@ -152,8 +192,11 @@ impl Default for SurfaceFireConfig {
         Self {
             cell_size_m: 0.5,
             ambient_temperature_c: 20.0,
-            furniture_radiation_range_m: 1.5,
+            furniture_radiation_range_m: 2.5,
             suppression_knockdown_seconds: default_knockdown_seconds(),
+            room_heat_fraction: default_room_heat_fraction(),
+            furniture_floor_radiation_m: default_furniture_floor_radiation_m(),
+            radiation_fraction: default_radiation_fraction(),
         }
     }
 }
@@ -260,6 +303,17 @@ pub struct Suppression {
     /// Horizontal distance from `position_m` that the stream reaches.
     pub reach_m: f64,
     pub cooling_kw: f64,
+    /// Unit vector the nozzle points along. `None` wets everything in reach,
+    /// all around.
+    #[serde(default)]
+    pub direction: Option<(f64, f64)>,
+    /// Half the spread of the stream around `direction`.
+    #[serde(default = "default_half_angle")]
+    pub half_angle_degrees: f64,
+}
+
+const fn default_half_angle() -> f64 {
+    DEFAULT_NOZZLE_HALF_ANGLE_DEGREES
 }
 
 impl Suppression {
@@ -272,6 +326,15 @@ impl Suppression {
             Some("reach_m")
         } else if !self.cooling_kw.is_finite() || self.cooling_kw < 0.0 {
             Some("cooling_kw")
+        } else if self.direction.is_some_and(|(x, y)| {
+            !x.is_finite() || !y.is_finite() || ((x * x + y * y).sqrt() - 1.0).abs() > 1.0e-6
+        }) {
+            Some("direction")
+        } else if !self.half_angle_degrees.is_finite()
+            || self.half_angle_degrees <= 0.0
+            || self.half_angle_degrees > 180.0
+        {
+            Some("half_angle_degrees")
         } else {
             None
         };
@@ -297,6 +360,12 @@ pub struct SurfaceFireWorld {
     nodes: Vec<SurfaceFireNode>,
     node_indices: HashMap<String, usize>,
     connections: Vec<Vec<HeatConnection>>,
+    /// Links across the gap between furniture and nearby floor, with their
+    /// own heat budget (`radiation_fraction`).
+    radiation: Vec<Vec<HeatConnection>>,
+    /// Index of each node's room, for room-wide heat.
+    node_rooms: Vec<usize>,
+    room_count: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -429,6 +498,7 @@ impl SurfaceFireWorld {
         }
 
         let mut connections = vec![Vec::new(); nodes.len()];
+        let mut radiation = vec![Vec::new(); nodes.len()];
         let mut connected_pairs = HashSet::new();
         connect_floor_neighbors(&grids, &floor_nodes, &mut connections, &mut connected_pairs);
         connect_furniture_to_floor(
@@ -452,6 +522,24 @@ impl SurfaceFireWorld {
             &mut connections,
             &mut connected_pairs,
         );
+        connect_furniture_to_nearby_floor(
+            &grids,
+            &nodes,
+            &floor_nodes,
+            &furniture_nodes,
+            config.furniture_floor_radiation_m,
+            &mut radiation,
+        );
+
+        let mut rooms = HashMap::<&str, usize>::new();
+        let node_rooms = nodes
+            .iter()
+            .map(|node| {
+                let next = rooms.len();
+                *rooms.entry(node.room_id.as_str()).or_insert(next)
+            })
+            .collect::<Vec<_>>();
+        let room_count = rooms.len();
 
         let node_indices = nodes
             .iter()
@@ -465,6 +553,9 @@ impl SurfaceFireWorld {
             nodes,
             node_indices,
             connections,
+            radiation,
+            node_rooms,
+            room_count,
         })
     }
 
@@ -509,8 +600,43 @@ impl SurfaceFireWorld {
         Ok(self.snapshot())
     }
 
+    /// Ignites one bottom cell near the center of an object.
     pub fn ignite_object(&mut self, object_id: &str) -> Result<SurfaceFireFrame, SurfaceFireError> {
         self.ignite_node(&object_node_id(object_id))
+    }
+
+    /// Starts a fire on an object: the cell [`ignite_object`](Self::ignite_object)
+    /// lights plus the cells beside it on the same layer, so a fire starts as
+    /// a small patch rather than one cell.
+    pub fn start_fire(&mut self, object_id: &str) -> Result<SurfaceFireFrame, SurfaceFireError> {
+        let node_id = object_node_id(object_id);
+        self.ignite_node(&node_id)?;
+        let index = self.node_indices[&node_id];
+        let Some(seed_cell) = self.nodes[index].furniture_cell else {
+            return Ok(self.snapshot());
+        };
+        let beside = self.connections[index]
+            .iter()
+            .map(|connection| connection.neighbor)
+            .filter(|&neighbor| {
+                self.nodes[neighbor].source == self.nodes[index].source
+                    && self.nodes[neighbor]
+                        .furniture_cell
+                        .is_some_and(|cell| cell.layer == seed_cell.layer)
+            })
+            .collect::<Vec<_>>();
+        for neighbor in beside {
+            let node = &mut self.nodes[neighbor];
+            if matches!(
+                node.state,
+                CombustionState::Unignited | CombustionState::Heating
+            ) {
+                node.state = CombustionState::Burning;
+                node.ignition_time_seconds = Some(self.time_seconds);
+                node.absorbed_heat_kj = ignition_energy(node);
+            }
+        }
+        Ok(self.snapshot())
     }
 
     /// Ignites one exact cell in a furniture object's local grid.
@@ -570,11 +696,21 @@ impl SurfaceFireWorld {
         }
         suppression.validate()?;
 
+        let cos_half_angle = suppression.half_angle_degrees.to_radians().cos();
         let in_reach = |node: &SurfaceFireNode| {
-            node.room_id == suppression.room_id
-                && (node.position_m.x - suppression.position_m.x)
-                    .hypot(node.position_m.y - suppression.position_m.y)
-                    <= suppression.reach_m
+            let offset = (
+                node.position_m.x - suppression.position_m.x,
+                node.position_m.y - suppression.position_m.y,
+            );
+            let distance = offset.0.hypot(offset.1);
+            let in_stream = match suppression.direction {
+                None => true,
+                Some((x, y)) => {
+                    distance <= NOZZLE_SPLASH_RADIUS_M
+                        || (offset.0 * x + offset.1 * y) / distance >= cos_half_angle
+                }
+            };
+            node.room_id == suppression.room_id && distance <= suppression.reach_m && in_stream
         };
         let burning = self
             .nodes
@@ -650,13 +786,63 @@ impl SurfaceFireWorld {
             }
         }
 
+        for (index, node) in self.nodes.iter().enumerate() {
+            if node.state != CombustionState::Burning || self.radiation[index].is_empty() {
+                continue;
+            }
+            let weight_sum = self.radiation[index]
+                .iter()
+                .map(|connection| connection.weight)
+                .sum::<f64>();
+            let radiated_kw = current_hrr_kw(node) * self.config.radiation_fraction;
+            for connection in &self.radiation[index] {
+                incoming_heat_kw[connection.neighbor] +=
+                    radiated_kw * connection.weight / weight_sum;
+            }
+        }
+
+        // Hot smoke heats everything in the room that isn't burning yet.
+        let mut room_heat_kw = vec![0.0; self.room_count];
+        let mut room_fuel_area_m2 = vec![0.0; self.room_count];
+        for (index, node) in self.nodes.iter().enumerate() {
+            let room = self.node_rooms[index];
+            match node.state {
+                CombustionState::Burning => {
+                    room_heat_kw[room] += current_hrr_kw(node) * self.config.room_heat_fraction;
+                }
+                CombustionState::Unignited
+                | CombustionState::Heating
+                | CombustionState::Extinguished
+                    if node.material.combustible =>
+                {
+                    room_fuel_area_m2[room] += node.area_m2;
+                }
+                _ => {}
+            }
+        }
+        for (index, node) in self.nodes.iter().enumerate() {
+            let room = self.node_rooms[index];
+            if node.state != CombustionState::Burning
+                && node.material.combustible
+                && room_fuel_area_m2[room] > 0.0
+            {
+                incoming_heat_kw[index] +=
+                    room_heat_kw[room] * node.area_m2 / room_fuel_area_m2[room];
+            }
+        }
+
         let next_time = self.time_seconds + delta_seconds;
         for (index, node) in self.nodes.iter_mut().enumerate() {
             match node.state {
                 CombustionState::Burning => {
                     node.fuel_remaining_kj =
                         (node.fuel_remaining_kj - current_hrr_kw(node) * delta_seconds).max(0.0);
-                    if node.fuel_remaining_kj == 0.0 {
+                    // Output tapers with the fuel left, so the fuel only ever
+                    // approaches zero: call it out once almost none is left,
+                    // or the cell would "burn" forever at next to no heat.
+                    let initial_fuel_kj = node.material.fuel_energy_kj_per_m2 * node.area_m2;
+                    if node.fuel_remaining_kj <= initial_fuel_kj * BURNOUT_FUEL_FRACTION {
+                        node.fuel_remaining_kj = 0.0;
                         node.state = CombustionState::BurnedOut;
                     }
                 }
@@ -853,6 +1039,70 @@ fn connect_furniture_to_floor(
             };
             if let Some(&floor_node) = floor_nodes.get(&(floor.id.clone(), coordinate)) {
                 connect(connections, connected_pairs, floor_node, object_node, 1.5);
+            }
+        }
+    }
+}
+
+/// Links every exposed furniture cell with the floor cells of its room
+/// within `range_m`, both ways, weighted by how close they are, so burning
+/// furniture lights the floor around it and burning floor lights furniture.
+fn connect_furniture_to_nearby_floor(
+    grids: &[(&tflop_world_core::Floor, SimulationGrid)],
+    nodes: &[SurfaceFireNode],
+    floor_nodes: &HashMap<(String, GridCoordinate), usize>,
+    furniture_nodes: &HashMap<String, Vec<usize>>,
+    range_m: f64,
+    radiation: &mut [Vec<HeatConnection>],
+) {
+    if range_m <= 0.0 {
+        return;
+    }
+    for indices in furniture_nodes.values() {
+        for &object_node in indices {
+            let node = &nodes[object_node];
+            if !is_exposed_furniture_cell(node) {
+                continue;
+            }
+            let Some((floor, grid)) = grids.iter().find(|(floor, _)| floor.id == node.floor_id)
+            else {
+                continue;
+            };
+            let Some(center) = grid.world_to_cell(node.position_m) else {
+                continue;
+            };
+            let span = ((range_m + node.dimensions_m.width_m.max(node.dimensions_m.depth_m))
+                / grid.cell_size_m)
+                .ceil() as i64;
+            for row in -span..=span {
+                for column in -span..=span {
+                    let (Ok(column), Ok(row)) = (
+                        u32::try_from(i64::from(center.column) + column),
+                        u32::try_from(i64::from(center.row) + row),
+                    ) else {
+                        continue;
+                    };
+                    let Some(&floor_node) =
+                        floor_nodes.get(&(floor.id.clone(), GridCoordinate { column, row }))
+                    else {
+                        continue;
+                    };
+                    if nodes[floor_node].room_id != node.room_id {
+                        continue;
+                    }
+                    let gap = node_gap_m(node, &nodes[floor_node]);
+                    if gap <= range_m {
+                        let weight = 1.0 / (1.0 + gap);
+                        radiation[object_node].push(HeatConnection {
+                            neighbor: floor_node,
+                            weight,
+                        });
+                        radiation[floor_node].push(HeatConnection {
+                            neighbor: object_node,
+                            weight,
+                        });
+                    }
+                }
             }
         }
     }
@@ -1147,6 +1397,21 @@ fn validate_config(config: SurfaceFireConfig) -> Result<(), SurfaceFireError> {
     {
         return Err(SurfaceFireError::InvalidConfig {
             field: "suppression_knockdown_seconds",
+        });
+    }
+    if !(0.0..=1.0).contains(&config.room_heat_fraction) {
+        return Err(SurfaceFireError::InvalidConfig {
+            field: "room_heat_fraction",
+        });
+    }
+    if !(0.0..=1.0).contains(&config.radiation_fraction) {
+        return Err(SurfaceFireError::InvalidConfig {
+            field: "radiation_fraction",
+        });
+    }
+    if !config.furniture_floor_radiation_m.is_finite() || config.furniture_floor_radiation_m < 0.0 {
+        return Err(SurfaceFireError::InvalidConfig {
+            field: "furniture_floor_radiation_m",
         });
     }
     Ok(())

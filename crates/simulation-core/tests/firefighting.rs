@@ -1,11 +1,11 @@
 use std::collections::BTreeSet;
 
 use tflop_simulation_core::{
-    AgentFrame, AgentFrameRole, CROWD_GIVE_M, CombustionState, CrewReport, CrewSpawn,
+    AgentFrame, AgentFrameRole, CROWD_GIVE_M, CombustionState, CrewReport, CrewSpawn, Evacuation,
     FIREFIGHTER_RADIUS_M, FireMaterialCatalog, FirefighterPhase, Firefighting, FirefightingConfig,
-    FirefightingError, Movement, OCCUPANT_RADIUS_M, Rehearsal, RehearsalFrame, Simulation,
-    SimulationConfig, SimulationGrid, SurfaceFireConfig, SurfaceFireNodeFrame, SurfaceFireWorld,
-    reachable_exit_cells,
+    FirefightingError, Movement, OCCUPANT_RADIUS_M, OccupantPhase, OccupantSpawn, Rehearsal,
+    RehearsalFrame, Simulation, SimulationConfig, SimulationGrid, SurfaceFireConfig,
+    SurfaceFireNodeFrame, SurfaceFireWorld, reachable_exit_cells,
 };
 use tflop_world_core::{
     BoundaryEdge, BoundaryKind, Dimensions3, Floor, FurnitureAsset, FurnitureObject, Mobility,
@@ -99,29 +99,51 @@ fn firefighters_stay_on_walkable_ground_and_out_of_flames() {
 }
 
 #[test]
-fn with_no_fire_the_crew_searches_every_room_in_order_then_leaves() {
+fn with_no_fire_the_crew_walks_its_route_then_leaves() {
     let scene = scene_fixture(false);
     let (rehearsal, frames) = run(&scene, None, Some(crew(&["west", "east"])), 400.0);
 
     let report = report(&rehearsal);
     assert_eq!(report.phase, FirefighterPhase::Exited);
     assert!(rehearsal.is_settled());
-    assert!(frames.last().expect("frames").fire.time_seconds < 400.0);
-    let searched = &report.memory.searched;
+    let visited = &report.memory.visited;
     assert_eq!(
-        searched.keys().cloned().collect::<BTreeSet<_>>(),
+        visited.keys().cloned().collect::<BTreeSet<_>>(),
         set(&["east", "hall", "west"])
     );
-    assert!(searched["west"] < searched["east"], "{searched:?}");
-    assert!(
-        searched["east"] < searched["hall"],
-        "unlisted rooms come after the search order: {searched:?}"
-    );
+    assert!(visited["west"] < visited["east"], "{visited:?}");
+    // No dwelling: entering three small rooms and leaving takes well under
+    // a minute at scouting speed.
+    let done = frames.last().expect("frames").fire.time_seconds;
+    assert!(done < 40.0, "the crew took {done} s");
     assert!(report.memory.unreachable.is_empty());
     assert!(
         frames
             .iter()
             .all(|frame| phase(firefighter(frame, LEADER)) != FirefighterPhase::Suppressing)
+    );
+}
+
+#[test]
+fn the_crew_scouts_faster_until_it_knows_of_fire() {
+    let scene = scene_fixture(false);
+    let (_, frames) = run(&scene, None, Some(crew(&["west", "east"])), 400.0);
+    let fastest = frames
+        .iter()
+        .map(|frame| {
+            let velocity = firefighter(frame, LEADER).velocity_m_per_s;
+            velocity.x.hypot(velocity.y)
+        })
+        .fold(0.0, f64::max);
+
+    let config = FirefightingConfig::default();
+    assert!(
+        fastest > 1.2,
+        "never faster than a hose-laden walk: {fastest}"
+    );
+    assert!(
+        fastest <= config.scouting_speed_m_per_s + 1.0e-9,
+        "{fastest}"
     );
 }
 
@@ -140,7 +162,7 @@ fn the_crew_learns_of_the_fire_only_by_observing_it() {
             // The crew observed at the start of this step, from where the
             // leader stood in the previous frame, against that frame's fire.
             let leader = firefighter(&previous, LEADER).position_m;
-            let saw_east = memory.first_observed.contains_key("east");
+            let saw_east = memory.visited.contains_key("east");
             let felt_heat = burning(&previous)
                 .any(|node| distance(node.position_m, leader) <= config.heat_sense_radius_m);
             assert!(
@@ -155,8 +177,8 @@ fn the_crew_learns_of_the_fire_only_by_observing_it() {
     let memory = report(&rehearsal).memory;
     assert!(first_known_at.is_some(), "the crew found the fire");
     assert!(
-        memory.searched["west"] < memory.first_observed["east"],
-        "West is searched before the crew first enters East: {memory:?}"
+        memory.visited["west"] < memory.visited["east"],
+        "West is entered before East: {memory:?}"
     );
 }
 
@@ -184,6 +206,22 @@ fn the_crew_finds_the_fire_and_puts_it_out() {
             .iter()
             .any(|frame| phase(firefighter(frame, LEADER)) == FirefighterPhase::Suppressing)
     );
+    // The nozzle is aimed while spraying, and only then.
+    for frame in &frames {
+        let leader = firefighter(frame, LEADER);
+        let AgentFrameRole::Firefighter {
+            nozzle_target_m, ..
+        } = &leader.role
+        else {
+            unreachable!("the leader is a firefighter");
+        };
+        assert_eq!(
+            nozzle_target_m.is_some(),
+            phase(leader) == FirefighterPhase::Suppressing,
+            "t={}",
+            frame.fire.time_seconds
+        );
+    }
 
     let (_, unfought) = run(&scene, Some("chair-east"), None, last.fire.time_seconds);
     let unfought_last = unfought.last().expect("frames");
@@ -196,7 +234,7 @@ fn the_crew_finds_the_fire_and_puts_it_out() {
 }
 
 #[test]
-fn searching_the_fire_room_first_contains_it_sooner() {
+fn routing_to_the_fire_room_first_contains_it_sooner() {
     let scene = scene_fixture(false);
     let contained_at = |order: &[&str]| {
         let (_, frames) = run(&scene, Some("chair-east"), Some(crew(order)), 300.0);
@@ -264,7 +302,7 @@ fn fire_felt_through_a_wall_is_fought_from_inside_its_room() {
     while frames.last().expect("frames").fire.time_seconds < 300.0 && !rehearsal.is_settled() {
         frames.push(rehearsal.step(1.0).expect("steps"));
         let memory = report(&rehearsal).memory;
-        if !memory.known_fires.is_empty() && !memory.first_observed.contains_key("east") {
+        if !memory.known_fires.is_empty() && !memory.visited.contains_key("east") {
             felt_before_seeing_east = true;
         }
     }
@@ -346,7 +384,7 @@ fn the_crew_stays_together_without_overlapping() {
         assert_eq!(phase(firefighter(frame, FOLLOWER)), phase(leader));
         checked += 1;
     }
-    assert!(checked > 20);
+    assert!(checked > 5, "only {checked} frames with the crew inside");
 }
 
 #[test]
@@ -360,7 +398,7 @@ fn a_room_with_no_route_is_reported_unreachable_and_skipped() {
     assert_eq!(
         report
             .memory
-            .searched
+            .visited
             .keys()
             .cloned()
             .collect::<BTreeSet<_>>(),
@@ -387,7 +425,7 @@ fn rejects_invalid_crews_and_config() {
     let Err(FirefightingError::InvalidCrews(errors)) = build(
         CrewSpawn {
             entry_opening_id: Some("nope".to_owned()),
-            search_order: vec!["attic".to_owned(), "west".to_owned(), "west".to_owned()],
+            route: vec!["attic".to_owned(), "west".to_owned(), "west".to_owned()],
             ..crew(&[])
         },
         FirefightingConfig::default(),
@@ -400,18 +438,18 @@ fn rejects_invalid_crews_and_config() {
         .map(|error| error.path.as_str())
         .collect::<BTreeSet<_>>();
     assert!(paths.contains("crews[0].entry_opening_id"), "{errors:?}");
-    assert!(paths.contains("crews[0].search_order[2]"), "{errors:?}");
+    assert!(paths.contains("crews[0].route[2]"), "{errors:?}");
 
     let Err(FirefightingError::InvalidCrews(errors)) = build(
         CrewSpawn {
-            search_order: vec!["attic".to_owned()],
+            route: vec!["attic".to_owned()],
             ..crew(&[])
         },
         FirefightingConfig::default(),
     ) else {
         panic!("unknown room should fail");
     };
-    assert_eq!(errors.0[0].path, "crews[0].search_order[0]");
+    assert_eq!(errors.0[0].path, "crews[0].route[0]");
 
     assert!(matches!(
         build(
@@ -471,6 +509,230 @@ fn rehearsal(scene: &Scene, crew: Option<CrewSpawn>) -> Rehearsal {
     rehearsal_with(scene, crew, FirefightingConfig::default())
 }
 
+#[test]
+fn an_injured_occupant_on_the_route_is_carried_out() {
+    let scene = scene_fixture(false);
+    let mut rehearsal = rescue_rehearsal(&scene, &["west"], &[injured("hurt", 2.0, 5.5)]);
+    let mut frames = vec![rehearsal.step(1.0).expect("steps")];
+    frames.extend(rehearsal.run_until(400.0, 1.0).expect("run succeeds"));
+
+    let report = report(&rehearsal);
+    assert!(
+        report.memory.rescued.contains_key("hurt"),
+        "{:?}",
+        report.memory
+    );
+    assert!(
+        rehearsal.is_settled(),
+        "everyone is out once the rescue is done"
+    );
+    let hurt = |frame: &RehearsalFrame| {
+        frame
+            .agents
+            .iter()
+            .find(|agent| agent.id == "hurt")
+            .map(occupant_phase)
+            .expect("the injured occupant is in every frame")
+    };
+    assert_eq!(hurt(&frames[0]), OccupantPhase::Injured);
+    assert!(
+        frames
+            .iter()
+            .any(|frame| hurt(frame) == OccupantPhase::Carried)
+    );
+    assert_eq!(hurt(frames.last().expect("frames")), OccupantPhase::Exited);
+    assert!(
+        frames
+            .iter()
+            .any(|frame| phase(firefighter(frame, LEADER)) == FirefighterPhase::Carrying)
+    );
+    // Carried beside the firefighter.
+    for frame in &frames {
+        if hurt(frame) == OccupantPhase::Carried {
+            let carried = frame
+                .agents
+                .iter()
+                .find(|agent| agent.id == "hurt")
+                .expect("hurt");
+            assert!(distance(carried.position_m, firefighter(frame, LEADER).position_m) < 1e-9);
+        }
+    }
+}
+
+#[test]
+fn the_fire_is_fought_before_a_rescue() {
+    let scene = scene_fixture(false);
+    let mut rehearsal = rescue_rehearsal(&scene, &["east"], &[injured("hurt", 5.0, 5.5)]);
+    let mut frames = vec![rehearsal.ignite_object("chair-east").expect("ignites")];
+    frames.extend(rehearsal.run_until(400.0, 1.0).expect("run succeeds"));
+
+    let first = |wanted: &[FirefighterPhase]| {
+        frames
+            .iter()
+            .position(|frame| wanted.contains(&phase(firefighter(frame, LEADER))))
+            .expect("the crew gets to it")
+    };
+    let sprayed = first(&[FirefighterPhase::Suppressing]);
+    let rescued = first(&[FirefighterPhase::Rescuing, FirefighterPhase::Carrying]);
+    assert!(
+        sprayed < rescued,
+        "sprayed at frame {sprayed}, rescued at {rescued}"
+    );
+    assert!(report(&rehearsal).memory.rescued.contains_key("hurt"));
+}
+
+#[test]
+fn the_crew_is_called_when_someone_notices_the_fire() {
+    let scene = scene_fixture(false);
+    let mut rehearsal = called_rehearsal(&scene, &[walker("watcher", 6.0, 5.0)], 5.0);
+    let mut frames = vec![rehearsal.ignite_object("chair-east").expect("ignites")];
+    frames.extend(rehearsal.run_until(300.0, 0.5).expect("run succeeds"));
+
+    let alarm = rehearsal
+        .evacuation()
+        .and_then(|evacuation| evacuation.alarm_raised_at())
+        .expect("the watcher notices the fire");
+    assert!(alarm > 0.0, "a just-lit chair isn't noticed at once");
+    assert_eq!(report(&rehearsal).called_at, Some(alarm));
+    let entered = frames
+        .iter()
+        .find(|frame| phase(firefighter(frame, LEADER)) != FirefighterPhase::Staging)
+        .map(|frame| frame.fire.time_seconds)
+        .expect("the crew comes in");
+    // It arrives its response time after the call, acting from the next step.
+    assert!(
+        (alarm + 5.0..=alarm + 6.0).contains(&entered),
+        "called at {alarm} s, came in at {entered} s"
+    );
+}
+
+#[test]
+fn a_fire_nobody_has_noticed_calls_nobody() {
+    let scene = scene_fixture(false);
+    // The only person is two rooms away from the fire.
+    let mut rehearsal = called_rehearsal(&scene, &[walker("away", 1.0, 5.0)], 0.0);
+    let mut frames = vec![rehearsal.ignite_object("chair-east").expect("ignites")];
+    frames.extend(rehearsal.run_until(10.0, 0.5).expect("run succeeds"));
+
+    assert_eq!(report(&rehearsal).called_at, None);
+    assert!(
+        frames
+            .iter()
+            .all(|frame| phase(firefighter(frame, LEADER)) == FirefighterPhase::Staging)
+    );
+}
+
+/// A one-firefighter crew that responds `response_seconds` after the alarm
+/// raised by `occupants`.
+fn called_rehearsal(
+    scene: &Scene,
+    occupants: &[OccupantSpawn],
+    response_seconds: f64,
+) -> Rehearsal {
+    let fire = SurfaceFireWorld::from_scene(
+        scene,
+        &FireMaterialCatalog::default(),
+        SurfaceFireConfig::default(),
+    )
+    .expect("fire world builds");
+    // Noticed early, so the test doesn't hang on how fast the fire grows.
+    let evacuation = Evacuation::new(scene, occupants, SimulationConfig::default())
+        .expect("evacuation builds")
+        .with_alarm(tflop_simulation_core::AlarmConfig::Detected {
+            notice_hrr_kw: 5.0,
+            same_room_seconds: 2.0,
+            seconds_per_metre: 0.2,
+        });
+    let crew = Firefighting::new(
+        scene,
+        &[CrewSpawn {
+            member_count: 1,
+            arrival_time_seconds: response_seconds,
+            ..crew(&["east"])
+        }],
+        SimulationConfig::default(),
+        FirefightingConfig::default(),
+    )
+    .expect("crew is valid");
+    Rehearsal::new(fire, Some(evacuation)).with_firefighting(crew)
+}
+
+fn walker(id: &str, x: f64, y: f64) -> OccupantSpawn {
+    OccupantSpawn {
+        injured: false,
+        ..injured(id, x, y)
+    }
+}
+
+#[test]
+fn injured_people_never_move_on_their_own() {
+    let scene = scene_fixture(false);
+    let fire = SurfaceFireWorld::from_scene(
+        &scene,
+        &FireMaterialCatalog::default(),
+        SurfaceFireConfig::default(),
+    )
+    .expect("fire world builds");
+    let evacuation = Evacuation::new(
+        &scene,
+        &[injured("hurt", 2.0, 5.5)],
+        SimulationConfig::default(),
+    )
+    .expect("evacuation builds")
+    .with_alarm(tflop_simulation_core::AlarmConfig::Immediate);
+    let mut rehearsal = Rehearsal::new(fire, Some(evacuation));
+    let frames = rehearsal.run_until(30.0, 1.0).expect("run succeeds");
+    assert!(frames.iter().all(|frame| {
+        let agent = &frame.agents[0];
+        occupant_phase(agent) == OccupantPhase::Injured
+            && agent.position_m.x == 2.0
+            && agent.position_m.y == 5.5
+    }));
+    assert!(!rehearsal.is_settled(), "nobody has carried them out");
+}
+
+fn rescue_rehearsal(scene: &Scene, route: &[&str], occupants: &[OccupantSpawn]) -> Rehearsal {
+    let fire = SurfaceFireWorld::from_scene(
+        scene,
+        &FireMaterialCatalog::default(),
+        SurfaceFireConfig::default(),
+    )
+    .expect("fire world builds");
+    // Everyone knows at once, so the crew is called at ignition.
+    let evacuation = Evacuation::new(scene, occupants, SimulationConfig::default())
+        .expect("evacuation builds")
+        .with_alarm(tflop_simulation_core::AlarmConfig::Immediate);
+    let crew = Firefighting::new(
+        scene,
+        &[CrewSpawn {
+            member_count: 1,
+            ..crew(route)
+        }],
+        SimulationConfig::default(),
+        FirefightingConfig::default(),
+    )
+    .expect("crew is valid");
+    Rehearsal::new(fire, Some(evacuation)).with_firefighting(crew)
+}
+
+fn injured(id: &str, x: f64, y: f64) -> OccupantSpawn {
+    OccupantSpawn {
+        id: id.to_owned(),
+        floor_id: "floor-1".to_owned(),
+        position_m: point(x, y),
+        walking_speed_m_per_s: 1.2,
+        pre_movement_delay_seconds: 0.0,
+        injured: true,
+    }
+}
+
+fn occupant_phase(agent: &AgentFrame) -> OccupantPhase {
+    let AgentFrameRole::Occupant { phase, .. } = agent.role else {
+        panic!("{} is not an occupant", agent.id);
+    };
+    phase
+}
+
 fn rehearsal_with(scene: &Scene, crew: Option<CrewSpawn>, config: FirefightingConfig) -> Rehearsal {
     let fire = SurfaceFireWorld::from_scene(
         scene,
@@ -488,11 +750,11 @@ fn rehearsal_with(scene: &Scene, crew: Option<CrewSpawn>, config: FirefightingCo
     }
 }
 
-fn crew(search_order: &[&str]) -> CrewSpawn {
+fn crew(route: &[&str]) -> CrewSpawn {
     CrewSpawn {
         id: "engine-1".to_owned(),
         entry_opening_id: None,
-        search_order: search_order.iter().map(|&room| room.to_owned()).collect(),
+        route: route.iter().map(|&room| room.to_owned()).collect(),
         arrival_time_seconds: 0.0,
         member_count: 2,
         walking_speed_m_per_s: 1.0,

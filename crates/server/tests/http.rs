@@ -220,6 +220,7 @@ async fn a_crowded_layout_spawns_without_gemini_and_queues_at_the_door() {
             "object_id": "chair-1",
             "duration_seconds": 60.0,
             "occupants": occupants,
+            "alarm": "immediate",
         })),
     )
     .await;
@@ -362,6 +363,7 @@ async fn fire_timeline_moves_supplied_occupants() {
         Some(json!({
             "object_id": "chair-1",
             "duration_seconds": 5.0,
+            "alarm": "immediate",
             "occupants": [{
                 "id": "occupant-1",
                 "floor_id": "floor-1",
@@ -379,6 +381,79 @@ async fn fire_timeline_moves_supplied_occupants() {
     assert_ne!(
         frames[0]["agents"][0]["position_m"],
         frames.last().expect("last frame")["agents"][0]["position_m"]
+    );
+}
+
+#[tokio::test]
+async fn occupants_wait_for_the_alarm_by_default() {
+    let (status, body) = call(
+        app(),
+        "POST",
+        "/api/fire/simulate",
+        Some(json!({
+            "object_id": "chair-1",
+            "duration_seconds": 3.0,
+            "occupants": [{
+                "id": "occupant-1",
+                "floor_id": "floor-1",
+                "position_m": { "x": 1.0, "y": 1.0, "z": 0.0 },
+            }]
+        })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let frames = body["results"]["frames"].as_array().expect("frames");
+    let last = &frames.last().expect("last frame")["agents"][0];
+    assert_eq!(
+        last["role"]["phase"], "unaware",
+        "a just-lit chair isn't noticed yet"
+    );
+    assert_eq!(last["position_m"], frames[0]["agents"][0]["position_m"]);
+}
+
+#[tokio::test]
+async fn a_firefighter_carries_injured_occupants_out() {
+    let (status, body) = call(
+        app(),
+        "POST",
+        "/api/fire/simulate",
+        Some(json!({
+            "object_id": "chair-1",
+            "duration_seconds": 300.0,
+            "injured_fraction": 1.0,
+            "seed": 3,
+            "alarm": "immediate",
+            "occupants": [{
+                "id": "occupant-1",
+                "floor_id": "floor-1",
+                "position_m": { "x": 1.0, "y": 1.0, "z": 0.0 },
+            }],
+            "crews": [{ "id": "engine-1", "arrival_time_seconds": 10.0 }]
+        })),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let frames = body["results"]["frames"].as_array().expect("frames");
+    let occupant_phases = frames
+        .iter()
+        .map(|frame| frame["agents"][0]["role"]["phase"].as_str().expect("phase"))
+        .collect::<Vec<_>>();
+    assert_eq!(occupant_phases[0], "injured");
+    assert!(occupant_phases.contains(&"carried"), "{occupant_phases:?}");
+    assert_eq!(occupant_phases.last(), Some(&"exited"));
+    assert_eq!(frames[0]["agents"][0]["role"]["injured"], true);
+    let crew_phases = frames
+        .iter()
+        .map(|frame| frame["agents"][1]["role"]["phase"].as_str().expect("phase"))
+        .collect::<std::collections::HashSet<_>>();
+    assert!(crew_phases.contains("carrying"), "{crew_phases:?}");
+    assert!(
+        frames
+            .iter()
+            .any(|frame| frame["agents"][1]["role"]["nozzle_target_m"].is_object()),
+        "the nozzle is aimed while spraying"
     );
 }
 
