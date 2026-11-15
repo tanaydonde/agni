@@ -822,8 +822,26 @@ async fn custom_alarm_timings_change_when_occupants_react() {
     );
 }
 
+/// Material ids of every surface-fire node that burned during the run.
+/// (Compared instead of whole frames: the surface fire isn't bit-for-bit
+/// repeatable between runs.)
+fn burned_materials(body: &Value) -> std::collections::BTreeSet<String> {
+    body["results"]["frames"]
+        .as_array()
+        .expect("frames")
+        .iter()
+        .flat_map(|frame| {
+            frame["surface_fire"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter_map(|node| node["material_id"].as_str().map(str::to_owned))
+        .collect()
+}
+
 #[tokio::test]
-async fn a_hardwood_floor_changes_the_fire() {
+async fn a_hardwood_floor_burns_as_hardwood() {
     let run = |floor: &str| {
         call(
             app(),
@@ -834,9 +852,44 @@ async fn a_hardwood_floor_changes_the_fire() {
             ),
         )
     };
-    let (carpet_status, carpet) = run("carpet").await;
-    let (wood_status, wood) = run("hardwood").await;
-    assert_eq!(carpet_status, StatusCode::OK, "{carpet}");
-    assert_eq!(wood_status, StatusCode::OK, "{wood}");
-    assert_ne!(carpet["results"]["frames"], wood["results"]["frames"]);
+    let (status, wood) = run("hardwood").await;
+    assert_eq!(status, StatusCode::OK, "{wood}");
+    let (_, carpet) = run("carpet").await;
+    assert!(
+        burned_materials(&wood).contains("hardwood_floor"),
+        "{:?}",
+        burned_materials(&wood)
+    );
+    assert!(!burned_materials(&carpet).contains("hardwood_floor"));
+    assert!(burned_materials(&carpet).contains("generic_carpet"));
+}
+
+#[tokio::test]
+async fn a_loaded_costar_profile_drives_fire_runs_that_omit_those_settings() {
+    let property_app = || {
+        let scene = load_scene(DEMO_SCENE_JSON).expect("demo scene is valid");
+        let brief = load_property(&demo_property_json(), &scene).expect("record matches scene");
+        router_with_property(World::new(scene), Some(brief))
+    };
+    // The bungalow profile says hardwood; the request doesn't mention floors.
+    let plain = json!({ "object_id": "chair-1", "duration_seconds": 240.0 });
+    let (status, implicit) = call(
+        property_app(),
+        "POST",
+        "/api/fire/simulate",
+        Some(plain.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{implicit}");
+    assert!(burned_materials(&implicit).contains("hardwood_floor"));
+
+    // Without a property, the same request keeps the old carpet default.
+    let (_, without) = call(app(), "POST", "/api/fire/simulate", Some(plain)).await;
+    assert!(!burned_materials(&without).contains("hardwood_floor"));
+
+    // A value the request sends overrides the profile.
+    let carpet =
+        json!({ "object_id": "chair-1", "duration_seconds": 240.0, "floor_material": "carpet" });
+    let (_, overridden) = call(property_app(), "POST", "/api/fire/simulate", Some(carpet)).await;
+    assert!(!burned_materials(&overridden).contains("hardwood_floor"));
 }
