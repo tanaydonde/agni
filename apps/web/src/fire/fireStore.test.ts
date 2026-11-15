@@ -42,6 +42,8 @@ const batch: SimulateNResponse = {
   fire_ensemble: {
     requested_top_k: 2,
     completed_simulation_count: 2,
+    config: { cell_size_m: 0.25 },
+    heatmap: [],
     representatives: [
       { simulation_index: 1, support_count: 1, support_fraction: 0.5 },
       { simulation_index: 4, support_count: 1, support_fraction: 0.5 },
@@ -67,6 +69,25 @@ describe('fire playback', () => {
 
     for (let i = 0; i < 100; i++) useFireStore.getState().tick(0.1)
     expect(useFireStore.getState()).toMatchObject({ clockSeconds: 2, status: 'paused' })
+  })
+
+  it('keeps playback from a moved start: restart, seeks and replays stop there', () => {
+    useFireStore.setState({ status: 'paused', run, clockSeconds: 0 })
+    const store = useFireStore.getState()
+    store.setClockStart(1)
+    expect(useFireStore.getState().clockSeconds).toBe(1)
+    store.seekBy(-10)
+    expect(useFireStore.getState().clockSeconds).toBe(1)
+    store.setClock(0)
+    expect(useFireStore.getState().clockSeconds).toBe(1)
+    store.setClock(2)
+    store.play()
+    expect(useFireStore.getState()).toMatchObject({ status: 'playing', clockSeconds: 1 })
+    store.setClock(1.5)
+    store.restart()
+    expect(useFireStore.getState().clockSeconds).toBe(1)
+    store.clear()
+    expect(useFireStore.getState().clockStartSeconds).toBe(0)
   })
 
   it('advances at the chosen playback rate', () => {
@@ -136,5 +157,15 @@ describe('fire playback', () => {
     expect(useFireStore.getState().clockSeconds).toBe(2)
     useFireStore.getState().play()
     expect(useFireStore.getState().status).toBe('playing')
+  })
+
+  it('stops at the shown run instead when the clock is scoped to it', () => {
+    useFireStore.setState({ status: 'paused', batch, run: shorterRun, clockSeconds: 2 })
+    useFireStore.getState().setClockScope('run')
+    const shorterEnd = shorterRun.results.frames.at(-1)!.time_seconds
+    expect(useFireStore.getState().clockSeconds).toBe(shorterEnd)
+    useFireStore.getState().seekBy(10)
+    expect(useFireStore.getState().clockSeconds).toBe(shorterEnd)
+    useFireStore.getState().setClockScope('batch')
   })
 })

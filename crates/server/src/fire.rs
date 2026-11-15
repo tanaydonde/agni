@@ -17,11 +17,12 @@ use tflop_cfast::{
     resolve_cfast_bin,
 };
 use tflop_simulation_core::{
-    AlarmConfig, CombustionState, CrewSpawn, Evacuation, FireEnsembleConfig, FireFrequencyCell,
-    FireMaterialCatalog, FireRepresentative, FireRepresentativeAssignment, Firefighting,
-    FirefightingConfig, OccupantSpawn, Rehearsal, RehearsalError, RehearsalFrame,
-    SIMULATION_RESULTS_SCHEMA_VERSION, SimulationConfig, SimulationEngine, SimulationResults,
-    SurfaceFireConfig, SurfaceFireError, SurfaceFireWorld, analyze_fire_ensemble, choose_injured,
+    AgentFrame, AlarmConfig, CombustionState, CrewSpawn, Evacuation, FireEnsembleConfig,
+    FireFrequencyCell, FireHeatmapCell, FireMaterialCatalog, FireRepresentative,
+    FireRepresentativeAssignment, Firefighting, FirefightingConfig, OccupantSpawn, Rehearsal,
+    RehearsalError, RehearsalFrame, SIMULATION_RESULTS_SCHEMA_VERSION, SimulationConfig,
+    SimulationEngine, SimulationResults, SurfaceFireConfig, SurfaceFireError, SurfaceFireWorld,
+    analyze_fire_ensemble, choose_injured,
 };
 // The same types `GET /api/property` suggests values in.
 use tflop_costar::{AlarmTimings, FloorMaterial};
@@ -122,6 +123,18 @@ struct SimulateFireResponse {
     /// Objects left out of the simulation because they don't stand in a room.
     excluded_object_ids: Vec<String>,
     results: SimulationResults,
+    /// Everyone's position at every simulation step, sent when `results.frames`
+    /// are thinned for playback (`response_interval_seconds`). Agents are small
+    /// next to the fire, and a straight line between thinned frames cuts
+    /// corners through walls; at full resolution it follows the doorways.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_frames: Option<Vec<AgentTimelineFrame>>,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentTimelineFrame {
+    time_seconds: f64,
+    agents: Vec<AgentFrame>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -163,6 +176,9 @@ struct BatchFireEnsembleAnalysis {
     config: FireEnsembleConfig,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     frequencies: Vec<FireFrequencyCell>,
+    /// Fire summed over time and height, per floor-plan cell. Small, so it is
+    /// kept even when `representatives_only` drops `frequencies`.
+    heatmap: Vec<FireHeatmapCell>,
     representatives: Vec<FireRepresentative>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     assignments: Vec<FireRepresentativeAssignment>,
@@ -413,7 +429,7 @@ fn batch_response(
         if let Some(interval_seconds) = response_interval_seconds {
             for run in &mut runs {
                 if let SimulateNRun::Completed { simulation, .. } = run {
-                    compact_playback_frames(&mut simulation.results, interval_seconds);
+                    compact_playback_frames(simulation, interval_seconds);
                 }
             }
         }
@@ -431,9 +447,20 @@ fn batch_response(
 }
 
 /// Shrinks only the serialized playback copy after full-resolution ranking.
-/// The renderer ignores burned-out/extinguished cells, and interpolates agent
-/// movement between returned frames.
-fn compact_playback_frames(results: &mut SimulationResults, interval_seconds: f64) {
+/// The renderer ignores burned-out/extinguished cells. Agents keep every step
+/// in `agent_frames`, so movement between the thinned frames stays in rooms.
+fn compact_playback_frames(simulation: &mut SimulateFireResponse, interval_seconds: f64) {
+    let results = &mut simulation.results;
+    simulation.agent_frames = Some(
+        results
+            .frames
+            .iter()
+            .map(|frame| AgentTimelineFrame {
+                time_seconds: frame.time_seconds,
+                agents: frame.agents.clone(),
+            })
+            .collect(),
+    );
     let frames = std::mem::take(&mut results.frames);
     let last_index = frames.len().saturating_sub(1);
     let mut compact = Vec::with_capacity(frames.len());
@@ -494,6 +521,7 @@ fn analyze_completed_runs(
         completed_simulation_count: completed.len(),
         config: analysis.config,
         frequencies: analysis.frequencies,
+        heatmap: analysis.heatmap,
         representatives: analysis.representatives,
         assignments: analysis.assignments,
     })
@@ -646,6 +674,7 @@ fn run(
         revision,
         excluded_object_ids,
         results,
+        agent_frames: None,
     })
 }
 
@@ -761,6 +790,7 @@ fn run_hybrid(
         revision,
         excluded_object_ids,
         results,
+        agent_frames: None,
     })
 }
 

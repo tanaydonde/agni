@@ -67,6 +67,8 @@ const batchResponse: SimulateNResponse = {
   fire_ensemble: {
     requested_top_k: 5,
     completed_simulation_count: 1,
+    config: { cell_size_m: 0.25 },
+    heatmap: [],
     representatives: [{ simulation_index: 0, support_count: 1, support_fraction: 1 }],
   },
 }

@@ -1,3 +1,4 @@
+import type { CameraPose } from '../scene/cameraMath'
 import { DIRECTION, type Direction, MODE, type MpSdk, SWEEP_TRANSITION } from './sdk'
 
 /**
@@ -18,6 +19,11 @@ export interface CameraDriver {
   look?(dx: number, dy: number): void
   /** Back to where the tour started. */
   home(): void
+  /**
+   * Jumps the camera to `pose` (Three.js Y-up) and makes it home. Absent when
+   * the camera can only stand at scans.
+   */
+  place?(pose: CameraPose): void
   dispose(): void
 }
 

@@ -62,6 +62,31 @@ the distance is scaled to frame the scene the same way. Our layer takes the
 pointer, so a click can never fly inside. Showcase's mode buttons, gear and
 "AI Enhanced | Help | Terms" footer are hidden.
 
+### Demo and Methods pages
+
+`/demo` and `/methods` present one batch (the editor stays at `/`). **Run
+simulation** on `/demo` runs the same ten-scenario batch as Scenario Review
+and keeps it in memory, so move between the pages with the links in the
+header; a reload drops it. Both pages play the first representative (the top
+scenario) and stop the clock at that run's end (`clockScope: 'run'`).
+
+- **Demo → Heatmap** draws `fire_ensemble.heatmap` over the grey defurnished
+  mesh and furniture boxes from straight above (`demo/HeatmapView.tsx`). The
+  view is fixed.
+- **Demo → Optimal route** plays the top scenario in the furnished scan from
+  the lead firefighter's eyes (`firstPersonPose` in `demo/cameras.ts`), with
+  the fire and people drawn in and the usual playback bar.
+- **Methods → Basic** is the editor's 3D view with its fly controls and no
+  selection. **Methods → Furnished** watches from one fixed spot: the scan
+  position farthest from the fire's origin inside the origin's room
+  (`vantagePose`), or a hand-picked spot in `VANTAGE_OVERRIDES`.
+
+Both Matterport views steer Showcase's camera with `showcase/poseDriver.ts`,
+which takes the camera over the way free flying does, and take no camera
+input. Between scan positions the photo textures smear, as they do when
+flying. If Showcase won't hand its camera over, the view stands at the scan
+nearest the pose instead.
+
 Known limitations of the review and textured views (accepted for now):
 
 - **Textured load time.** Opening Textured takes about 8–13 s. Showcase
@@ -96,6 +121,12 @@ When `top_k` is present, the response also includes `fire_ensemble`:
   for every burning 0.25 m cell in every one-second time bin;
 - `representatives` contains up to `top_k` diverse run indexes plus the count
   and fraction of completed runs assigned to each;
+- `heatmap` is the same fire with time and height summed away: one entry per
+  0.25 m floor-plan cell (`column`, `row`; the cell spans `column * 0.25` to
+  `(column + 1) * 0.25` m in x) with `expected_burning_seconds` (seconds
+  burning, averaged over the completed runs) and `burned_fraction` (share of
+  runs in which it burned at all). A node covers every cell under its
+  footprint. It is small, so `representatives_only` keeps it;
 - `assignments` maps every successful run index to its nearest selected run;
 - `config.time_tolerance_bins` is used only when comparing runs. Frequency
   values stay on the original timeline.

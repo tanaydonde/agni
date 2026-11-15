@@ -12,7 +12,8 @@ import {
   runFireSimulation,
   runScenarioBatch,
 } from './api'
-import { agentsAtTime, frameAtTime } from './frames'
+import { forgetBatch, loadBatch, saveBatch } from './batchCache'
+import { agentsAtTime, agentTimeline, frameAtTime } from './frames'
 import type { AgentFrame, SimulateFireResponse, SimulateNResponse, SimulationFrame } from './types'
 
 const NO_AGENTS: AgentFrame[] = []
@@ -24,6 +25,7 @@ export const PLAYBACK_RATES = [1, 2, 4, 8, 16] as const
 /** Longest clock step per tick, so a backgrounded tab doesn't skip the fire. */
 const MAX_TICK_SECONDS = 0.1
 
+export type ClockScope = 'batch' | 'run'
 export type FireStatus = 'idle' | 'loading' | 'playing' | 'paused' | 'error'
 
 interface FireState {
@@ -40,12 +42,25 @@ interface FireState {
   error: string | null
   /** Simulated seconds per real second. */
   playbackRate: number
+  /**
+   * Where the clock stops while a batch is loaded: at the longest
+   * representative (`batch`, for Scenario Review) or at the shown run (`run`,
+   * for the demo pages, which only play the first representative).
+   */
+  clockScope: ClockScope
+  /**
+   * Where playback begins: restarting, playing from the end, and seeking stop
+   * here. 0 normally; a view can move it, e.g. to when the crew starts moving.
+   */
+  clockStartSeconds: number
   /** Who is in the building for the next run. */
   scenario: ScenarioOptions
 
   /** Simulates a fire starting at `objectId`, then plays it from the start. */
   start: (objectId: string) => Promise<void>
   startBatch: () => Promise<void>
+  /** Brings back the last batch from before a page load, if nothing is loaded yet. */
+  restoreBatch: () => Promise<void>
   showRepresentative: (position: number) => void
   previousRepresentative: () => void
   nextRepresentative: () => void
@@ -58,6 +73,9 @@ interface FireState {
   seekBy: (seconds: number) => void
   setClock: (seconds: number) => void
   setPlaybackRate: (rate: number) => void
+  setClockScope: (scope: ClockScope) => void
+  /** Moves where playback begins, bringing the clock up to it if it's earlier. */
+  setClockStart: (seconds: number) => void
   setScenario: (scenario: Partial<ScenarioOptions>) => void
 }
 
@@ -69,6 +87,15 @@ export function endSeconds(run: SimulateFireResponse | null): number {
 /** Shared end of a review batch; shorter incidents remain on their last frame. */
 export function batchEndSeconds(batch: SimulateNResponse | null): number {
   return Math.max(0, ...representativeRuns(batch).map((run) => endSeconds(run)))
+}
+
+/** Where playback stops (see `clockScope`). */
+export function playbackEnd({
+  run,
+  batch,
+  clockScope,
+}: Pick<FireState, 'run' | 'batch' | 'clockScope'>): number {
+  return batch && clockScope === 'batch' ? batchEndSeconds(batch) : endSeconds(run)
 }
 
 /** Identifies the latest `start`, so an older response can't replace it. */
@@ -83,6 +110,8 @@ export const useFireStore = create<FireState>()((set, get) => ({
   clockSeconds: 0,
   error: null,
   playbackRate: DEFAULT_PLAYBACK_RATE,
+  clockScope: 'batch',
+  clockStartSeconds: 0,
   scenario: { occupantCount: DEFAULT_OCCUPANT_COUNT, layout: DEFAULT_OCCUPANT_LAYOUT },
 
   start: async (objectId) => {
@@ -120,9 +149,19 @@ export const useFireStore = create<FireState>()((set, get) => ({
       const first = representativeRun(batch, 0)
       if (!first) throw new Error('No scenario completed successfully')
       set({ status: 'playing', batch, run: first, representativePosition: 0 })
+      void saveBatch(batch)
     } catch (error) {
       if (request === latestRequest) set({ status: 'error', error: describeFireError(error) })
     }
+  },
+  restoreBatch: async () => {
+    const request = latestRequest
+    const batch = await loadBatch()
+    // Anything started or loaded meanwhile wins over the saved batch.
+    if (!batch || request !== latestRequest || get().status !== 'idle') return
+    const first = representativeRun(batch, 0)
+    if (!first) return
+    set({ status: 'paused', batch, run: first, representativePosition: 0, clockSeconds: 0 })
   },
   showRepresentative: (position) => {
     const { batch, clockSeconds, status } = get()
@@ -142,16 +181,18 @@ export const useFireStore = create<FireState>()((set, get) => ({
   previousRepresentative: () => get().showRepresentative(get().representativePosition - 1),
   nextRepresentative: () => get().showRepresentative(get().representativePosition + 1),
   play: () => {
-    const { run, batch, clockSeconds } = get()
+    const { run, clockSeconds, clockStartSeconds } = get()
     if (!run) return
     // Playing from the end starts over.
-    const end = batch ? batchEndSeconds(batch) : endSeconds(run)
-    set({ status: 'playing', clockSeconds: clockSeconds >= end ? 0 : clockSeconds })
+    const end = playbackEnd(get())
+    set({ status: 'playing', clockSeconds: clockSeconds >= end ? clockStartSeconds : clockSeconds })
   },
   pause: () => set((state) => (state.status === 'playing' ? { status: 'paused' } : {})),
-  restart: () => set((state) => (state.run ? { status: 'playing', clockSeconds: 0 } : {})),
+  restart: () =>
+    set((state) => (state.run ? { status: 'playing', clockSeconds: state.clockStartSeconds } : {})),
   clear: () => {
     latestRequest++
+    if (get().batch) void forgetBatch()
     set({
       status: 'idle',
       objectId: null,
@@ -159,29 +200,37 @@ export const useFireStore = create<FireState>()((set, get) => ({
       batch: null,
       representativePosition: 0,
       clockSeconds: 0,
+      clockStartSeconds: 0,
       error: null,
     })
   },
   seekBy: (seconds) => {
-    const { run, batch, clockSeconds } = get()
+    const { run, clockSeconds, clockStartSeconds } = get()
     if (!run) return
-    const end = batch ? batchEndSeconds(batch) : endSeconds(run)
-    set({ clockSeconds: Math.max(0, Math.min(end, clockSeconds + seconds)) })
+    const end = playbackEnd(get())
+    set({ clockSeconds: Math.max(clockStartSeconds, Math.min(end, clockSeconds + seconds)) })
   },
   setClock: (seconds) => {
-    const { run, batch } = get()
+    const { run, clockStartSeconds } = get()
     if (!run) return
-    const end = batch ? batchEndSeconds(batch) : endSeconds(run)
-    set({ clockSeconds: Math.max(0, Math.min(end, seconds)) })
+    const end = playbackEnd(get())
+    set({ clockSeconds: Math.max(clockStartSeconds, Math.min(end, seconds)) })
   },
   tick: (realSeconds) => {
-    const { status, run, batch, clockSeconds, playbackRate } = get()
+    const { status, run, clockSeconds, playbackRate } = get()
     if (status !== 'playing' || !run) return
-    const end = batch ? batchEndSeconds(batch) : endSeconds(run)
+    const end = playbackEnd(get())
     const next = clockSeconds + Math.min(realSeconds, MAX_TICK_SECONDS) * playbackRate
     set(next >= end ? { clockSeconds: end, status: 'paused' } : { clockSeconds: next })
   },
   setPlaybackRate: (playbackRate) => set({ playbackRate }),
+  setClockScope: (clockScope) =>
+    set((state) => ({
+      clockScope,
+      clockSeconds: Math.min(state.clockSeconds, playbackEnd({ ...state, clockScope })),
+    })),
+  setClockStart: (clockStartSeconds) =>
+    set((state) => ({ clockStartSeconds, clockSeconds: Math.max(state.clockSeconds, clockStartSeconds) })),
   setScenario: (scenario) => set((state) => ({ scenario: { ...state.scenario, ...scenario } })),
 }))
 
@@ -220,7 +269,8 @@ export function useFireFrame(): SimulationFrame | undefined {
 
 /** Smooth positions between the authoritative simulation frames. */
 export function useSimulationAgents(): AgentFrame[] {
-  const frames = useFireStore((state) => state.run?.results.frames)
+  const run = useFireStore((state) => state.run)
+  const frames = useMemo(() => (run ? agentTimeline(run) : undefined), [run])
   const clockSeconds = useFireStore((state) => state.clockSeconds)
   return useMemo(
     () => (frames ? agentsAtTime(frames, clockSeconds) : NO_AGENTS),

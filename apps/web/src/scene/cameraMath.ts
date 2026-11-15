@@ -67,6 +67,21 @@ export function homePose(
   return { position, ...yawPitchFor(center.clone().sub(position)), distance }
 }
 
+/**
+ * Zoom (pixels per metre) for an orthographic camera looking straight down
+ * that fits the whole floor in a `width` × `height` pixel view, with a margin.
+ */
+export function topDownZoom(
+  bounds: FloorGeometry['bounds'],
+  width: number,
+  height: number,
+  margin = 1.1,
+): number {
+  const spanX = Math.max(bounds.max.x - bounds.min.x, 1e-3) * margin
+  const spanY = Math.max(bounds.max.y - bounds.min.y, 1e-3) * margin
+  return Math.max(Math.min(width / spanX, height / spanY), 1e-3)
+}
+
 /** Fly speed in m/s, scaled to the size of the space. */
 export function flySpeed(bounds: FloorGeometry['bounds']): number {
   const diagonal = Math.hypot(bounds.max.x - bounds.min.x, bounds.max.y - bounds.min.y)

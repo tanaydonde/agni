@@ -2,7 +2,7 @@ import { useThree } from '@react-three/fiber'
 import { useEffect, useMemo, useState } from 'react'
 import * as THREE from 'three'
 import { useSimulationAgents } from '../fire/fireStore'
-import { AGENT_COLORS, isShownAgent } from '../fire/frames'
+import { AGENT_COLORS, isShownAgent, leadFirefighter } from '../fire/frames'
 import type { AgentFrame } from '../fire/types'
 import {
   type AgentKind,
@@ -95,11 +95,7 @@ export function SimulationAgentsView({
     [simulationAgents, floor.id],
   )
   const bodies = useAgentBodies()
-  const leadFirefighterId = hideLeadFirefighter
-    ? agents
-        .filter((agent) => agent.role.type === 'firefighter')
-        .sort((left, right) => left.id.localeCompare(right.id))[0]?.id
-    : undefined
+  const leadFirefighterId = hideLeadFirefighter ? leadFirefighter(agents)?.id : undefined
   // Headings carry over between frames so a stopped agent keeps facing
   // where it walked.
   const [turned, setTurned] = useState(() => ({ agents, headings: nextHeadings(agents, new Map()) }))

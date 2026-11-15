@@ -385,6 +385,9 @@ async fn simulate_n_can_return_only_compact_representative_timelines() {
     );
     assert!(ensemble.get("frequencies").is_none());
     assert!(ensemble.get("assignments").is_none());
+    let heatmap = ensemble["heatmap"].as_array().expect("heatmap is kept");
+    assert!(!heatmap.is_empty());
+    assert!(heatmap[0]["expected_burning_seconds"].as_f64().unwrap() > 0.0);
     assert_eq!(
         runs[0]["index"],
         ensemble["representatives"][0]["simulation_index"]
@@ -396,6 +399,16 @@ async fn simulate_n_can_return_only_compact_representative_timelines() {
         frames.len() <= 2,
         "one-second playback sampling: {frames:?}"
     );
+    let agent_frames = runs[0]["simulation"]["agent_frames"]
+        .as_array()
+        .expect("agents are kept at every step");
+    assert!(
+        agent_frames.len() > frames.len(),
+        "agent frames keep the full step: {} vs {}",
+        agent_frames.len(),
+        frames.len()
+    );
+    assert!(agent_frames[0]["agents"].is_array());
     assert!(
         frames
             .iter()

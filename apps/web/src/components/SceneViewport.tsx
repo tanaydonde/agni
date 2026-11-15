@@ -25,6 +25,7 @@ import { ControlsHint, type Controls } from './ControlsHint'
 import { FireControls } from './FireControls'
 import { FlyIndicator } from './FlyIndicator'
 import { ScenarioReviewControls } from './ScenarioReviewControls'
+import { ViewportFrame, ViewportMessage } from './ViewportFrame'
 
 interface SceneViewportProps {
   /** Scene the dev setup expects; only used in setup instructions. */
@@ -36,6 +37,24 @@ interface SceneViewportProps {
  * furniture, using Matterport's defurnished mesh when it has been imported.
  */
 export function SceneViewport({ sceneId }: SceneViewportProps) {
+  return <SceneGate sceneId={sceneId}>{(loaded) => <SceneViews {...loaded} />}</SceneGate>
+}
+
+export interface LoadedScene {
+  scene: Scene
+  floor: Floor
+  /** Matterport's defurnished mesh, when it has been imported. */
+  meshUrl?: string
+}
+
+/**
+ * Loads the world and renders `children` with its first floor that has
+ * rooms; until then (or if that fails) shows why inside the viewport frame.
+ */
+export function SceneGate({
+  sceneId,
+  children,
+}: SceneViewportProps & { children: (loaded: LoadedScene) => ReactNode }) {
   const { data: world, error, isPending } = useWorld()
   const scene = world?.scene
   const { data: meshAvailable } = useSceneMeshAvailable(scene?.id ?? '')
@@ -45,7 +64,7 @@ export function SceneViewport({ sceneId }: SceneViewportProps) {
   return (
     <ViewportFrame>
       {scene && floor ? (
-        <SceneViews scene={scene} floor={floor} meshUrl={meshAvailable ? sceneMeshUrl(scene.id) : undefined} />
+        children({ scene, floor, meshUrl: meshAvailable ? sceneMeshUrl(scene.id) : undefined })
       ) : isPending ? (
         <ViewportMessage>Loading scene…</ViewportMessage>
       ) : error instanceof WorldServerUnavailableError ? (
@@ -209,16 +228,18 @@ function SceneViews({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; mes
 }
 
 /**
- * The canvas plus its controls. Clicking captures the pointer for flying
- * around; Esc gives it back.
+ * The canvas plus its controls. Right-clicking captures the pointer for
+ * flying around; Esc gives it back. With `selectable` off it is a viewer:
+ * furniture can't be picked as a fire origin and no selection is shown.
  */
-function SceneCanvas({
+export function SceneCanvas({
   scene,
   floor,
   meshUrl,
   geometry,
   enabled,
   showSimulation,
+  selectable = true,
 }: {
   scene: Scene
   floor: Floor
@@ -226,6 +247,7 @@ function SceneCanvas({
   geometry: ReturnType<typeof buildFloorGeometry>
   enabled: boolean
   showSimulation: boolean
+  selectable?: boolean
 }) {
   const focusTarget = useRef<HTMLDivElement>(null)
   const [active, setActive] = useState(false)
@@ -233,14 +255,18 @@ function SceneCanvas({
     <div
       ref={focusTarget}
       tabIndex={-1}
-      aria-label="3D view. Click furniture to choose the fire origin; right-click to fly, Escape to stop."
+      aria-label={
+        selectable
+          ? '3D view. Click furniture to choose the fire origin; right-click to fly, Escape to stop.'
+          : '3D view. Right-click to fly, Escape to stop.'
+      }
       className="absolute inset-0 rounded-lg outline-none"
     >
       <Canvas frameloop="demand" dpr={[1, 2]} camera={{ fov: 50 }}>
         <hemisphereLight args={['#ffffff', '#d5dbe1', 1.6]} />
         <directionalLight position={[8, 14, 6]} intensity={1.4} />
         <SceneModel geometry={geometry} meshUrl={meshUrl} />
-        <Furniture floor={floor} assets={scene.assets} />
+        <Furniture floor={floor} assets={scene.assets} highlightSelection={selectable} />
         {showSimulation && <SurfaceFire floor={floor} />}
         {showSimulation && <SimulationAgents floor={floor} />}
         <CameraController
@@ -249,13 +275,13 @@ function SceneCanvas({
           onActiveChange={setActive}
           enabled={enabled}
         />
-        {enabled && <SelectionController element={focusTarget} />}
+        {enabled && selectable && <SelectionController element={focusTarget} />}
       </Canvas>
       {enabled && active && <FlyIndicator />}
       {enabled && (
         <ControlsHint
-          title={active ? 'Flying' : 'Editing'}
-          controls={active ? FLY_CONTROLS : EDIT_CONTROLS}
+          title={active ? 'Flying' : selectable ? 'Editing' : 'Viewing'}
+          controls={active ? FLY_CONTROLS : selectable ? EDIT_CONTROLS : VIEW_CONTROLS}
         />
       )}
     </div>
@@ -296,6 +322,13 @@ const EDIT_CONTROLS: Controls = [
   [['Right-click'], 'Fly'],
 ]
 
+const VIEW_CONTROLS: Controls = [
+  [['Right-click'], 'Fly'],
+  [['⌥', 'Drag'], 'Orbit'],
+  [['Pinch'], 'Move to cursor'],
+  [['F'], 'Reset view'],
+]
+
 const FLY_CONTROLS: Controls = [
   [['Move'], 'Look around'],
   [['W', 'A', 'S', 'D'], 'Fly'],
@@ -305,24 +338,5 @@ const FLY_CONTROLS: Controls = [
   [['Space', 'Move'], 'Pan'],
   [['⌥', 'Move'], 'Orbit'],
   [['F'], 'Reset view'],
-  [['Esc'], 'Back to editing'],
+  [['Esc'], 'Stop flying'],
 ]
-
-function ViewportFrame({ children }: { children: ReactNode }) {
-  return (
-    <section
-      aria-label="3D scene"
-      className="relative min-h-0 min-w-0 flex-1 overflow-hidden rounded-lg border border-hairline bg-white"
-    >
-      {children}
-    </section>
-  )
-}
-
-function ViewportMessage({ children }: { children: ReactNode }) {
-  return (
-    <div className="flex h-full items-center justify-center p-8">
-      <p className="max-w-md text-center leading-normal text-muted">{children}</p>
-    </div>
-  )
-}

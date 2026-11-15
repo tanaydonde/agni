@@ -8,6 +8,7 @@
 
 import * as THREE from 'three'
 import { clampPitch, orientation } from '../scene/cameraMath'
+import type { CameraPose } from '../scene/cameraMath'
 import type { CameraDriver } from './cameraDriver'
 import { MODE, type MpSdk, readMap, SWEEP_TRANSITION, type SceneComponent, type SweepData } from './sdk'
 
@@ -74,17 +75,22 @@ export function nearestSweep(sweeps: Pick<SweepData, 'sid' | 'position'>[], posi
 type FlySdk = Pick<MpSdk, 'Scene' | 'Sweep' | 'Mode' | 'R3F'>
 
 /**
- * Takes over Showcase's camera for free flying. Rejects if this Showcase
- * won't hand it over, so the caller can fall back to hopping between scans.
+ * Takes Showcase's camera away from Showcase. `pose` is filled with where
+ * Showcase had the camera; from then on `step` is called every frame (with
+ * the seconds since the last) to move `pose`, which is then written to the
+ * camera. Rejects if this Showcase won't hand its camera over. `release`
+ * gives it back, standing at the scan nearest `pose`.
  */
-export async function createFlyDriver(sdk: FlySdk, componentName = 'tflop.fly-camera'): Promise<CameraDriver> {
+export async function takeOverCamera(
+  sdk: FlySdk,
+  componentName: string,
+  pose: CameraPose,
+  step: (seconds: number) => void,
+): Promise<{ release(): void }> {
   const r3f = sdk.R3F
   if (!r3f) throw new Error('This Showcase build has no camera override.')
 
   const sweeps = Object.values(await readMap(sdk.Sweep.data)).filter((sweep) => sweep.enabled)
-  const held = new Set<string>()
-  const state: FlyState = { position: new THREE.Vector3(), velocity: new THREE.Vector3(), yaw: 0, pitch: 0 }
-  let home = { position: new THREE.Vector3(), yaw: 0, pitch: 0 }
   let mode: string | null = null
   let currentSweep: string | null = null
   let sweepMoving = false
@@ -105,7 +111,7 @@ export async function createFlyDriver(sdk: FlySdk, componentName = 'tflop.fly-ca
     const now = performance.now()
     if (mode !== MODE.INSIDE || sweepMoving || now - lastSweepCheck < SWEEP_CHECK_MS) return
     lastSweepCheck = now
-    const nearest = nearestSweep(sweeps, state.position)
+    const nearest = nearestSweep(sweeps, pose.position)
     if (!nearest || nearest === currentSweep) return
     sweepMoving = true
     sdk.Sweep.moveTo(nearest, { transition: SWEEP_TRANSITION.INSTANT })
@@ -126,20 +132,19 @@ export async function createFlyDriver(sdk: FlySdk, componentName = 'tflop.fly-ca
       rig = camera?.parent ?? null
       if (!camera || !rig) return
       // Start from wherever Showcase put the camera.
-      state.position.copy(rig.position)
+      pose.position.copy(rig.position)
       const { x, y, z, w } = camera.quaternion
       const euler = new THREE.Euler().setFromQuaternion(new THREE.Quaternion(x, y, z, w), 'YXZ')
-      state.yaw = euler.y
-      state.pitch = clampPitch(euler.x)
-      home = { position: state.position.clone(), yaw: state.yaw, pitch: state.pitch }
+      pose.yaw = euler.y
+      pose.pitch = clampPitch(euler.x)
       started()
     },
     // Showcase's delta is in milliseconds.
     onTick(deltaMs: number) {
       if (!camera || !rig) return
-      flyStep(state, held, deltaMs / 1000)
-      rig.position.set(state.position.x, state.position.y, state.position.z)
-      orientation(state.yaw, state.pitch, rotation)
+      step(deltaMs / 1000)
+      rig.position.set(pose.position.x, pose.position.y, pose.position.z)
+      orientation(pose.yaw, pose.pitch, rotation)
       camera.quaternion.set(rotation.x, rotation.y, rotation.z, rotation.w)
       followNearestSweep()
     },
@@ -167,6 +172,38 @@ export async function createFlyDriver(sdk: FlySdk, componentName = 'tflop.fly-ca
   }
 
   return {
+    release() {
+      stop()
+      // Hand control back to Showcase, standing at a real scan so its own
+      // idea of the camera matches what's on screen again.
+      void Promise.all([r3f.controlsToggle(true), r3f.navigationToggle(true)])
+        .then(() => {
+          const nearest = nearestSweep(sweeps, pose.position)
+          if (nearest) return sdk.Sweep.moveTo(nearest, { transition: SWEEP_TRANSITION.FLY })
+        })
+        .catch(() => {})
+    },
+  }
+}
+
+/**
+ * Takes over Showcase's camera for free flying. Rejects if this Showcase
+ * won't hand it over, so the caller can fall back to hopping between scans.
+ */
+export async function createFlyDriver(sdk: FlySdk, componentName = 'tflop.fly-camera'): Promise<CameraDriver> {
+  const held = new Set<string>()
+  const state: FlyState = { position: new THREE.Vector3(), velocity: new THREE.Vector3(), yaw: 0, pitch: 0 }
+  const takeover = await takeOverCamera(sdk, componentName, state, (seconds) => flyStep(state, held, seconds))
+  // Nothing is held yet, so this is still where Showcase had the camera.
+  const home = { position: state.position.clone(), yaw: state.yaw, pitch: state.pitch }
+  const goHome = () => {
+    state.position.copy(home.position)
+    state.velocity.set(0, 0, 0)
+    state.yaw = home.yaw
+    state.pitch = home.pitch
+  }
+
+  return {
     keyDown(code) {
       if (!MOVE_KEYS.has(code)) return false
       held.add(code)
@@ -182,23 +219,16 @@ export async function createFlyDriver(sdk: FlySdk, componentName = 'tflop.fly-ca
       state.yaw -= dx * LOOK_RATE
       state.pitch = clampPitch(state.pitch - dy * LOOK_RATE)
     },
-    home() {
-      state.position.copy(home.position)
-      state.velocity.set(0, 0, 0)
-      state.yaw = home.yaw
-      state.pitch = home.pitch
+    home: goHome,
+    place(pose) {
+      home.position.copy(pose.position)
+      home.yaw = pose.yaw
+      home.pitch = clampPitch(pose.pitch)
+      goHome()
     },
     dispose() {
       held.clear()
-      stop()
-      // Hand control back to Showcase, standing at a real scan so its own
-      // idea of the camera matches what's on screen again.
-      void Promise.all([r3f.controlsToggle(true), r3f.navigationToggle(true)])
-        .then(() => {
-          const nearest = nearestSweep(sweeps, state.position)
-          if (nearest) return sdk.Sweep.moveTo(nearest, { transition: SWEEP_TRANSITION.FLY })
-        })
-        .catch(() => {})
+      takeover.release()
     },
   }
 }

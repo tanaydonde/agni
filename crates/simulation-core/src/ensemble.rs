@@ -43,6 +43,18 @@ pub struct FireFrequencyCell {
     pub frequency: f64,
 }
 
+/// One floor-plan cell of the ensemble's fire, with time and height summed
+/// away: where fire tended to be over the whole batch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FireHeatmapCell {
+    pub column: i64,
+    pub row: i64,
+    /// Seconds this cell spent burning, averaged over the simulations.
+    pub expected_burning_seconds: f64,
+    /// Share of the simulations in which this cell burned at any time.
+    pub burned_fraction: f64,
+}
+
 /// One selected run and the simulations for which it is the nearest selected
 /// representative.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -63,6 +75,8 @@ pub struct FireRepresentativeAssignment {
 pub struct FireEnsembleAnalysis {
     pub config: FireEnsembleConfig,
     pub frequencies: Vec<FireFrequencyCell>,
+    /// `frequencies` summed over time, one entry per X/Y cell that ever burned.
+    pub heatmap: Vec<FireHeatmapCell>,
     pub representatives: Vec<FireRepresentative>,
     pub assignments: Vec<FireRepresentativeAssignment>,
 }
@@ -84,6 +98,7 @@ pub fn analyze_fire_ensemble(
         .map(|results| fire_mask(results, config))
         .collect::<Vec<_>>();
     let frequencies = frequencies(&raw_masks, config);
+    let heatmap = heatmap(results, config);
     let comparison_masks = raw_masks
         .iter()
         .map(|mask| dilate_time(mask, config.time_tolerance_bins))
@@ -104,6 +119,7 @@ pub fn analyze_fire_ensemble(
     Ok(FireEnsembleAnalysis {
         config,
         frequencies,
+        heatmap,
         representatives,
         assignments,
     })
@@ -203,6 +219,66 @@ fn frequencies(
             frequency: simulation_count as f64 / denominator,
         })
         .collect()
+}
+
+/// Collapses each run's burning cells onto the floor plan. Unlike the
+/// similarity masks, a node covers every heatmap cell under its footprint
+/// (floor cells are wider than `cell_size_m`), and nodes stacked in height
+/// count once per time bin.
+fn heatmap(results: &[&SimulationResults], config: FireEnsembleConfig) -> Vec<FireHeatmapCell> {
+    // Per cell: burning time bins summed over runs, and runs it burned in.
+    let mut totals = HashMap::<(i64, i64), (usize, usize)>::new();
+    for results in results {
+        let mut bins = HashMap::<(i64, i64), HashSet<usize>>::new();
+        for frame in &results.frames {
+            let time_bin = (frame.time_seconds / config.time_bin_seconds).floor() as usize;
+            for node in &frame.surface_fire {
+                if node.state != CombustionState::Burning {
+                    continue;
+                }
+                for cell in footprint_cells(node, config.cell_size_m) {
+                    bins.entry(cell).or_default().insert(time_bin);
+                }
+            }
+        }
+        for (cell, bins) in bins {
+            let total = totals.entry(cell).or_default();
+            total.0 += bins.len();
+            total.1 += 1;
+        }
+    }
+    let denominator = results.len() as f64;
+    let mut cells = totals.into_iter().collect::<Vec<_>>();
+    cells.sort_by_key(|(cell, _)| *cell);
+    cells
+        .into_iter()
+        .map(|((column, row), (bins, runs))| FireHeatmapCell {
+            column,
+            row,
+            expected_burning_seconds: bins as f64 * config.time_bin_seconds / denominator,
+            burned_fraction: runs as f64 / denominator,
+        })
+        .collect()
+}
+
+/// The heatmap cells whose centers lie under a node's footprint, and always
+/// the cell holding the node's own center. Furniture nodes are sized in
+/// their object's axes; they are about one cell wide, so its rotation is
+/// ignored here.
+fn footprint_cells(
+    node: &crate::SurfaceFireNodeFrame,
+    cell_size_m: f64,
+) -> impl Iterator<Item = (i64, i64)> {
+    let span = |center: f64, size: f64| {
+        let own = (center / cell_size_m).floor() as i64;
+        // Cell `i` has its center at `(i + 0.5) * cell_size_m`.
+        let first = ((center - size / 2.0) / cell_size_m - 0.5).ceil() as i64;
+        let last = ((center + size / 2.0) / cell_size_m - 0.5).floor() as i64;
+        first.min(own)..=last.max(own)
+    };
+    let columns = span(node.position_m.x, node.dimensions_m.width_m);
+    let rows = span(node.position_m.y, node.dimensions_m.depth_m);
+    columns.flat_map(move |column| rows.clone().map(move |row| (column, row)))
 }
 
 fn dilate_time(mask: &HashSet<FireCellTime>, tolerance: usize) -> HashSet<FireCellTime> {
