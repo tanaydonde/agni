@@ -38,8 +38,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     dotenvy::dotenv().ok();
     let args = Args::parse();
 
-    let token_id = required_env("MATTERPORT_TOKEN_ID", "MATTERPORT_API_KEY")?;
-    let token_secret = required_env("MATTERPORT_TOKEN_SECRET", "MATTERPORT_API_TOKEN")?;
+    let token_id = required_env(&[
+        "MATTERPORT_TOKEN_ID",
+        "MATTERPORT_API_KEY",
+        "COSTAR_MATTERPORT_KEY",
+    ])?;
+    let token_secret = required_env(&[
+        "MATTERPORT_TOKEN_SECRET",
+        "MATTERPORT_API_TOKEN",
+        "COSTAR_MATTERPORT_PASSWORD",
+    ])?;
     let output = args.output.unwrap_or_else(|| {
         Path::new("data")
             .join("prepared-scenes")
@@ -97,8 +105,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn required_env(primary: &str, compatibility_name: &str) -> Result<String, Box<dyn Error>> {
-    for name in [primary, compatibility_name] {
+/// Reads the first non-empty variable among `names`; later names are
+/// compatibility aliases (including the CoStar hackathon key names).
+fn required_env(names: &[&str]) -> Result<String, Box<dyn Error>> {
+    for &name in names {
         if let Ok(value) = env::var(name)
             && !value.trim().is_empty()
         {
@@ -106,5 +116,5 @@ fn required_env(primary: &str, compatibility_name: &str) -> Result<String, Box<d
         }
     }
 
-    Err(format!("missing {primary} in the environment or .env").into())
+    Err(format!("missing {} in the environment or .env", names[0]).into())
 }

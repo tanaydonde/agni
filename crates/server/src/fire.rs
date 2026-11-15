@@ -23,6 +23,8 @@ use tflop_simulation_core::{
     SIMULATION_RESULTS_SCHEMA_VERSION, SimulationConfig, SimulationEngine, SimulationResults,
     SurfaceFireConfig, SurfaceFireError, SurfaceFireWorld, analyze_fire_ensemble, choose_injured,
 };
+// The same types `GET /api/property` suggests values in.
+use tflop_costar::{AlarmTimings, FloorMaterial};
 use tflop_world_core::{Scene, resolve_opening_connections};
 
 use crate::{SharedWorld, decode, lock};
@@ -56,6 +58,14 @@ pub(crate) struct SimulateFireRequest {
     /// When occupants learn about the fire.
     #[serde(default)]
     alarm: AlarmMode,
+    /// Custom `detected` alarm timings, e.g. slower notice by sleepers
+    /// (`GET /api/property` derives them from the CoStar record). Ignored
+    /// when `alarm` is `immediate`.
+    #[serde(default)]
+    alarm_config: Option<AlarmTimings>,
+    /// Floor finish: `carpet` (default) or `hardwood`.
+    #[serde(default)]
+    floor_material: Option<FloorMaterial>,
     /// Share of occupants who start the run injured and must be carried
     /// out. Chosen at random by `seed`.
     #[serde(default)]
@@ -67,6 +77,15 @@ pub(crate) struct SimulateFireRequest {
 }
 
 const DEFAULT_INJURED_FRACTION: f64 = 0.1;
+
+/// The material catalog for a run, with the requested floor finish.
+fn material_catalog(floor: Option<FloorMaterial>) -> FireMaterialCatalog {
+    let mut catalog = FireMaterialCatalog::default();
+    if floor == Some(FloorMaterial::Hardwood) {
+        catalog.floor = FireMaterialCatalog::hardwood_floor();
+    }
+    catalog
+}
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -573,7 +592,7 @@ fn run(
     );
 
     let evacuation = build_evacuation(&scene, request)?;
-    let (fire, excluded_object_ids) = build_fire_world(&mut scene)?;
+    let (fire, excluded_object_ids) = build_fire_world(&mut scene, request.floor_material)?;
     if excluded_object_ids.iter().any(|id| id == object_id) {
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -634,7 +653,7 @@ fn run_hybrid(
         duration,
     );
 
-    let (fire, excluded_object_ids) = build_fire_world(&mut scene)?;
+    let (fire, excluded_object_ids) = build_fire_world(&mut scene, request.floor_material)?;
     if excluded_object_ids.iter().any(|id| id == object_id) {
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -731,7 +750,15 @@ fn build_evacuation(
         return Ok(None);
     }
     let alarm = match request.alarm {
-        AlarmMode::Detected => AlarmConfig::default(),
+        AlarmMode::Detected => {
+            request
+                .alarm_config
+                .map_or_else(AlarmConfig::default, |t| AlarmConfig::Detected {
+                    notice_hrr_kw: t.notice_hrr_kw.max(0.0),
+                    same_room_seconds: t.same_room_seconds.max(0.0),
+                    seconds_per_metre: t.seconds_per_metre.max(0.0),
+                })
+        }
         AlarmMode::Immediate => AlarmConfig::Immediate,
     };
     let mut occupants = request.occupants.clone();
@@ -826,14 +853,14 @@ fn run_rehearsal(
 /// Builds the fire world, dropping any object the simulation can't place in a
 /// room (e.g. scanned furniture outside every mapped room) instead of failing
 /// the whole run.
-fn build_fire_world(scene: &mut Scene) -> Result<(SurfaceFireWorld, Vec<String>), Failure> {
+fn build_fire_world(
+    scene: &mut Scene,
+    floor: Option<FloorMaterial>,
+) -> Result<(SurfaceFireWorld, Vec<String>), Failure> {
+    let catalog = material_catalog(floor);
     let mut excluded = Vec::new();
     loop {
-        match SurfaceFireWorld::from_scene(
-            scene,
-            &FireMaterialCatalog::default(),
-            SurfaceFireConfig::default(),
-        ) {
+        match SurfaceFireWorld::from_scene(scene, &catalog, SurfaceFireConfig::default()) {
             Ok(fire) => return Ok((fire, excluded)),
             Err(SurfaceFireError::ObjectOutsideGrid { object_id }) => {
                 for floor in &mut scene.floors {

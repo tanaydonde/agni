@@ -107,6 +107,13 @@ impl Default for FireMaterialCatalog {
 }
 
 impl FireMaterialCatalog {
+    /// Approximate finished solid-wood flooring: harder to ignite and slower
+    /// to peak than carpet, but with more fuel to burn.
+    #[must_use]
+    pub fn hardwood_floor() -> FireMaterialProfile {
+        material("hardwood_floor", 320.0, 300.0, 150.0, 9_000.0, 0.22, 0.6)
+    }
+
     fn furniture_material(&self, category: &str) -> &FireMaterialProfile {
         self.furniture
             .iter()

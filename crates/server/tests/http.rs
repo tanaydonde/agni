@@ -9,7 +9,8 @@ use axum::{
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tflop_server::{
-    DEMO_SCENE_JSON, DetectionOutcome, load_scene, load_scene_with_detection, router,
+    DEMO_SCENE_JSON, DetectionOutcome, load_property, load_scene, load_scene_with_detection,
+    router, router_with_property,
 };
 use tflop_world_core::World;
 use tower::ServiceExt;
@@ -740,4 +741,102 @@ fn detection_for_another_scene_is_ignored() {
             .iter()
             .all(|object| !object.id.starts_with("scan-"))
     );
+}
+
+/// The bungalow's CoStar record from the costar crate's fixture kit,
+/// relabelled for the demo room so it loads beside it.
+fn demo_property_json() -> String {
+    let kit = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../costar/fixtures/kit");
+    let mut record = tflop_costar::find_by_model_id(&kit, "zvKHR9DHNjJ").expect("fixture joins");
+    record.scan.model_id = "demo-room".to_owned();
+    serde_json::to_string(&record).expect("serializes")
+}
+
+#[tokio::test]
+async fn property_route_is_404_without_a_costar_record() {
+    let (status, body) = call(app(), "GET", "/api/property", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"], "no_property_record");
+}
+
+#[tokio::test]
+async fn property_route_serves_the_record_and_derived_profile() {
+    let scene = load_scene(DEMO_SCENE_JSON).expect("demo scene is valid");
+    let brief = load_property(&demo_property_json(), &scene).expect("record matches scene");
+    let app = router_with_property(World::new(scene), Some(brief));
+    let (status, body) = call(app, "GET", "/api/property", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["record"]["source"]["provider"], "costar");
+    assert!(body["gemini_placement"].is_boolean(), "{body}");
+    assert_eq!(body["record"]["year_built"], 1920);
+    assert_eq!(body["profile"]["occupant_count"]["value"], 6);
+    assert_eq!(
+        body["profile"]["occupant_count"]["source_field"],
+        "property.bedsMax"
+    );
+    assert_eq!(body["profile"]["floor_material"]["value"], "hardwood");
+    assert!(
+        body["profile"]["verification"]
+            .as_array()
+            .is_some_and(|v| !v.is_empty())
+    );
+}
+
+#[test]
+fn a_property_record_for_another_scan_is_rejected() {
+    let scene = load_scene(DEMO_SCENE_JSON).expect("demo scene is valid");
+    let json = demo_property_json().replace("demo-room", "someOtherId");
+    let error = load_property(&json, &scene).expect_err("wrong scan");
+    assert!(error.contains("someOtherId"), "{error}");
+}
+
+#[tokio::test]
+async fn custom_alarm_timings_change_when_occupants_react() {
+    let run = |alarm_config: Value| {
+        call(
+            app(),
+            "POST",
+            "/api/fire/simulate",
+            Some(json!({
+                "object_id": "chair-1",
+                "duration_seconds": 3.0,
+                "alarm_config": alarm_config,
+                "occupants": [{
+                    "id": "occupant-1",
+                    "floor_id": "floor-1",
+                    "position_m": { "x": 1.0, "y": 1.0, "z": 0.0 },
+                }]
+            })),
+        )
+    };
+    let (status, body) = run(json!({
+        "notice_hrr_kw": 0.0, "same_room_seconds": 0.0, "seconds_per_metre": 0.0
+    }))
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let frames = body["results"]["frames"].as_array().expect("frames");
+    let last = &frames.last().expect("last frame")["agents"][0];
+    assert_ne!(
+        last["role"]["phase"], "unaware",
+        "an instant alarm is heard"
+    );
+}
+
+#[tokio::test]
+async fn a_hardwood_floor_changes_the_fire() {
+    let run = |floor: &str| {
+        call(
+            app(),
+            "POST",
+            "/api/fire/simulate",
+            Some(
+                json!({ "object_id": "chair-1", "duration_seconds": 240.0, "floor_material": floor }),
+            ),
+        )
+    };
+    let (carpet_status, carpet) = run("carpet").await;
+    let (wood_status, wood) = run("hardwood").await;
+    assert_eq!(carpet_status, StatusCode::OK, "{carpet}");
+    assert_eq!(wood_status, StatusCode::OK, "{wood}");
+    assert_ne!(carpet["results"]["frames"], wood["results"]["frames"]);
 }

@@ -6,9 +6,10 @@ exported by the `tflop-world-core` crate and use `snake_case` JSON fields.
 
 In the fire preplan product, these tools edit **interior obstacles**
 (furniture, storage, fixed equipment) so the scene can be corrected to match a
-walkthrough. The preplan agent's full tool surface (`get_property`,
-`propose_findings`, `create_scenario`, `run_scenario`, `compare_scenarios`) is
-planned and specified in `PREPLAN_AGENT.md`.
+walkthrough. `get_property` is implemented as `GET /api/property`. The rest of
+the preplan agent's tool surface (`propose_findings`, `create_scenario`,
+`run_scenario`, `compare_scenarios`) is planned and specified in
+`PREPLAN_AGENT.md`.
 
 | Tool | Status | Rust method |
 | --- | --- | --- |
@@ -22,6 +23,7 @@ planned and specified in `PREPLAN_AGENT.md`.
 | `apply_edits` | Working | `World::apply_edits(...)` |
 | `check_edits` | Working | `World::check_edits(...)` |
 | `validate_layout` | Working | `World::validate_layout()` |
+| `get_property` | Working | `GET /api/property`: the scan's CoStar record (`tflop_costar::PropertyRecord`) and derived `FireProfile`; 404 `no_property_record` without one |
 | `spawn_occupants` | Working | Gemini proposes exactly N occupants; `Simulation::spawn_occupants` validates them and retries up to three attempts |
 | `generate_fire_scenarios` | Working | Gemini chooses N fire origins and occupied rooms; Rust resolves and validates exact occupant positions |
 

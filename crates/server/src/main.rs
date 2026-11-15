@@ -5,7 +5,10 @@
 use std::{error::Error, fs, net::SocketAddr, path::PathBuf};
 
 use clap::Parser;
-use tflop_server::{DEMO_SCENE_JSON, DetectionOutcome, load_scene_with_detection, router};
+use tflop_server::{
+    DEMO_SCENE_JSON, DetectionOutcome, load_property, load_scene_with_detection,
+    router_with_property,
+};
 use tflop_world_core::World;
 
 #[derive(Debug, Parser)]
@@ -57,8 +60,31 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
+    // The scan's CoStar record sits beside the scene as <id>.property.json.
+    let property = args
+        .scene
+        .as_ref()
+        .map(|path| path.with_extension("property.json"))
+        .and_then(|path| fs::read_to_string(&path).ok().map(|json| (path, json)))
+        .and_then(|(path, json)| match load_property(&json, &scene) {
+            Ok(brief) => {
+                println!(
+                    "tflop-server: loaded CoStar {} {} from {} ({} occupants assumed)",
+                    brief.record.source.dataset,
+                    brief.record.source.record_id,
+                    path.display(),
+                    brief.profile.occupant_count.value
+                );
+                Some(brief)
+            }
+            Err(reason) => {
+                eprintln!("tflop-server: ignoring {}: {reason}", path.display());
+                None
+            }
+        });
+
     let listener = tokio::net::TcpListener::bind(args.addr).await?;
     println!("tflop-server: serving {source} on http://{}", args.addr);
-    axum::serve(listener, router(World::new(scene))).await?;
+    axum::serve(listener, router_with_property(World::new(scene), property)).await?;
     Ok(())
 }
