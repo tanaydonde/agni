@@ -7,8 +7,6 @@ interface ActionBarProps {
   /** Who will be in the building when the simulation runs. */
   scenario: ScenarioOptions
   onScenarioChange: (scenario: Partial<ScenarioOptions>) => void
-  /** Occupant count derived from the CoStar record, offered first. */
-  suggestedOccupantCount?: number
 }
 
 export function ActionBar({
@@ -17,15 +15,7 @@ export function ActionBar({
   onOptimize,
   scenario,
   onScenarioChange,
-  suggestedOccupantCount,
 }: ActionBarProps) {
-  const counts = [
-    ...new Set([
-      ...(suggestedOccupantCount ? [suggestedOccupantCount] : []),
-      ...OCCUPANT_COUNTS,
-      scenario.occupantCount,
-    ]),
-  ].sort((a, b) => a - b)
   return (
     <div className="flex flex-col gap-2">
       <div className="flex gap-3">
@@ -58,9 +48,9 @@ export function ActionBar({
             onChange={(event) => onScenarioChange({ occupantCount: Number(event.target.value) })}
             className="rounded border border-control-border bg-white px-1.5 py-0.5 text-ink"
           >
-            {counts.map((count) => (
+            {OCCUPANT_COUNTS.map((count) => (
               <option key={count} value={count}>
-                {count === suggestedOccupantCount ? `${count} (CoStar)` : count}
+                {count}
               </option>
             ))}
           </select>

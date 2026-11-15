@@ -1,4 +1,3 @@
-import type { AlarmTimings, FloorMaterial } from '../property/types'
 import { WorldApiError, WorldServerUnavailableError } from '../scene/api'
 import {
   type CrewSpawn,
@@ -16,10 +15,6 @@ export const DEFAULT_OCCUPANT_LAYOUT: OccupantLayout = 'crowded'
 export interface ScenarioOptions {
   occupantCount: number
   layout: OccupantLayout
-  /** From the CoStar record when one is loaded; server defaults otherwise. */
-  alarmConfig?: AlarmTimings
-  injuredFraction?: number
-  floorMaterial?: FloorMaterial
 }
 
 /** One firefighter who arrives 10 s after ignition at the first exterior exit. */
@@ -32,13 +27,13 @@ export const DEFAULT_CREW: CrewSpawn = { id: 'engine-1', member_count: 1, arriva
  */
 export async function runFireSimulation(
   objectId: string,
-  scenario: ScenarioOptions = {
+  { occupantCount, layout }: ScenarioOptions = {
     occupantCount: DEFAULT_OCCUPANT_COUNT,
     layout: DEFAULT_OCCUPANT_LAYOUT,
   },
 ): Promise<SimulateFireResponse> {
-  const occupants = await spawnOccupants(scenario.occupantCount, scenario.layout)
-  const run = await requestFireSimulation(objectId, occupants.occupants, scenario)
+  const occupants = await spawnOccupants(occupantCount, layout)
+  const run = await requestFireSimulation(objectId, occupants.occupants)
   if (occupants.revision !== run.revision) {
     throw new Error('The building changed while the scenario was being generated. Run it again.')
   }
@@ -55,15 +50,11 @@ async function spawnOccupants(
 async function requestFireSimulation(
   objectId: string,
   occupants: SpawnOccupantsResponse['occupants'],
-  { alarmConfig, injuredFraction, floorMaterial }: Partial<ScenarioOptions> = {},
 ): Promise<SimulateFireResponse> {
   const run = await requestJson<SimulateFireResponse>('/api/fire/simulate/hybrid', {
     object_id: objectId,
     occupants,
     crews: [DEFAULT_CREW],
-    ...(alarmConfig && { alarm_config: alarmConfig }),
-    ...(injuredFraction !== undefined && { injured_fraction: injuredFraction }),
-    ...(floorMaterial && { floor_material: floorMaterial }),
   })
   if (run.results.schema_version !== SIMULATION_RESULTS_SCHEMA_VERSION) {
     throw new Error(

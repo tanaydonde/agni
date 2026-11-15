@@ -153,15 +153,13 @@ assumptions:
 | Floor | Hardwood (listing) | Carpet (default) |
 | Crew must verify | Balloon framing (1920), smoke alarms, fireplace, sprinklers, garage conflict | Scan is one room of 390 units, wood voids, sprinklers unknown, stair-only egress |
 
-All of these are unverified assumptions. The web app shows them in the
-Building Brief panel with their sources and prefills the run with them.
-Loading a record switches the layout to Gemini placement (`spread`) so the
-building context is used, but only when the server has `GEMINI_API_KEY`
-(`gemini_placement` in the response) and you haven't changed the count or
-layout by hand. The Brief's "Use CoStar assumptions" toggle switches
-back to server defaults, and the occupant count and layout controls still
-override those two values. Without a property file, everything behaves as
-before.
+All of these are unverified assumptions. The server applies the building
+context on its own: `spread` occupant placement sends it to Gemini with the
+room labels. A client opts into the rest by passing the profile's values to
+`/api/fire/simulate` or `/api/fire/simulate/hybrid`: `alarm_config` (custom
+`detected` timings), `injured_fraction` and `floor_material` (`carpet` or
+`hardwood`). The response's `gemini_placement` says whether `spread` is
+available. Without a property file, everything behaves as before.
 
 ## Detect furniture from the scan
 
