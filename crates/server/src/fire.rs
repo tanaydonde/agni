@@ -17,11 +17,13 @@ use tflop_cfast::{
     resolve_cfast_bin,
 };
 use tflop_simulation_core::{
-    AlarmConfig, CrewSpawn, Evacuation, FireMaterialCatalog, FireMaterialProfile, Firefighting,
-    FirefightingConfig, OccupantSpawn, Rehearsal, RehearsalError, RehearsalFrame,
-    SIMULATION_RESULTS_SCHEMA_VERSION, SimulationConfig, SimulationEngine, SimulationResults,
-    SurfaceFireConfig, SurfaceFireError, SurfaceFireWorld, choose_injured,
+    AlarmConfig, CrewSpawn, Evacuation, FireMaterialCatalog, Firefighting, FirefightingConfig,
+    OccupantSpawn, Rehearsal, RehearsalError, RehearsalFrame, SIMULATION_RESULTS_SCHEMA_VERSION,
+    SimulationConfig, SimulationEngine, SimulationResults, SurfaceFireConfig, SurfaceFireError,
+    SurfaceFireWorld, choose_injured,
 };
+// The same types `GET /api/property` suggests values in.
+use tflop_costar::{AlarmTimings, FloorMaterial};
 use tflop_world_core::{Scene, resolve_opening_connections};
 
 use crate::{SharedWorld, decode, lock};
@@ -69,36 +71,11 @@ pub(crate) struct SimulateFireRequest {
 
 const DEFAULT_INJURED_FRACTION: f64 = 0.1;
 
-#[derive(Debug, Clone, Copy, Deserialize)]
-struct AlarmTimings {
-    notice_hrr_kw: f64,
-    same_room_seconds: f64,
-    seconds_per_metre: f64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum FloorMaterial {
-    Carpet,
-    Hardwood,
-}
-
 /// The material catalog for a run, with the requested floor finish.
 fn material_catalog(floor: Option<FloorMaterial>) -> FireMaterialCatalog {
     let mut catalog = FireMaterialCatalog::default();
     if floor == Some(FloorMaterial::Hardwood) {
-        // Approximate finished solid-wood flooring: harder to ignite and
-        // slower to peak than carpet, but with more fuel to burn.
-        catalog.floor = FireMaterialProfile {
-            id: "hardwood_floor".to_owned(),
-            combustible: true,
-            ignition_temperature_c: 320.0,
-            ignition_energy_kj_per_m2: 300.0,
-            peak_hrr_kw_per_m2: 150.0,
-            fuel_energy_kj_per_m2: 9_000.0,
-            heat_transfer_fraction: 0.22,
-            cooling_kw_per_m2: 0.6,
-        };
+        catalog.floor = FireMaterialCatalog::hardwood_floor();
     }
     catalog
 }

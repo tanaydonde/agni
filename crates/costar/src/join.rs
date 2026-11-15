@@ -89,20 +89,22 @@ fn open(path: &Path) -> Result<File, JoinError> {
     })
 }
 
-/// Streams `path`, parsing only lines containing `needle`, and returns those
-/// for which `keep` holds.
+/// Streams `path`, parsing only lines that contain one of `numbers` (as
+/// digits, so the filter doesn't depend on key order or whitespace), and
+/// returns those for which `keep` holds.
 fn scan_jsonl(
     path: &Path,
-    needle: &str,
+    numbers: &[i64],
     mut keep: impl FnMut(&Value) -> bool,
 ) -> Result<Vec<Value>, JoinError> {
+    let needles: Vec<String> = numbers.iter().map(i64::to_string).collect();
     let mut found = Vec::new();
     for line in BufReader::new(open(path)?).lines() {
         let line = line.map_err(|source| JoinError::Io {
             path: path.to_owned(),
             source,
         })?;
-        if !line.contains(needle) {
+        if !needles.iter().any(|needle| line.contains(needle.as_str())) {
             continue;
         }
         let value: Value = serde_json::from_str(&line).map_err(|e| JoinError::Malformed {
@@ -117,11 +119,9 @@ fn scan_jsonl(
 }
 
 fn record_by_id(path: &Path, id: i64) -> Result<Option<Value>, JoinError> {
-    Ok(scan_jsonl(path, &format!("\"id\":{id}"), |v| {
-        v["id"].as_i64() == Some(id)
-    })?
-    .into_iter()
-    .next())
+    Ok(scan_jsonl(path, &[id], |v| v["id"].as_i64() == Some(id))?
+        .into_iter()
+        .next())
 }
 
 struct Enums(HashMap<String, HashMap<String, String>>);
@@ -196,10 +196,14 @@ fn residential(
     let structure = &reso["structure"];
     let costar = &listing["costarFeatureValues"];
 
-    let year_built = p["yearBuilt"]
-        .as_i64()
-        .or_else(|| structure["yearBuilt"].as_i64())
-        .and_then(|y| i32::try_from(y).ok());
+    let (year_built, year_field) = match p["yearBuilt"].as_i64() {
+        Some(y) => (Some(y), "property.yearBuilt"),
+        None => (
+            structure["yearBuilt"].as_i64(),
+            "resoValues.structure.yearBuilt",
+        ),
+    };
+    let year_built = year_built.and_then(|y| i32::try_from(y).ok());
     let stories = u(&p["stories"]).or_else(|| u(&structure["stories"]));
     let area = p["sqftMax"].as_f64().or_else(|| p["sqftMin"].as_f64());
     let bedrooms = u(&p["bedsMax"]).or_else(|| u(&p["bedsMin"]));
@@ -231,7 +235,13 @@ fn residential(
     .filter_map(|field| {
         let (a, b) = (reso[field].as_bool()?, costar[field].as_bool()?);
         (a != b).then(|| Conflict {
-            label: field.trim_start_matches("has").to_owned(),
+            label: match field {
+                "hasGarage" => "Garage",
+                "hasFireplace" => "Fireplace",
+                "hasBasement" => "Basement",
+                _ => "Hardwood floors",
+            }
+            .to_owned(),
             values: vec![
                 fact(field, a, &format!("resoValues.{field}")),
                 fact(field, b, &format!("costarFeatureValues.{field}")),
@@ -251,7 +261,7 @@ fn residential(
         s(&p["mlsPropertyType"]),
         "property.mlsPropertyType",
     );
-    f.add("Year built", year_built, "property.yearBuilt");
+    f.add("Year built", year_built, year_field);
     f.add("Stories", stories, "property.stories");
     f.add("Living area (sq ft)", area, "property.sqftMax");
     f.add("Bedrooms", bedrooms, "property.bedsMax");
@@ -543,33 +553,85 @@ fn scan_attachment(p: &Value, model_id: &str) -> (Option<String>, Option<String>
 fn current_tenants(kit: &Path, enums: &Enums, property_id: i64) -> Result<Vec<Tenant>, JoinError> {
     let occupancies = scan_jsonl(
         &kit.join("data/location-occupancy.jsonl"),
-        &format!("\"propertyId\":{property_id}"),
+        &[property_id],
         |o| o["propertyId"].as_i64() == Some(property_id) && o["toDate"].is_null(),
     )?;
+    // `tenantLocationId` is the company-detail `id` (kit index.md). A company
+    // with several suites is listed once; a null id is an unknown tenant.
     let ids: BTreeSet<i64> = occupancies
         .iter()
         .filter_map(|o| o["tenantLocationId"].as_i64())
         .collect();
-    let unknown = occupancies.len()
-        - occupancies
-            .iter()
-            .filter(|o| o["tenantLocationId"].is_i64())
-            .count();
-    let companies = scan_jsonl(&kit.join("data/company-detail.jsonl"), "\"id\":", |c| {
-        c["id"].as_i64().is_some_and(|id| ids.contains(&id))
-    })?;
-    let mut tenants: Vec<Tenant> = companies
-        .iter()
-        .map(|c| Tenant {
-            name: s(&c["name"]),
-            industry: enums.decode("IndustryType", &c["profile"]["industryType"]),
-            employees: u(&c["numEmployees"]),
-        })
+    let wanted: Vec<i64> = ids.iter().copied().collect();
+    let companies: HashMap<i64, Value> =
+        scan_jsonl(&kit.join("data/company-detail.jsonl"), &wanted, |c| {
+            c["id"].as_i64().is_some_and(|id| ids.contains(&id))
+        })?
+        .into_iter()
+        .filter_map(|c| Some((c["id"].as_i64()?, c)))
         .collect();
-    tenants.extend((0..unknown).map(|_| Tenant {
+    let unknown = Tenant {
         name: None,
         industry: None,
         employees: None,
-    }));
+    };
+    let mut tenants: Vec<Tenant> = ids
+        .iter()
+        .map(|id| match companies.get(id) {
+            Some(c) => Tenant {
+                name: s(&c["name"]),
+                industry: enums.decode("IndustryType", &c["profile"]["industryType"]),
+                employees: u(&c["numEmployees"]),
+            },
+            // Named in the occupancy but missing from company-detail.
+            None => unknown.clone(),
+        })
+        .collect();
+    let unnamed = occupancies
+        .iter()
+        .filter(|o| !o["tenantLocationId"].is_i64())
+        .count();
+    tenants.extend(std::iter::repeat_n(unknown, unnamed));
     Ok(tenants)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+
+    #[test]
+    fn every_current_tenancy_is_counted_once_per_tenant() {
+        let kit = tempfile::tempdir().unwrap();
+        let data = kit.path().join("data");
+        fs::create_dir(&data).unwrap();
+        // Company 7 has two suites, company 8 is missing from company-detail,
+        // one tenant is unknown, and one tenancy has ended. Spacing varies.
+        fs::write(
+            data.join("location-occupancy.jsonl"),
+            [
+                r#"{"id":1,"propertyId":42,"tenantLocationId":7,"toDate":null}"#,
+                r#"{"id":2, "propertyId": 42, "tenantLocationId": 7}"#,
+                r#"{"id":3,"propertyId":42,"tenantLocationId":8,"toDate":null}"#,
+                r#"{"id":4,"propertyId":42,"tenantLocationId":null,"toDate":null}"#,
+                r#"{"id":5,"propertyId":42,"tenantLocationId":9,"toDate":"2020-01-01"}"#,
+                r#"{"id":6,"propertyId":43,"tenantLocationId":7,"toDate":null}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        fs::write(
+            data.join("company-detail.jsonl"),
+            r#"{"id": 7, "name": "Acme", "numEmployees": 12}"#,
+        )
+        .unwrap();
+        let enums = Enums(HashMap::new());
+
+        let tenants = current_tenants(kit.path(), &enums, 42).unwrap();
+
+        let names: Vec<_> = tenants.iter().map(|t| t.name.as_deref()).collect();
+        assert_eq!(names, [Some("Acme"), None, None]);
+        assert_eq!(tenants[0].employees, Some(12));
+    }
 }

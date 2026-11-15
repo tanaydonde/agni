@@ -112,27 +112,33 @@ pub(crate) async fn spawn_occupants(
     }
 
     let snapshot = lock(&world).get_scene();
-    let building_context = property.as_ref().as_ref().map(|brief| {
-        let rooms = snapshot
-            .scene
-            .floors
-            .iter()
-            .flat_map(|floor| &floor.rooms)
-            .filter_map(|room| {
-                let label = room
-                    .label
-                    .clone()
-                    .filter(|label| !label.is_empty())
-                    .or_else(|| room.classifications.first().map(|c| c.label.clone()))?;
-                Some(format!("{}={label}", room.id))
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!(
-            "{} Room labels by room id: {rooms}.",
-            brief.profile.occupant_context.value
-        )
-    });
+    // Only Gemini placement reads the building context; crowded skips it.
+    let gemini_placement = request.layout != OccupantLayout::Crowded;
+    let building_context = property
+        .as_ref()
+        .as_ref()
+        .filter(|_| gemini_placement)
+        .map(|brief| {
+            let rooms = snapshot
+                .scene
+                .floors
+                .iter()
+                .flat_map(|floor| &floor.rooms)
+                .filter_map(|room| {
+                    let label = room
+                        .label
+                        .clone()
+                        .filter(|label| !label.is_empty())
+                        .or_else(|| room.classifications.first().map(|c| c.label.clone()))?;
+                    Some(format!("{}={label}", room.id))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "{} Room labels by room id: {rooms}.",
+                brief.profile.occupant_context.value
+            )
+        });
     let mut simulation = match Simulation::new(snapshot.scene, SimulationConfig::default()) {
         Ok(simulation) => simulation,
         Err(error) => return error_response(AgentError::Simulation(error.to_string())),
@@ -373,6 +379,11 @@ struct GeminiProvider {
     api_key: String,
     model: String,
     http: reqwest::Client,
+}
+
+/// Whether `spread` placement can run (Gemini is configured).
+pub(crate) fn gemini_configured() -> bool {
+    GeminiProvider::from_env().is_ok()
 }
 
 impl GeminiProvider {

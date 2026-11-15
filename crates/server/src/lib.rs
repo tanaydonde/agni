@@ -195,7 +195,14 @@ pub fn router_with_property(world: World, property: Option<PropertyBrief>) -> Ro
 
 async fn get_property(Extension(property): Extension<SharedProperty>) -> Response {
     match property.as_ref() {
-        Some(brief) => Json(brief).into_response(),
+        // `gemini_placement` tells the UI whether it can use Gemini's
+        // context-aware `spread` layout or must stay with `crowded`.
+        Some(brief) => Json(json!({
+            "record": brief.record,
+            "profile": brief.profile,
+            "gemini_placement": occupant_agent::gemini_configured(),
+        }))
+        .into_response(),
         None => (
             StatusCode::NOT_FOUND,
             Json(json!({

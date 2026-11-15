@@ -564,6 +564,7 @@ async fn property_route_serves_the_record_and_derived_profile() {
     let (status, body) = call(app, "GET", "/api/property", None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["record"]["source"]["provider"], "costar");
+    assert!(body["gemini_placement"].is_boolean(), "{body}");
     assert_eq!(body["record"]["year_built"], 1920);
     assert_eq!(body["profile"]["occupant_count"]["value"], 6);
     assert_eq!(

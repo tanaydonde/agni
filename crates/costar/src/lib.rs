@@ -13,7 +13,9 @@ pub mod profile;
 use serde::{Deserialize, Serialize};
 
 pub use join::{JoinError, find_by_model_id};
-pub use profile::{Derived, FireProfile, FloorMaterial, ProfileInputs, derive};
+pub use profile::{
+    AlarmTimings, Derived, FireProfile, FloorMaterial, ProfileInputs, VerificationItem, derive,
+};
 
 /// Bumped when `PropertyRecord`'s shape changes incompatibly.
 pub const PROPERTY_SCHEMA_VERSION: u32 = 1;

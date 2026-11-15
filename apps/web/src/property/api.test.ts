@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fetchProperty, scenarioFromProperty } from './api'
+import { fetchProperty, isUntouchedScenario, scenarioFromProperty, scenarioWithoutProperty } from './api'
 import type { PropertyBrief } from './types'
 
 const derived = <T,>(value: T) => ({ value, source_field: 'property.bedsMax', rationale: 'test' })
@@ -27,6 +27,7 @@ const brief: PropertyBrief = {
     floor_material: derived('hardwood' as const),
     verification: [],
   },
+  gemini_placement: true,
 }
 
 afterEach(() => vi.unstubAllGlobals())
@@ -40,6 +41,32 @@ describe('property', () => {
       injuredFraction: 0.15,
       floorMaterial: 'hardwood',
     })
+  })
+
+  it('keeps the current layout when the server cannot run Gemini placement', () => {
+    expect(scenarioFromProperty({ ...brief, gemini_placement: false })).not.toHaveProperty('layout')
+  })
+
+  it('switching CoStar off restores defaults only for values CoStar still owns', () => {
+    const costar = { occupantCount: 6, layout: 'spread' as const }
+    expect(scenarioWithoutProperty(brief, costar)).toEqual({
+      alarmConfig: undefined,
+      injuredFraction: undefined,
+      floorMaterial: undefined,
+      occupantCount: 50,
+      layout: 'crowded',
+    })
+    const byHand = { occupantCount: 20, layout: 'crowded' as const }
+    expect(scenarioWithoutProperty(brief, byHand)).toEqual({
+      alarmConfig: undefined,
+      injuredFraction: undefined,
+      floorMaterial: undefined,
+    })
+  })
+
+  it('prefills only a scenario the user has not changed', () => {
+    expect(isUntouchedScenario({ occupantCount: 50, layout: 'crowded' })).toBe(true)
+    expect(isUntouchedScenario({ occupantCount: 20, layout: 'crowded' })).toBe(false)
   })
 
   it('is null when the server has no CoStar record or is down', async () => {

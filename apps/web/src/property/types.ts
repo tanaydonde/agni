@@ -54,4 +54,6 @@ export interface FireProfile {
 export interface PropertyBrief {
   record: PropertyRecord
   profile: FireProfile
+  /** Whether the server can run Gemini's context-aware `spread` placement. */
+  gemini_placement: boolean
 }

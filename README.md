@@ -156,7 +156,9 @@ assumptions:
 All of these are unverified assumptions. The web app shows them in the
 Building Brief panel with their sources and prefills the run with them.
 Loading a record switches the layout to Gemini placement (`spread`) so the
-building context is used. The Brief's "Use CoStar assumptions" toggle switches
+building context is used, but only when the server has `GEMINI_API_KEY`
+(`gemini_placement` in the response) and you haven't changed the count or
+layout by hand. The Brief's "Use CoStar assumptions" toggle switches
 back to server defaults, and the occupant count and layout controls still
 override those two values. Without a property file, everything behaves as
 before.

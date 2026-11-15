@@ -6,7 +6,12 @@ import { BuildingBrief } from './components/BuildingBrief'
 import { ChatPanel } from './components/ChatPanel'
 import { SceneViewport } from './components/SceneViewport'
 import { useFireStore } from './fire/fireStore'
-import { SCENARIO_WITHOUT_PROPERTY, fetchProperty, scenarioFromProperty } from './property/api'
+import {
+  fetchProperty,
+  isUntouchedScenario,
+  scenarioFromProperty,
+  scenarioWithoutProperty,
+} from './property/api'
 import type { PropertyBrief } from './property/types'
 import { useEditorStore } from './scene/editorStore'
 
@@ -23,17 +28,22 @@ export default function App() {
 
   const toggleCostar = (on: boolean) => {
     setUseCostar(on)
-    if (property) setScenario(on ? scenarioFromProperty(property) : SCENARIO_WITHOUT_PROPERTY)
+    if (!property) return
+    const current = useFireStore.getState().scenario
+    setScenario(on ? scenarioFromProperty(property) : scenarioWithoutProperty(property, current))
   }
 
-  // The scan's CoStar record prefills the scenario. The Brief's toggle switches
-  // all of it off; the occupant count and layout controls override those two.
+  // The scan's CoStar record prefills the scenario unless the user already
+  // changed it by hand. The Brief's toggle switches the CoStar values off; the
+  // occupant count and layout controls override those two.
   useEffect(() => {
     let cancelled = false
     void fetchProperty().then((brief) => {
       if (cancelled || !brief) return
       setProperty(brief)
-      setScenario(scenarioFromProperty(brief))
+      if (isUntouchedScenario(useFireStore.getState().scenario)) {
+        setScenario(scenarioFromProperty(brief))
+      }
     })
     return () => {
       cancelled = true
@@ -56,7 +66,7 @@ export default function App() {
           onRunSimulation={() => selectedObjectId && void startFire(selectedObjectId)}
           scenario={scenario}
           onScenarioChange={setScenario}
-          suggestedOccupantCount={property?.profile.occupant_count.value}
+          suggestedOccupantCount={useCostar ? property?.profile.occupant_count.value : undefined}
         />
         <AssetPalette />
         <ChatPanel messages={messages} onSend={handleSend} />
