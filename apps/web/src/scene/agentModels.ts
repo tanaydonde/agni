@@ -11,6 +11,7 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import type { AgentFrame } from '../fire/types'
+import type { WaterStream } from '../fire/waterRenderer'
 
 export type AgentKind = AgentFrame['role']['type']
 
@@ -245,44 +246,31 @@ export function agentPose(agent: AgentFrame): AgentPose {
   return 'standing'
 }
 
-/** Half the spread of the drawn hose stream; matches the simulation's nozzle. */
-const STREAM_HALF_ANGLE_RADIANS = (15 * Math.PI) / 180
 const NOZZLE_HEIGHT_M = 1.1
+/** The nozzle is held out in front of the body, toward the target. */
+const NOZZLE_FORWARD_M = 0.4
 const STREAM_TARGET_HEIGHT_M = 0.3
 
 /**
- * Where to draw a firefighter's hose stream: a cone with its tip at the
- * nozzle, widening toward where it's aimed. For a unit cone pointing along
- * +Y with its tip at +Y (three.js's ConeGeometry), in Z-up world metres.
- * Null when the firefighter isn't spraying.
+ * The stream a spraying firefighter throws: from the nozzle, held at waist
+ * height in front of them, to just above the spot they're aiming at. Null
+ * when the firefighter isn't spraying. The stream's ID is the firefighter's.
  */
-export function nozzleStream(agent: AgentFrame): {
-  position: [number, number, number]
-  quaternion: [number, number, number, number]
-  scale: [number, number, number]
-} | null {
+export function hoseStream(agent: AgentFrame): WaterStream | null {
   if (agent.role.type !== 'firefighter' || !agent.role.nozzle_target_m) return null
-  const target = agent.role.nozzle_target_m
-  const start = {
-    x: agent.position_m.x,
-    y: agent.position_m.y,
-    z: agent.position_m.z + NOZZLE_HEIGHT_M,
+  const aim = agent.role.nozzle_target_m
+  const target = { x: aim.x, y: aim.y, z: aim.z + STREAM_TARGET_HEIGHT_M }
+  const { x, y, z } = agent.position_m
+  const away = Math.hypot(target.x - x, target.y - y)
+  // Never held out past halfway to a target that is very close.
+  const reach = away > 1e-6 ? Math.min(NOZZLE_FORWARD_M, away / 2) / away : 0
+  const nozzle = {
+    x: x + (target.x - x) * reach,
+    y: y + (target.y - y) * reach,
+    z: z + NOZZLE_HEIGHT_M,
   }
-  const end = { x: target.x, y: target.y, z: target.z + STREAM_TARGET_HEIGHT_M }
-  const d = { x: end.x - start.x, y: end.y - start.y, z: end.z - start.z }
-  const length = Math.hypot(d.x, d.y, d.z)
-  if (length < 1e-6) return null
-  const b = { x: d.x / length, y: d.y / length, z: d.z / length }
-  // Turn -Y (away from the cone's tip) onto the stream direction, so the tip
-  // sits at the nozzle: q = (a × b, 1 + a · b) for a = (0, -1, 0), normalized.
-  const raw: [number, number, number, number] = [-b.z, 0, b.x, 1 - b.y]
-  const norm = Math.hypot(...raw) || 1
-  const radius = length * Math.tan(STREAM_HALF_ANGLE_RADIANS)
-  return {
-    position: [(start.x + end.x) / 2, (start.y + end.y) / 2, (start.z + end.z) / 2],
-    quaternion: raw.map((component) => component / norm) as [number, number, number, number],
-    scale: [radius, length, radius],
-  }
+  if (Math.hypot(target.x - nozzle.x, target.y - nozzle.y, target.z - nozzle.z) < 1e-6) return null
+  return { id: agent.id, nozzle, target }
 }
 
 /**

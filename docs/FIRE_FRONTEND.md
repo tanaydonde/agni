@@ -75,7 +75,12 @@ scenario) and stop the clock at that run's end (`clockScope: 'run'`).
   view is fixed.
 - **Demo → Optimal route** plays the top scenario in the furnished scan from
   the lead firefighter's eyes (`firstPersonPose` in `demo/cameras.ts`), with
-  the fire and people drawn in and the usual playback bar.
+  the fire and people drawn in and the usual playback bar. A green arrow on
+  the floor (`demo/route.ts`) runs along the path the firefighter walks over
+  the whole run, ending in an arrowhead where they finish; its chevrons move
+  the way to walk. The part already walked is not drawn, and where the route
+  retraces itself the part walked sooner is on top. The camera's movement is
+  unchanged: it follows the same path the arrow is drawn on.
 - **Methods → Basic** is the editor's 3D view with its fly controls and no
   selection. **Methods → Furnished** watches from one fixed spot: the scan
   position farthest from the fire's origin inside the origin's room
@@ -176,6 +181,26 @@ The shader needs WebGL2 (3D textures). It is a fragment-shader ray march
 rather than a compute shader: compute shaders need WebGPU, and Matterport's
 Showcase renders with its own WebGL three.js.
 
+### Hose water
+
+A spraying firefighter's water is volumetric too (`fire/waterRenderer.ts`),
+in both the 3D canvas and the Matterport views. `hoseStream` in
+`scene/agentModels.ts` gives each stream's ends: the nozzle, held at waist
+height 0.4 m in front of the firefighter, and a point 0.3 m above
+`nozzle_target_m`. Between them the shader shapes the water the way a hose
+throws it:
+
+- a tight jet that rises and falls on a thrown arc (11 m/s at the nozzle),
+  wavering and tearing into ropes as it goes;
+- spray shed around it, widening to the 15° half-angle the simulation wets;
+- a burst of mist where it lands.
+
+When a firefighter starts spraying, the water takes a moment to reach the
+target; when they stop, what has left the nozzle flies on and lands. The
+stream eases to a new aim over about 0.1 s. In the first-person route view
+the lead firefighter's body is hidden but their stream is not: it leaves
+from just below the camera.
+
 ## Which data to render
 
 The final payload is `SimulationResults`. Choose a frame using
@@ -210,7 +235,7 @@ The final payload is `SimulationResults`. Choose a frame using
   1.5 m/s until it knows of fire), sees whatever is in a room once inside it,
   and enters the remaining rooms nearest first. Fire it sees or feels nearby
   comes first (`suppressing`): the hose is aimed at one burning spot at a time
-  (`role.nozzle_target_m`, drawn as a blue cone) and wets a 30° cone, so a
+  (`role.nozzle_target_m`, drawn as a stream of water) and wets a 30° cone, so a
   burning sofa takes about 25 s to knock down. Then it picks up injured people
   it has seen (`rescuing`) and carries each to the nearest exit at 0.6 m/s
   (`carrying`), and finally leaves (`withdrawing`, `exited`). Put-out cells

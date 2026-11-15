@@ -9,7 +9,7 @@ import {
   AGENT_MODEL_URLS,
   agentPose,
   agentScale,
-  nozzleStream,
+  hoseStream,
   type BodyModel,
   type BodyPart,
   extractParts,
@@ -119,29 +119,35 @@ describe('agentPose', () => {
   })
 })
 
-describe('nozzleStream', () => {
+describe('hoseStream', () => {
   const firefighter = (target?: { x: number; y: number; z: number }) =>
     ({
+      id: 'engine-1/1',
       position_m: { x: 0, y: 0, z: 0 },
       role: { type: 'firefighter', crew_id: 'engine-1', phase: 'suppressing', nozzle_target_m: target },
     }) as AgentFrame
 
-  it('draws nothing unless the hose is aimed', () => {
-    expect(nozzleStream(firefighter())).toBeNull()
+  it('is null unless the hose is aimed', () => {
+    expect(hoseStream(firefighter())).toBeNull()
   })
 
-  it('runs from the nozzle to the target, tip at the nozzle, widening with distance', () => {
-    const stream = nozzleStream(firefighter({ x: 4, y: 0, z: 0.8 }))!
-    // Nozzle at 1.1 m, target 0.3 m above its fire: both at 1.1 m here.
-    expect(stream.position).toEqual([2, 0, 1.1])
-    expect(stream.scale[1]).toBeCloseTo(4)
-    expect(stream.scale[0]).toBeCloseTo(4 * Math.tan((15 * Math.PI) / 180))
-    // The cone's tip (+Y) turned toward the nozzle (-X).
-    const tip = new THREE.Vector3(0, 1, 0).applyQuaternion(
-      new THREE.Quaternion(...stream.quaternion),
-    )
-    expect(tip.x).toBeCloseTo(-1)
-    expect(tip.y).toBeCloseTo(0)
+  it('runs from a nozzle held out toward the target to just above the target', () => {
+    const stream = hoseStream(firefighter({ x: 4, y: 0, z: 0.8 }))!
+    expect(stream.id).toBe('engine-1/1')
+    expect(stream.nozzle).toEqual({ x: 0.4, y: 0, z: 1.1 })
+    expect(stream.target.x).toBe(4)
+    expect(stream.target.z).toBeCloseTo(1.1)
+  })
+
+  it('holds the nozzle no further than halfway to a close target', () => {
+    const stream = hoseStream(firefighter({ x: 0.5, y: 0, z: 0 }))!
+    expect(stream.nozzle.x).toBeCloseTo(0.25)
+  })
+
+  it('sprays straight down at a target underfoot', () => {
+    const stream = hoseStream(firefighter({ x: 0, y: 0, z: 0 }))!
+    expect(stream.nozzle).toEqual({ x: 0, y: 0, z: 1.1 })
+    expect(stream.target.z).toBeCloseTo(0.3)
   })
 })
 

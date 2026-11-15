@@ -1,9 +1,10 @@
-import { useThree } from '@react-three/fiber'
+import { useFrame, useThree } from '@react-three/fiber'
 import { useEffect, useMemo, useState } from 'react'
 import * as THREE from 'three'
 import { useSimulationAgents } from '../fire/fireStore'
 import { AGENT_COLORS, isShownAgent, leadFirefighter } from '../fire/frames'
 import type { AgentFrame } from '../fire/types'
+import { createWaterRenderer } from '../fire/waterRenderer'
 import {
   type AgentKind,
   type AgentPose,
@@ -18,7 +19,7 @@ import {
   byTint,
   loadAgentModels,
   nextHeadings,
-  nozzleStream,
+  hoseStream,
   partGeometry,
   partMaterial,
 } from './agentModels'
@@ -27,15 +28,8 @@ import type { Floor } from './types'
 
 const BODY_HEIGHT_M = 1.7
 const UNIT_SPHERE = new THREE.SphereGeometry(1, 16, 12)
-/** Unit cone, tip up; scaled and turned per stream by `nozzleStream`. */
-const STREAM_CONE = new THREE.ConeGeometry(1, 1, 24, 1, true)
-const STREAM_MATERIAL = new THREE.MeshBasicMaterial({
-  color: '#60a5fa',
-  transparent: true,
-  opacity: 0.35,
-  depthWrite: false,
-  side: THREE.DoubleSide,
-})
+/** Longest step the water takes in one frame, so it doesn't jump after a pause. */
+const MAX_TICK_SECONDS = 0.1
 function ovalMaterials(color: string): Record<AgentTint, THREE.Material> {
   return byTint(
     (tint) =>
@@ -60,7 +54,7 @@ const ON_ITS_SIDE: [number, number, number] = [0, Math.PI / 2, 0]
  * walk. Upright ovals stand in until a model loads, or if it fails to.
  * People held up in the crowd glow red; people squeezing past glow amber.
  * Injured people lie on the floor; people being carried lie across their
- * firefighter's shoulder. A spraying firefighter's stream is a blue cone.
+ * firefighter's shoulder. A spraying firefighter throws a stream of water (HoseStreams).
  */
 export function SimulationAgents({
   floor,
@@ -152,22 +146,28 @@ export function SimulationAgentsView({
           />
         )
       })}
-      {agents.map((agent) => {
-        const stream = nozzleStream(agent)
-        return stream ? (
-          <mesh
-            key={`${agent.id}/stream`}
-            geometry={STREAM_CONE}
-            material={STREAM_MATERIAL}
-            position={stream.position}
-            quaternion={stream.quaternion}
-            scale={stream.scale}
-            raycast={noRaycast}
-          />
-        ) : null
-      })}
+      <HoseStreams agents={agents} />
     </group>
   )
+}
+
+/** The water every spraying firefighter in `agents` throws. Goes inside a Z-up group. */
+function HoseStreams({ agents }: { agents: AgentFrame[] }) {
+  const streams = useMemo(() => agents.flatMap((agent) => hoseStream(agent) ?? []), [agents])
+  const water = useMemo(() => createWaterRenderer(THREE), [])
+  useEffect(() => () => water.dispose(), [water])
+
+  const invalidate = useThree((state) => state.invalidate)
+  useEffect(() => {
+    water.setStreams(streams)
+    invalidate()
+  }, [water, streams, invalidate])
+  // Water moves on its own, so keep drawing for as long as any is in the air.
+  useFrame((_, delta) => {
+    if (water.tick(Math.min(delta, MAX_TICK_SECONDS))) invalidate()
+  })
+
+  return <primitive object={water.object} />
 }
 
 /** Lays a body on its side for lying and carried poses; a standing body is left alone. */
