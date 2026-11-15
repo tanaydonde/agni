@@ -15,6 +15,8 @@ POST /api/fire/simulate/hybrid
   "occupants": [/* OccupantSpawn records from /api/agents/spawn_occupants */],
   "crews": [{ "id": "engine-1", "arrival_time_seconds": 10, "route": ["kitchen", "hall"] }],
   "alarm": "detected",        // or "immediate": everyone knows at ignition
+  "alarm_config": { "notice_hrr_kw": 100, "same_room_seconds": 30, "seconds_per_metre": 1 }, // optional custom `detected` timings
+  "floor_material": "hardwood", // optional: "carpet" (default) or "hardwood"
   "injured_fraction": 0.1,    // share of occupants who start injured
   "seed": 0                   // repeatable randomness for the run
 }

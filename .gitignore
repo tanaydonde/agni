@@ -28,3 +28,6 @@ dist/
 # assets/furniture/models.json and CREDITS.md are tracked.
 /assets/furniture/source/
 /apps/web/public/models/furniture/
+
+# CoStar hackathon kit (licensed data; extracted locally, never committed)
+/data/costar-kit/

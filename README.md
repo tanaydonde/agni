@@ -17,19 +17,21 @@ training, not live tactical decisions.
 | `docs/AGENT_TOOLS.md` | World API tools implemented today |
 | `docs/FIRE_PREPLAN_RESEARCH.md` | Research and reasoning behind the product boundaries |
 
-What exists today is the Matterport import, the Rust world server, and the 3D
-editor below. The furniture editor now serves to model interior obstacles;
-CoStar and Vexcel ingestion, findings, the simulation, and the agent are
-planned (see `TECH_STACK.md`).
+What exists today is the Matterport import, the CoStar property join, the
+Rust world server, the fire and evacuation simulation, and the 3D editor
+below. The furniture editor now serves to model interior obstacles. Vexcel
+ingestion, findings, and the preplan agent are planned (see `TECH_STACK.md`).
 
 ## Workspace
 
 ```text
 apps/
 ├── detect-furniture/   Furniture detection CLI (scan → measured boxes)
+├── import-property/    CoStar join CLI (scan → <model-id>.property.json)
 ├── import-scene/       Matterport import CLI
 └── web/                React + Three.js editor (Vite)
 crates/
+├── costar/             CoStar record join and derived scenario assumptions
 ├── furniture-detect/   Furnished vs defurnished mesh diff into furniture boxes
 ├── matterport/         Matterport API and normalization boundary
 ├── server/             HTTP server exposing the world API (cargo run -p tflop-server)
@@ -97,7 +99,8 @@ Furniture always stands on the floor: the world snaps every object's
 
 Copy `.env.example` to `.env` and add the Matterport Token ID, Token Secret,
 and model ID. The importer also recognizes the earlier `MATTERPORT_API_KEY` and
-`MATTERPORT_API_TOKEN` names for compatibility.
+`MATTERPORT_API_TOKEN` names, and the hackathon's `COSTAR_MATTERPORT_KEY` and
+`COSTAR_MATTERPORT_PASSWORD`, for compatibility.
 
 ```bash
 cargo run -p import-scene          # model from MATTERPORT_MODEL_ID
@@ -121,6 +124,42 @@ Imported scenes include a built-in five-item furniture catalog: chair, desk,
 meeting table, sofa, and storage cabinet. These entries contain real-world
 placeholder dimensions but no GLB URI yet, so renderers should display boxes
 until final models are assigned.
+
+## Join the scan to its CoStar record
+
+Every Matterport model in the CoStar hackathon kit belongs to a commercial
+property or a residential MLS listing. Unzip the kit (password from the
+organizers) to `data/costar-kit/` (gitignored; override with
+`COSTAR_DATA_PATH`), then:
+
+```bash
+cargo run -p import-property       # model from MATTERPORT_MODEL_ID
+```
+
+This writes `data/prepared-scenes/<model-id>.property.json`. It holds the
+building facts that matter for a fire preplan, such as year built, stories,
+construction, sprinklers, elevators, bedrooms, floor finish, units and current
+tenants. Each fact names the CoStar field it came from. Agents, offices,
+emails and phone numbers are never copied. The server loads the file next to
+the scene and serves it at `GET /api/property` with derived scenario
+assumptions:
+
+| Assumption | Bungalow `zvKHR9DHNjJ` (MLS listing) | Pinemont `xKKeATjBh2m` ("After School Care") |
+| --- | --- | --- |
+| Occupants | 3 bedrooms × 2 = 6 sleepers | 747 sq ft scanned / 35 sq ft per person (IBC childcare) = 22 |
+| Who, sent to Gemini's placer | A household asleep at night, plus room labels | Children with staff, daytime |
+| Alarm | Noticed at 100 kW, 30 s to react | Noticed at 50 kW, 5 s to react |
+| Need help out | 15% | 30% |
+| Floor | Hardwood (listing) | Carpet (default) |
+| Crew must verify | Balloon framing (1920), smoke alarms, fireplace, sprinklers, garage conflict | Scan is one room of 390 units, wood voids, sprinklers unknown, stair-only egress |
+
+All of these are unverified assumptions. The web app shows them in the
+Building Brief panel with their sources and prefills the run with them.
+Loading a record switches the layout to Gemini placement (`spread`) so the
+building context is used. The Brief's "Use CoStar assumptions" toggle switches
+back to server defaults, and the occupant count and layout controls still
+override those two values. Without a property file, everything behaves as
+before.
 
 ## Detect furniture from the scan
 

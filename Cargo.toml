@@ -1,8 +1,10 @@
 [workspace]
 members = [
     "apps/detect-furniture",
+    "apps/import-property",
     "apps/import-scene",
     "crates/cfast",
+    "crates/costar",
     "crates/furniture-detect",
     "crates/matterport",
     "crates/server",

@@ -105,6 +105,39 @@ describe('runFireSimulation', () => {
     })
   })
 
+  it('sends CoStar-derived alarm, assistance share and floor into the run', async () => {
+    const fetch = vi.fn((url: string) =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => (url === '/api/agents/spawn_occupants' ? occupants : response),
+      }),
+    )
+    vi.stubGlobal('fetch', fetch)
+    const alarmConfig = { notice_hrr_kw: 100, same_room_seconds: 30, seconds_per_metre: 1 }
+
+    await runFireSimulation('sofa-1', {
+      occupantCount: 6,
+      layout: 'spread',
+      alarmConfig,
+      injuredFraction: 0.15,
+      floorMaterial: 'hardwood',
+    })
+
+    expect(fetch).toHaveBeenCalledWith('/api/fire/simulate/hybrid', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        object_id: 'sofa-1',
+        occupants: occupants.occupants,
+        crews: [DEFAULT_CREW],
+        alarm_config: alarmConfig,
+        injured_fraction: 0.15,
+        floor_material: 'hardwood',
+      }),
+    })
+  })
+
   it('shows a configured backend error instead of calling it unreachable', async () => {
     vi.stubGlobal(
       'fetch',
