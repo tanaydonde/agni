@@ -1,6 +1,7 @@
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import { ControlsHint, type Controls } from '../components/ControlsHint'
 import { burningObjectIds, fireCellBoxes } from '../fire/cells'
+import { fireVolume } from '../fire/volume'
 import { useFireFrame, useSimulationAgents } from '../fire/fireStore'
 import { isShownAgent } from '../fire/frames'
 import { FlyIndicator } from '../components/FlyIndicator'
@@ -173,9 +174,12 @@ export function ShowcaseViewport({
     [floor, scene.assets, burningKey],
   )
   const latestItems = useRef(items)
-  const fireCells = useMemo(() => fireCellBoxes(fireFrame, floor.objects), [fireFrame, floor.objects])
+  const fireVolumeNow = useMemo(
+    () => fireVolume(fireCellBoxes(fireFrame, floor.objects)),
+    [fireFrame, floor.objects],
+  )
   const fire = useRef<ShowcaseFire | null>(null)
-  const latestFireCells = useRef(fireCells)
+  const latestFireVolume = useRef(fireVolumeNow)
   const agents = useMemo(
     () =>
       simulationAgents.filter((agent) => agent.id !== hiddenAgentId && isShownAgent(agent, floor.id)),
@@ -197,9 +201,9 @@ export function ShowcaseViewport({
   }, [models])
 
   useEffect(() => {
-    latestFireCells.current = fireCells
-    fire.current?.update(fireCells)
-  }, [fireCells])
+    latestFireVolume.current = fireVolumeNow
+    fire.current?.update(fireVolumeNow)
+  }, [fireVolumeNow])
 
   useEffect(() => {
     latestAgents.current = agents
@@ -262,7 +266,7 @@ export function ShowcaseViewport({
       sdkRef.current = sdk
       furniture.current = await mountFurniture(sdk, latestItems.current)
       furnitureModels.current = mountModels(sdk, latestModels.current)
-      fire.current = await mountFire(sdk, latestFireCells.current)
+      fire.current = await mountFire(sdk, latestFireVolume.current)
       agentOverlay.current = await mountAgents(sdk, latestAgents.current)
       environment = await mountEnvironment(sdk)
       signal.throwIfAborted()
