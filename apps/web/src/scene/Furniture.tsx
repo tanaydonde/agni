@@ -1,6 +1,5 @@
 import { useEffect, useMemo } from 'react'
 import * as THREE from 'three'
-import { useFireFrame } from '../fire/fireStore'
 import { useEditorStore } from './editorStore'
 import { categoryColor, EDGE_COLOR, SELECTED_COLOR } from './furnitureStyle'
 import { FURNITURE_GROUP, Z_UP_TO_Y_UP } from './placement'
@@ -21,15 +20,6 @@ interface FurnitureProps {
 export function Furniture({ floor, assets }: FurnitureProps) {
   const selectedId = useEditorStore((state) => state.selectedObjectId)
   const assetsById = useMemo(() => new Map(assets.map((asset) => [asset.id, asset])), [assets])
-  // Furniture with fire cells turns see-through, so the cells inside show.
-  const fireFrame = useFireFrame()
-  const onFire = useMemo(
-    () =>
-      new Set(
-        fireFrame?.surface_fire.flatMap((node) => (node.source.type === 'furniture' ? [node.source.object_id] : [])),
-      ),
-    [fireFrame],
-  )
 
   return (
     <group name={FURNITURE_GROUP} rotation={Z_UP_TO_Y_UP}>
@@ -45,7 +35,6 @@ export function Furniture({ floor, assets }: FurnitureProps) {
             rotation={object.transform.rotation}
             scale={object.transform.scale}
             selected={object.id === selectedId}
-            onFire={onFire.has(object.id)}
           />
         )
       })}
@@ -61,11 +50,9 @@ interface FurnitureBoxProps {
   rotation: Quaternion
   scale: Vec3
   selected?: boolean
-  /** Has fire cells; drawn see-through so they show. */
-  onFire?: boolean
 }
 
-function FurnitureBox({ objectId, asset, position, rotation, scale, selected = false, onFire = false }: FurnitureBoxProps) {
+function FurnitureBox({ objectId, asset, position, rotation, scale, selected = false }: FurnitureBoxProps) {
   const { width_m: width, depth_m: depth, height_m: height } = asset.dimensions_m
   // Shift the box up so its bottom face sits at the origin, i.e. on the floor.
   const box = useMemo(
@@ -90,9 +77,6 @@ function FurnitureBox({ objectId, asset, position, rotation, scale, selected = f
       <mesh geometry={box} userData={{ objectId }}>
         <meshStandardMaterial
           color={categoryColor(asset.category)}
-          transparent={onFire}
-          opacity={onFire ? 0.3 : 1}
-          depthWrite={!onFire}
           emissive={selected ? SELECTED_COLOR : '#000000'}
           emissiveIntensity={selected ? 0.35 : 0}
         />

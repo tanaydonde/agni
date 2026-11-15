@@ -1,5 +1,5 @@
 import { Canvas } from '@react-three/fiber'
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type WheelEvent } from 'react'
 import { useWorld } from '../scene/api'
 import { agentsAtTime, crewStatus, frameAtTime, occupantCounts } from '../fire/frames'
 import {
@@ -12,12 +12,24 @@ import type { SimulateFireResponse } from '../fire/types'
 import { ReviewCamera } from '../scene/ReviewCamera'
 import { Furniture } from '../scene/Furniture'
 import type { FloorGeometry } from '../scene/geometry'
+import type { ModelPlacement } from '../scene/modelChoice'
 import { SceneModel } from '../scene/SceneModel'
 import { SimulationAgentsView } from '../scene/SimulationAgents'
 import { SurfaceFireView } from '../scene/SurfaceFire'
 import type { Floor, Scene } from '../scene/types'
+import { ShowcaseViewport } from '../showcase/ShowcaseViewport'
 
-export type ReviewCameraMode = 'follow' | 'overview'
+type ReviewView = 'mesh' | 'textured'
+
+const REVIEW_VIEWS: [view: ReviewView, label: string][] = [
+  ['mesh', '3D'],
+  ['textured', 'Textured'],
+]
+
+/** A scroll gesture pages once; it ends after this long without wheel events. */
+const WHEEL_GESTURE_IDLE_MS = 300
+/** Ignore tiny wheel deltas (trackpad jitter). */
+const MIN_WHEEL_DELTA = 4
 
 interface ScenarioReviewControlsProps {
   scene: Scene
@@ -26,6 +38,13 @@ interface ScenarioReviewControlsProps {
   meshUrl?: string
 }
 
+/**
+ * Scenario review: one representative run at a time, filling the view from
+ * a fixed bird's-eye overview. Page through the runs with the arrows, the
+ * dots, a scroll gesture over the view, or the ←/→ keys. Every run shares
+ * the playback clock, and paging never moves it, so each run is shown at
+ * the same moment (shorter runs hold their last frame).
+ */
 export function ScenarioReviewControls({
   scene,
   floor,
@@ -48,13 +67,65 @@ export function ScenarioReviewControls({
     clear,
   } = useFireStore()
   const runs = useMemo(() => representativeRuns(batch), [batch])
-  const [expandedPosition, setExpandedPosition] = useState<number | null>(null)
-  const [cameraMode, setCameraMode] = useState<ReviewCameraMode>('follow')
   const revision = useWorld().data?.revision
+  const canPage = runs.length > 1
+  // The page is local (not the store's representative, which clamps the
+  // shared clock) and starts over at the first run for each new batch.
+  const [page, setPage] = useState({ batch, position: 0 })
+  const position = page.batch === batch ? Math.min(page.position, Math.max(runs.length - 1, 0)) : 0
+  const showRun = useCallback(
+    (next: number) => {
+      const count = runs.length
+      if (count > 0) setPage({ batch, position: ((next % count) + count) % count })
+    },
+    [batch, runs.length],
+  )
+  // 3D mesh or Matterport's textured dollhouse. The textured player loads the
+  // first time it's shown and then stays, so switching back is instant.
+  const [view, setView] = useState<ReviewView>('mesh')
+  const [texturedOpened, setTexturedOpened] = useState(false)
+  const showView = (next: ReviewView) => {
+    if (next === 'textured') setTexturedOpened(true)
+    setView(next)
+  }
+  const previousRun = useCallback(() => showRun(position - 1), [showRun, position])
+  const nextRun = useCallback(() => showRun(position + 1), [showRun, position])
 
   useEffect(() => {
     if (batch && revision !== undefined && revision !== batch.revision) clear()
   }, [batch, revision, clear])
+
+  // ←/→ (and Page Up/Down) page through the runs, except while typing or
+  // dragging the time slider.
+  useEffect(() => {
+    if (!canPage) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey) return
+      const target = event.target as HTMLElement | null
+      if (target?.closest('input, textarea, select, [contenteditable="true"]')) return
+      if (event.key === 'ArrowRight' || event.key === 'PageDown') nextRun()
+      else if (event.key === 'ArrowLeft' || event.key === 'PageUp') previousRun()
+      else return
+      event.preventDefault()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [canPage, nextRun, previousRun])
+
+  // One page per scroll gesture, so a trackpad fling doesn't skip runs. A
+  // gesture is a run of wheel events less than WHEEL_GESTURE_IDLE_MS apart,
+  // judged by the events' own timestamps so slow frames can't split it.
+  const lastWheelAt = useRef(Number.NEGATIVE_INFINITY)
+  const onWheel = (event: WheelEvent) => {
+    if (!canPage) return
+    const delta = Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX
+    if (Math.abs(delta) < MIN_WHEEL_DELTA) return
+    const gestureInProgress = event.timeStamp - lastWheelAt.current < WHEEL_GESTURE_IDLE_MS
+    lastWheelAt.current = event.timeStamp
+    if (gestureInProgress) return
+    if (delta > 0) nextRun()
+    else previousRun()
+  }
 
   if (status === 'loading') {
     return <ReviewMessage title="Running scenarios…">Preparing four training views.</ReviewMessage>
@@ -80,61 +151,34 @@ export function ScenarioReviewControls({
   }
 
   const end = batchEndSeconds(batch)
-  const activeExpandedPosition =
-    expandedPosition !== null && expandedPosition < runs.length ? expandedPosition : null
-  const expandedRun = activeExpandedPosition === null ? null : runs[activeExpandedPosition]
 
   return (
     <>
-      <div className="absolute inset-0 grid gap-2 bg-canvas p-2 pt-12 pb-28">
-        {expandedRun ? (
-          <ReviewPanel
-            run={expandedRun}
-            position={activeExpandedPosition ?? 0}
-            clockSeconds={clockSeconds}
-            cameraMode={cameraMode}
-            scene={scene}
-            floor={floor}
-            geometry={geometry}
-            meshUrl={meshUrl}
-            expanded
-            controls={
-              <div className="flex gap-2 text-xs">
-                <ControlButton label="Return to four scenarios" onClick={() => setExpandedPosition(null)}>
-                  ← Four scenarios
-                </ControlButton>
-                <div className="flex rounded-md border border-hairline bg-white p-0.5 text-xs font-medium shadow-sm">
-                  <ModeButton active={cameraMode === 'follow'} onClick={() => setCameraMode('follow')}>
-                    Follow firefighter
-                  </ModeButton>
-                  <ModeButton active={cameraMode === 'overview'} onClick={() => setCameraMode('overview')}>
-                    Overview
-                  </ModeButton>
-                </div>
-              </div>
-            }
-          />
-        ) : (
-          <div className="grid min-h-0 grid-cols-2 grid-rows-2 gap-2">
-            {runs.map((run, position) => (
-              <ReviewPanel
-                key={`${position}:${run.results.scenario_id}`}
-                run={run}
+      <div className="absolute inset-0 flex bg-canvas p-2 pt-12 pb-28" onWheel={onWheel}>
+        <ReviewPanel
+          run={runs[position]}
+          position={position}
+          count={runs.length}
+          clockSeconds={clockSeconds}
+          scene={scene}
+          floor={floor}
+          geometry={geometry}
+          meshUrl={meshUrl}
+          textured={view === 'textured'}
+          texturedOpened={texturedOpened}
+          viewSwitch={<ViewSwitch view={view} onChange={showView} />}
+          pager={
+            canPage && (
+              <Pager
                 position={position}
-                clockSeconds={clockSeconds}
-                cameraMode="overview"
-                scene={scene}
-                floor={floor}
-                geometry={geometry}
-                meshUrl={meshUrl}
-                onExpand={() => {
-                  setCameraMode('follow')
-                  setExpandedPosition(position)
-                }}
+                count={runs.length}
+                onPrevious={previousRun}
+                onNext={nextRun}
+                onSelect={showRun}
               />
-            ))}
-          </div>
-        )}
+            )
+          }
+        />
       </div>
 
       <GlobalPlaybackControls
@@ -156,28 +200,31 @@ export function ScenarioReviewControls({
 function ReviewPanel({
   run,
   position,
+  count,
   clockSeconds,
-  cameraMode,
   scene,
   floor,
   geometry,
   meshUrl,
-  expanded = false,
-  onExpand,
-  controls,
+  textured,
+  texturedOpened,
+  viewSwitch,
+  pager,
 }: {
   run: SimulateFireResponse
   position: number
+  count: number
   clockSeconds: number
-  cameraMode: ReviewCameraMode
   scene: Scene
   floor: Floor
   geometry: FloorGeometry
   meshUrl?: string
-  expanded?: boolean
-  onExpand?: () => void
-  /** Buttons for the right of the header, e.g. the expanded view's camera modes. */
-  controls?: ReactNode
+  /** Show Matterport's textured dollhouse instead of the 3D mesh. */
+  textured: boolean
+  /** Whether the textured player has been opened (it stays mounted after). */
+  texturedOpened: boolean
+  viewSwitch: ReactNode
+  pager?: ReactNode
 }) {
   const frame = useMemo(
     () => frameAtTime(run.results.frames, clockSeconds),
@@ -191,46 +238,140 @@ function ReviewPanel({
   const total = counts.inside + counts.exited
   const burning = frame?.surface_fire.filter((node) => node.state === 'burning').length ?? 0
   const activity = crewStatus(agents)
+  const timeline = useMemo(() => ({ frame, agents }), [frame, agents])
   const stats = `Escaped ${counts.exited}/${total} · Fire ${burning} cells${activity ? ` · ${activity}` : ''}`
 
   return (
     <section
-      aria-label={`Scenario ${position + 1}`}
-      className="relative min-h-0 overflow-hidden rounded-lg border border-hairline bg-white shadow-sm"
+      aria-label={`Scenario ${position + 1} of ${count}`}
+      aria-roledescription="slide"
+      className="relative min-h-0 min-w-0 flex-1 overflow-hidden rounded-lg border border-hairline bg-white shadow-sm"
     >
-      <Canvas frameloop="demand" dpr={expanded ? [1, 2] : [1, 1.25]} camera={{ fov: 50 }}>
-        <hemisphereLight args={['#ffffff', '#d5dbe1', 1.6]} />
-        <directionalLight position={[8, 14, 6]} intensity={1.4} />
-        <SceneModel geometry={geometry} meshUrl={meshUrl} />
-        <Furniture floor={floor} assets={scene.assets} />
-        <SurfaceFireView floor={floor} frame={frame} />
-        <SimulationAgentsView floor={floor} simulationAgents={agents} />
-        <ReviewCamera mode={cameraMode} geometry={geometry} agents={agents} />
-      </Canvas>
+      {/* One canvas for every run: paging swaps the data, not the WebGL context. */}
+      <div className={`absolute inset-0 ${textured ? 'invisible' : ''}`}>
+        <Canvas frameloop="demand" dpr={[1, 2]} camera={{ fov: 50 }}>
+          <hemisphereLight args={['#ffffff', '#d5dbe1', 1.6]} />
+          <directionalLight position={[8, 14, 6]} intensity={1.4} />
+          <SceneModel geometry={geometry} meshUrl={meshUrl} />
+          <Furniture floor={floor} assets={scene.assets} />
+          <SurfaceFireView floor={floor} frame={frame} />
+          <SimulationAgentsView floor={floor} simulationAgents={agents} />
+          <ReviewCamera geometry={geometry} />
+        </Canvas>
+      </div>
+      {texturedOpened && (
+        <div className={`absolute inset-0 ${textured ? '' : 'invisible'}`}>
+          <ShowcaseViewport
+            scene={scene}
+            floor={floor}
+            models={NO_MODELS}
+            version="defurnished"
+            timeline={timeline}
+            birdsEye
+          />
+        </div>
+      )}
 
-      {/* One header row, so the badge and the buttons wrap instead of overlapping. */}
+      {/* One header row, so the stats and the pager wrap instead of overlapping. */}
       <div className="pointer-events-none absolute inset-x-2 top-2 z-10 flex flex-wrap items-start justify-between gap-2">
         <div
           title={stats}
           className="min-w-0 max-w-full rounded-md bg-ink/85 px-2.5 py-1.5 text-xs text-white shadow-sm"
         >
-          <div className="font-semibold">Scenario {position + 1}</div>
-          <div className="mt-0.5 truncate text-white/80">{stats}</div>
+          <div className="truncate">{stats}</div>
         </div>
-        <div className="pointer-events-auto ml-auto flex shrink-0 flex-wrap items-start justify-end gap-2">
-          {controls}
-          {!expanded && onExpand && (
-            <button
-              type="button"
-              onClick={onExpand}
-              className="rounded-md border border-white/30 bg-ink/85 px-2.5 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-ink"
-            >
-              Follow firefighter ↗
-            </button>
-          )}
+        <div className="pointer-events-auto ml-auto flex shrink-0 items-start gap-2">
+          {viewSwitch}
+          {pager}
         </div>
       </div>
     </section>
+  )
+}
+
+/** Stable empty list: the review's textured view draws no scanned-furniture models. */
+const NO_MODELS: ModelPlacement[] = []
+
+/** 3D mesh or Matterport's textured dollhouse, styled like the Building view switch. */
+function ViewSwitch({ view, onChange }: { view: ReviewView; onChange: (view: ReviewView) => void }) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Review view"
+      className="flex rounded-md border border-hairline bg-white p-0.5 text-xs font-medium shadow-sm"
+    >
+      {REVIEW_VIEWS.map(([value, label]) => (
+        <button
+          key={value}
+          type="button"
+          role="radio"
+          aria-checked={view === value}
+          onClick={() => onChange(value)}
+          className={
+            view === value
+              ? 'rounded bg-accent px-2.5 py-1 text-white'
+              : 'rounded px-2.5 py-1 text-ink-secondary hover:text-ink'
+          }
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** ‹ 1 / 4 › plus a dot per run; the dots jump straight to a run. */
+function Pager({
+  position,
+  count,
+  onPrevious,
+  onNext,
+  onSelect,
+}: {
+  position: number
+  count: number
+  onPrevious: () => void
+  onNext: () => void
+  onSelect: (position: number) => void
+}) {
+  return (
+    <div
+      role="group"
+      aria-label="Scenarios"
+      className="flex items-center gap-1 rounded-md border border-hairline bg-white p-0.5 text-xs font-medium text-ink shadow-sm"
+    >
+      <button
+        type="button"
+        aria-label="Previous scenario"
+        onClick={onPrevious}
+        className="rounded px-2 py-1 hover:bg-canvas"
+      >
+        ‹
+      </button>
+      <span className="min-w-10 text-center tabular-nums" aria-live="polite">
+        {position + 1} / {count}
+      </span>
+      <div className="flex items-center gap-1 px-1">
+        {Array.from({ length: count }, (_, index) => (
+          <button
+            key={index}
+            type="button"
+            aria-label={`Show scenario ${index + 1}`}
+            aria-current={index === position ? 'true' : undefined}
+            onClick={() => onSelect(index)}
+            className={`size-2 rounded-full ${index === position ? 'bg-accent' : 'bg-control-border hover:bg-ink-secondary'}`}
+          />
+        ))}
+      </div>
+      <button
+        type="button"
+        aria-label="Next scenario"
+        onClick={onNext}
+        className="rounded px-2 py-1 hover:bg-canvas"
+      >
+        ›
+      </button>
+    </div>
   )
 }
 
@@ -349,31 +490,6 @@ function ControlButton({
       aria-label={label}
       onClick={onClick}
       className="rounded border border-control-border bg-white px-2 py-1 font-medium text-ink hover:bg-canvas"
-    >
-      {children}
-    </button>
-  )
-}
-
-function ModeButton({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean
-  onClick: () => void
-  children: ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      aria-pressed={active}
-      onClick={onClick}
-      className={
-        active
-          ? 'rounded bg-accent px-2.5 py-1 text-white'
-          : 'rounded px-2.5 py-1 text-ink-secondary hover:text-ink'
-      }
     >
       {children}
     </button>

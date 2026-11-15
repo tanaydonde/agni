@@ -167,7 +167,7 @@ cargo run --release -p detect-furniture
 ```
 
 This writes `data/prepared-scenes/<model-id>.detected.json`, which the editor
-draws as translucent boxes (toggle with **Hide/Show scanned furniture**).
+draws as translucent boxes.
 
 The detector (`crates/furniture-detect`) is deterministic. Surfaces in the
 furnished mesh that are more than about 10 cm from any surface of the

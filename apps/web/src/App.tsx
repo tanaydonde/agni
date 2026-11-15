@@ -11,9 +11,8 @@ export default function App() {
   const setScenario = useFireStore((state) => state.setScenario)
 
   return (
-    <main className="flex h-full min-h-[600px] min-w-[960px] gap-4 bg-canvas p-4">
-      <SceneViewport sceneId={__SCENE_ID__} />
-      <aside className="flex w-[400px] flex-none flex-col gap-3">
+    <main className="flex h-full min-h-[600px] min-w-[960px] flex-col gap-3 bg-canvas p-3">
+      <header aria-label="Fire simulation setup" className="flex-none">
         <ActionBar
           canRunSimulation={selectedObjectId !== null && !fireLoading}
           hasSelectedOrigin={selectedObjectId !== null}
@@ -21,7 +20,8 @@ export default function App() {
           scenario={scenario}
           onScenarioChange={setScenario}
         />
-      </aside>
+      </header>
+      <SceneViewport sceneId={__SCENE_ID__} />
     </main>
   )
 }

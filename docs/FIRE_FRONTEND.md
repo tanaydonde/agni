@@ -44,12 +44,15 @@ only those returned playback copies after ranking; it does not change the
 simulation or selection calculations. Review responses also omit the large
 `frequencies` and `assignments` arrays that the UI does not display.
 
-The current review requests ten 360-second candidates and K=4. It displays
-the four returned timelines in synchronized overview panels with one global
-clock and 1x/2x/4x/8x/16x controls. A panel can be expanded into a third-person
-camera that follows the lead firefighter; returning to the grid restores the
-four-way comparison. Runs that settle before 360 seconds hold their final
-frame while the other panels continue.
+The current review requests ten 360-second candidates and K=4. It shows the
+four returned timelines one at a time, full size, from a fixed bird's-eye
+overview, with one global clock and 1x/2x/4x/8x/16x controls. The arrows, the
+dots, one scroll gesture per page, or the ←/→ keys move between runs; paging
+never moves the clock, so every run is seen at the same moment. Runs that
+settle before 360 seconds hold their final frame. A 3D / Textured switch shows
+the same run either on the 3D mesh or in Matterport's textured dollhouse, with
+the fire and people drawn into it and Showcase's mode buttons hidden so the
+view stays top-down.
 
 The batch accepts 1–32 distinct inputs. By default its `runs` array stays in
 request order even though the server executes up to four runs concurrently. A

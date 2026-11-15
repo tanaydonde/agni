@@ -72,6 +72,26 @@ export async function activateDefurnishedView(sdk: MpSdk): Promise<string | null
   return null
 }
 
+/**
+ * Moves Showcase to its dollhouse: the whole textured model seen from above,
+ * with its own orbit and zoom. Retries while an intro or other transition is
+ * still running, as stepping inside does.
+ */
+export async function showDollhouse(sdk: MpSdk): Promise<void> {
+  let lastError: unknown
+  for (let attempt = 0; attempt < STEP_INSIDE_ATTEMPTS; attempt++) {
+    await untilSettled(sdk.Mode.current)
+    try {
+      await sdk.Mode.moveTo(MODE.DOLLHOUSE)
+      return
+    } catch (error) {
+      lastError = error
+      await new Promise((resolve) => setTimeout(resolve, RETRY_MS))
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("Matterport wouldn't switch to the dollhouse view.")
+}
+
 /** The enabled scan nearest the middle of all of them: a central place to start. */
 export function centralSweep(sweeps: Pick<SweepData, 'sid' | 'enabled' | 'position'>[]): string | null {
   const enabled = sweeps.filter((sweep) => sweep.enabled)

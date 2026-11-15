@@ -12,14 +12,11 @@ interface FireInputs {
 }
 
 const COMPONENT_NAME = 'tflop.fire'
-/** Drawn after Showcase's own meshes. */
-const RENDER_ORDER = 1000
 
 /**
- * Rebuilds the cell meshes whenever `cells` changes. Cells draw on top of
- * everything (no depth test): scanned furniture here is opaque models, which
- * would otherwise hide the cells burning inside them. The catch is that fire
- * shows through walls too.
+ * Rebuilds the cell meshes whenever `cells` changes. Cells are depth-tested
+ * like any other object, so walls (and opaque furniture models) hide the
+ * fire behind them.
  */
 class FireComponent implements SceneComponent<FireInputs> {
   inputs: FireInputs = { cells: [] }
@@ -35,12 +32,11 @@ class FireComponent implements SceneComponent<FireInputs> {
     this.root = new three.Group()
     this.root.rotation.set(...Z_UP_TO_Y_UP)
     this.box = new three.BoxGeometry(1, 1, 1)
-    this.burning = new three.MeshBasicMaterial({ color: FIRE_COLOR, depthTest: false })
+    this.burning = new three.MeshBasicMaterial({ color: FIRE_COLOR })
     this.heating = new three.MeshBasicMaterial({
       color: FIRE_COLOR,
       transparent: true,
       opacity: HEATING_OPACITY,
-      depthTest: false,
       depthWrite: false,
     })
     this.outputs.objectRoot = this.root
@@ -65,7 +61,6 @@ class FireComponent implements SceneComponent<FireInputs> {
     for (const cell of this.inputs.cells) {
       const mesh = new three.Mesh(this.box, cell.burning ? this.burning : this.heating)
       mesh.name = cell.id
-      mesh.renderOrder = RENDER_ORDER
       mesh.position.set(cell.position.x, cell.position.y, cell.position.z)
       mesh.quaternion.set(cell.rotation.x, cell.rotation.y, cell.rotation.z, cell.rotation.w)
       mesh.scale.set(cell.scale.x, cell.scale.y, cell.scale.z)

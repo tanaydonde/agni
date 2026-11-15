@@ -19,7 +19,7 @@ import { SceneModel } from '../scene/SceneModel'
 import { SelectionController } from '../scene/SelectionController'
 import { SurfaceFire } from '../scene/SurfaceFire'
 import { SimulationAgents } from '../scene/SimulationAgents'
-import type { DetectedObject, Floor, Scene } from '../scene/types'
+import type { Floor, Scene } from '../scene/types'
 import { ShowcaseViewport } from '../showcase/ShowcaseViewport'
 import { ControlsHint, type Controls } from './ControlsHint'
 import { FireControls } from './FireControls'
@@ -66,9 +66,6 @@ export function SceneViewport({ sceneId }: SceneViewportProps) {
 type View = 'editor' | 'textured' | 'furnished'
 type PanelMode = 'building' | 'review'
 
-/** Stable empty list, so hiding scanned furniture doesn't rebuild every render. */
-const NO_DETECTED: DetectedObject[] = []
-
 const VIEWS: [view: View, label: string][] = [
   ['editor', 'Editor'],
   ['textured', 'Textured'],
@@ -99,19 +96,17 @@ function SceneViews({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; mes
       ),
     [detection, floor],
   )
-  const [showScanned, setShowScanned] = useState(true)
-  const detected = showScanned ? scanned : NO_DETECTED
   const { data: furnitureModels } = useFurnitureModels()
   const { elevation_m, rooms } = floor
   const geometry = useMemo(() => buildFloorGeometry({ elevation_m, rooms }), [elevation_m, rooms])
   const models = useMemo(
     () =>
       placeModels(
-        detected,
+        scanned,
         furnitureModels ?? [],
         floor.rooms.flatMap((room) => room.boundary),
       ),
-    [detected, furnitureModels, floor.rooms],
+    [scanned, furnitureModels, floor.rooms],
   )
   // Fire playback runs in whichever view is showing.
   usePlaybackClock()
@@ -199,22 +194,8 @@ function SceneViews({ scene, floor, meshUrl }: { scene: Scene; floor: Floor; mes
             ))}
           </div>
         )}
-        {mode === 'building' && (
-          <div className="flex flex-1 basis-0 justify-end">
-            {/* The editor shows scanned furniture as scene objects (merged by
-                the server); this toggle only affects the Matterport views. */}
-            {scanned.length > 0 && view !== 'editor' && (
-              <button
-                type="button"
-                aria-pressed={showScanned}
-                onClick={() => setShowScanned((shown) => !shown)}
-                className="pointer-events-auto shrink-0 rounded-md border border-hairline bg-white px-2.5 py-1 text-ink-secondary shadow-[0_4px_12px_rgba(26,31,54,0.08)] hover:text-ink aria-pressed:text-ink"
-              >
-                {showScanned ? 'Hide' : 'Show'} scanned furniture ({scanned.length})
-              </button>
-            )}
-          </div>
-        )}
+        {/* Balances the left slot so the view switch stays centered. */}
+        {mode === 'building' && <div className="flex-1 basis-0" />}
       </div>
     </>
   )
@@ -303,8 +284,6 @@ function PanelModeButton({
 const EDIT_CONTROLS: Controls = [
   [['Click'], 'Select fire origin'],
   [['Esc'], 'Deselect'],
-  [['Pinch'], 'Move to cursor'],
-  [['Swipe'], 'Look around'],
   [['⌥', 'Drag'], 'Orbit'],
   [['F'], 'Reset view'],
   [['Right-click'], 'Fly'],
@@ -326,7 +305,7 @@ function ViewportFrame({ children }: { children: ReactNode }) {
   return (
     <section
       aria-label="3D scene"
-      className="relative min-w-0 flex-1 overflow-hidden rounded-lg border border-hairline bg-white"
+      className="relative min-h-0 min-w-0 flex-1 overflow-hidden rounded-lg border border-hairline bg-white"
     >
       {children}
     </section>
