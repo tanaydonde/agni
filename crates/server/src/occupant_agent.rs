@@ -8,7 +8,7 @@ use std::time::Duration;
 use std::{env, future::Future, pin::Pin};
 
 use axum::{
-    Json,
+    Extension, Json,
     extract::{State, rejection::JsonRejection},
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -22,11 +22,11 @@ use tflop_simulation_core::{
 };
 use tflop_world_core::Vec3;
 
-use crate::{SharedWorld, decode, lock};
+use crate::{SharedProperty, SharedWorld, decode, lock};
 
 const DEFAULT_GEMINI_MODEL: &str = "gemini-3.5-flash-lite";
 const MAX_ATTEMPTS: usize = 3;
-const MAX_OCCUPANTS: usize = 200;
+pub(crate) const MAX_OCCUPANTS: usize = 200;
 const MAX_SPAWN_SITES_FOR_MODEL: usize = 2_000;
 /// Hurried evacuation walking speeds, for crowded layouts and the prompt.
 const MIN_HURRIED_SPEED_M_PER_S: f64 = 1.2;
@@ -75,6 +75,8 @@ struct ProposalRequest {
     attempt: usize,
     spawn_sites: Vec<SpawnSite>,
     feedback: Option<String>,
+    /// Who is in the building, from its CoStar record, when one is loaded.
+    building_context: Option<String>,
 }
 
 /// A Rust-verified position Gemini may select. Sites are laid out farther
@@ -96,6 +98,7 @@ trait OccupantProposalProvider {
 
 pub(crate) async fn spawn_occupants(
     State(world): State<SharedWorld>,
+    Extension(property): Extension<SharedProperty>,
     body: Result<Json<SpawnOccupantsRequest>, JsonRejection>,
 ) -> Response {
     let request = match decode(body) {
@@ -109,6 +112,33 @@ pub(crate) async fn spawn_occupants(
     }
 
     let snapshot = lock(&world).get_scene();
+    // Only Gemini placement reads the building context; crowded skips it.
+    let gemini_placement = request.layout != OccupantLayout::Crowded;
+    let building_context = property
+        .as_ref()
+        .as_ref()
+        .filter(|_| gemini_placement)
+        .map(|brief| {
+            let rooms = snapshot
+                .scene
+                .floors
+                .iter()
+                .flat_map(|floor| &floor.rooms)
+                .filter_map(|room| {
+                    let label = room
+                        .label
+                        .clone()
+                        .filter(|label| !label.is_empty())
+                        .or_else(|| room.classifications.first().map(|c| c.label.clone()))?;
+                    Some(format!("{}={label}", room.id))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "{} Room labels by room id: {rooms}.",
+                brief.profile.occupant_context.value
+            )
+        });
     let mut simulation = match Simulation::new(snapshot.scene, SimulationConfig::default()) {
         Ok(simulation) => simulation,
         Err(error) => return error_response(AgentError::Simulation(error.to_string())),
@@ -130,7 +160,7 @@ pub(crate) async fn spawn_occupants(
         Err(error) => return error_response(error),
     };
 
-    match generate_and_spawn(&mut simulation, request.count, &provider).await {
+    match generate_and_spawn(&mut simulation, request.count, building_context, &provider).await {
         Ok(generated) => Json(SpawnOccupantsResponse {
             revision: snapshot.revision,
             attempts: generated.attempts,
@@ -145,6 +175,7 @@ pub(crate) async fn spawn_occupants(
 async fn generate_and_spawn<P: OccupantProposalProvider>(
     simulation: &mut Simulation,
     count: usize,
+    building_context: Option<String>,
     provider: &P,
 ) -> Result<GeneratedOccupants, AgentError> {
     let spawn_sites = build_spawn_sites(simulation, count)?;
@@ -158,6 +189,7 @@ async fn generate_and_spawn<P: OccupantProposalProvider>(
                 attempt,
                 spawn_sites: spawn_sites.clone(),
                 feedback: feedback.clone(),
+                building_context: building_context.clone(),
             })
             .await
         {
@@ -349,6 +381,11 @@ struct GeminiProvider {
     http: reqwest::Client,
 }
 
+/// Whether `spread` placement can run (Gemini is configured).
+pub(crate) fn gemini_configured() -> bool {
+    GeminiProvider::from_env().is_ok()
+}
+
 impl GeminiProvider {
     fn from_env() -> Result<Self, AgentError> {
         let api_key = env::var("GEMINI_API_KEY")
@@ -384,10 +421,15 @@ impl GeminiProvider {
                 )
             },
         );
+        let building = request.building_context.as_deref().map_or_else(String::new, |context| {
+            format!(
+                "\n\nBuilding context from the CoStar property record: {context} Place people where that context makes them plausible (use the room labels to pick fitting rooms), and choose speeds and pre-movement delays that fit who they are."
+            )
+        });
         let sites_json = serde_json::to_string(&request.spawn_sites)
             .expect("spawn sites contain only serializable values");
         let prompt = format!(
-            "Place exactly {count} plausible occupants in this building for the beginning of a fire evacuation training scenario. Select {count} DISTINCT spawn_site_id values from the verified catalog below; never invent or alter a site ID. Spread people naturally across rooms rather than clustering them. Give every occupant a unique stable ID occupant-1 through occupant-{count}. Use hurried evacuation walking speeds between {min_speed} and {max_speed} m/s and varied nonnegative pre-movement delays. This is attempt {attempt} of {MAX_ATTEMPTS}. {retry}\n\nVerified spawn-site catalog JSON:\n{sites}",
+            "Place exactly {count} plausible occupants in this building for the beginning of a fire evacuation training scenario. Select {count} DISTINCT spawn_site_id values from the verified catalog below; never invent or alter a site ID. Spread people naturally across rooms rather than clustering them. Give every occupant a unique stable ID occupant-1 through occupant-{count}. Use hurried evacuation walking speeds between {min_speed} and {max_speed} m/s and varied nonnegative pre-movement delays. This is attempt {attempt} of {MAX_ATTEMPTS}. {retry}{building}\n\nVerified spawn-site catalog JSON:\n{sites}",
             count = request.count,
             attempt = request.attempt,
             min_speed = MIN_HURRIED_SPEED_M_PER_S,
@@ -677,7 +719,7 @@ mod tests {
         ]);
         let mut simulation = simulation();
 
-        let generated = generate_and_spawn(&mut simulation, 2, &provider)
+        let generated = generate_and_spawn(&mut simulation, 2, None, &provider)
             .await
             .expect("second proposal should pass");
 
@@ -704,7 +746,7 @@ mod tests {
         let provider = ScriptedProvider::new(vec![invalid(), invalid(), invalid()]);
         let mut simulation = simulation();
 
-        let error = generate_and_spawn(&mut simulation, 2, &provider)
+        let error = generate_and_spawn(&mut simulation, 2, None, &provider)
             .await
             .expect_err("all proposals should fail");
 
@@ -764,6 +806,33 @@ mod tests {
                 assert!(dx * dx + dy * dy >= 4.0 * OCCUPANT_RADIUS_M * OCCUPANT_RADIUS_M);
             }
         }
+    }
+
+    #[test]
+    fn the_prompt_carries_the_costar_building_context_only_when_loaded() {
+        let request = |building_context: Option<String>| ProposalRequest {
+            count: 2,
+            attempt: 1,
+            spawn_sites: Vec::new(),
+            feedback: None,
+            building_context,
+        };
+        let text = |body: Value| {
+            body["contents"][0]["parts"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        let with = text(GeminiProvider::request_body(&request(Some(
+            "A household asleep at night. Room labels by room id: r1=Bedroom.".into(),
+        ))));
+        assert!(
+            with.contains("CoStar property record: A household asleep"),
+            "{with}"
+        );
+        assert!(with.contains("r1=Bedroom"));
+        let without = text(GeminiProvider::request_body(&request(None)));
+        assert!(!without.contains("CoStar"));
     }
 
     #[test]

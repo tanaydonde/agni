@@ -11,6 +11,7 @@ reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tflop-cfast = { path = "../cfast" }
+tflop-costar = { path = "../costar" }
 tflop-furniture-detect = { path = "../furniture-detect" }
 tflop-simulation-core = { path = "../simulation-core" }
 tflop-world-core = { path = "../world-core" }

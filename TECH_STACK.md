@@ -331,7 +331,7 @@ The Axum binary can serve the compiled Vite app for a single-container demo.
 ├── crates/
 │   ├── world-core/          # scene types, commands, geometry, validation
 │   ├── matterport/          # Matterport GraphQL client and normalization
-│   ├── costar/              # CoStar JSONL ingestion and join (planned)
+│   ├── costar/              # CoStar JSONL join and derived scenario assumptions
 │   ├── vexcel/              # Vexcel imagery client and site context (planned)
 │   ├── simulation/          # hazard, occupant, and crew simulation (planned)
 │   └── server/              # Axum API, persistence, streaming

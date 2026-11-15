@@ -11,7 +11,7 @@ mod occupant_agent;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     extract::{State, rejection::JsonRejection},
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -19,6 +19,9 @@ use axum::{
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
+use tflop_costar::{
+    FireProfile, PROPERTY_SCHEMA_VERSION, ProfileInputs, PropertyRecord, derive as derive_profile,
+};
 use tflop_furniture_detect::{DETECTION_SCHEMA_VERSION, Detection, MergeSummary, merge_into_scene};
 use tflop_world_core::{
     AddObjectRequest, ApplyEditsRequest, CheckEditsRequest, MoveObjectRequest, RemoveObjectRequest,
@@ -30,6 +33,55 @@ use tflop_world_core::{
 pub const DEMO_SCENE_JSON: &str = include_str!("../fixtures/demo-room.json");
 
 pub(crate) type SharedWorld = Arc<Mutex<World>>;
+
+/// The scan's CoStar record and the scenario assumptions derived from it.
+#[derive(Debug, Clone, Serialize)]
+pub struct PropertyBrief {
+    pub record: PropertyRecord,
+    pub profile: FireProfile,
+}
+
+impl PropertyBrief {
+    /// Derives the profile, using the scene's room area for the occupant load.
+    #[must_use]
+    pub fn new(record: PropertyRecord, scene: &Scene) -> Self {
+        let area: f64 = scene
+            .floors
+            .iter()
+            .flat_map(|floor| &floor.rooms)
+            .filter_map(|room| room.dimensions.as_ref()?.area_m2)
+            .sum();
+        let profile = derive_profile(
+            &record,
+            ProfileInputs {
+                scanned_area_m2: (area > 0.0).then_some(area),
+                max_occupants: occupant_agent::MAX_OCCUPANTS,
+            },
+        );
+        Self { record, profile }
+    }
+}
+
+pub(crate) type SharedProperty = Arc<Option<PropertyBrief>>;
+
+/// Parses a `<scene>.property.json` written by `cargo run -p import-property`.
+/// A record for another scan or schema version is rejected.
+pub fn load_property(json: &str, scene: &Scene) -> Result<PropertyBrief, String> {
+    let record: PropertyRecord = serde_json::from_str(json).map_err(|error| error.to_string())?;
+    if record.schema_version != PROPERTY_SCHEMA_VERSION {
+        return Err(format!(
+            "schema v{} (this server reads v{PROPERTY_SCHEMA_VERSION}); rerun import-property",
+            record.schema_version
+        ));
+    }
+    if record.scan.model_id != scene.source.external_id {
+        return Err(format!(
+            "it is for model {}, not {}",
+            record.scan.model_id, scene.source.external_id
+        ));
+    }
+    Ok(PropertyBrief::new(record, scene))
+}
 
 /// Parses and validates a canonical scene file.
 ///
@@ -103,10 +155,18 @@ pub fn load_scene_with_detection(
 /// | `/api/world/validate_layout` | POST | `validate_layout` |
 /// | `/api/fire/simulate` | POST | none; runs the surface-fire simulation on a scene snapshot |
 /// | `/api/fire/simulate/hybrid` | POST | none; runs surface fire and CFAST, then merges both timelines |
+/// | `/api/property` | GET | none; the scan's CoStar record and derived scenario assumptions (404 without one) |
 ///
 /// Requests are serialized through a mutex, so edits apply one at a time.
 pub fn router(world: World) -> Router {
+    router_with_property(world, None)
+}
+
+/// Like `router`, with the scan's CoStar record (`load_property`) served at
+/// `/api/property` and used as context for occupant placement.
+pub fn router_with_property(world: World, property: Option<PropertyBrief>) -> Router {
     let state: SharedWorld = Arc::new(Mutex::new(world));
+    let property: SharedProperty = Arc::new(property);
     Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/api/world/scene", get(get_scene))
@@ -128,7 +188,30 @@ pub fn router(world: World) -> Router {
             "/api/agents/spawn_occupants",
             post(occupant_agent::spawn_occupants),
         )
+        .route("/api/property", get(get_property))
+        .layer(Extension(property))
         .with_state(state)
+}
+
+async fn get_property(Extension(property): Extension<SharedProperty>) -> Response {
+    match property.as_ref() {
+        // `gemini_placement` tells the UI whether it can use Gemini's
+        // context-aware `spread` layout or must stay with `crowded`.
+        Some(brief) => Json(json!({
+            "record": brief.record,
+            "profile": brief.profile,
+            "gemini_placement": occupant_agent::gemini_configured(),
+        }))
+        .into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": "no_property_record",
+                "message": "no CoStar record is loaded for this scene; run `cargo run -p import-property`"
+            })),
+        )
+            .into_response(),
+    }
 }
 
 async fn get_scene(State(world): State<SharedWorld>) -> Response {
