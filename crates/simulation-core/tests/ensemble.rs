@@ -54,6 +54,21 @@ fn computes_empirical_frequency_and_selects_diverse_representatives() {
         .expect("uncommon cell");
     assert_eq!(uncommon.simulation_count, 1);
     assert_eq!(uncommon.frequency, 1.0 / 3.0);
+
+    // Summed over time: runs a and b burn column 0 for two seconds each.
+    let heat = |column: i64| {
+        analysis
+            .heatmap
+            .iter()
+            .find(|cell| cell.column == column)
+            .expect("heatmap cell")
+    };
+    assert_eq!(analysis.heatmap.len(), 3);
+    assert_eq!(heat(0).expected_burning_seconds, 4.0 / 3.0);
+    assert_eq!(heat(0).burned_fraction, 2.0 / 3.0);
+    assert_eq!(heat(1).expected_burning_seconds, 1.0 / 3.0);
+    assert_eq!(heat(10).expected_burning_seconds, 2.0 / 3.0);
+    assert_eq!(heat(10).burned_fraction, 1.0 / 3.0);
 }
 
 #[test]
@@ -76,6 +91,32 @@ fn timing_tolerance_makes_a_one_bin_shift_similar() {
         analysis.frequencies.len(),
         2,
         "tolerance affects similarity, not the raw frequency field"
+    );
+}
+
+#[test]
+fn heatmap_covers_every_cell_under_a_wide_node_once_per_time_bin() {
+    // A 0.5 m floor cell under a furniture cell: four heatmap cells, and the
+    // stacked pair counts once.
+    let mut floor = node("floor".to_owned(), 0);
+    floor.position_m.x = 0.25;
+    floor.position_m.y = 0.25;
+    floor.dimensions_m.width_m = 0.5;
+    floor.dimensions_m.depth_m = 0.5;
+    let mut results = run("wide", &[(0.0, 0)]);
+    results.frames[0].surface_fire.push(floor);
+
+    let analysis = analyze_fire_ensemble(&[&results], 1, FireEnsembleConfig::default())
+        .expect("valid ensemble");
+
+    let cells = analysis
+        .heatmap
+        .iter()
+        .map(|cell| (cell.column, cell.row, cell.expected_burning_seconds))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        cells,
+        vec![(0, 0, 1.0), (0, 1, 1.0), (1, 0, 1.0), (1, 1, 1.0)]
     );
 }
 

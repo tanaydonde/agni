@@ -170,6 +170,17 @@ export interface SimulateFireResponse {
   /** Objects left out because they don't stand inside a room. */
   excluded_object_ids: string[]
   results: SimulationResults
+  /**
+   * Everyone at every simulation step, sent when `results.frames` are thinned
+   * for playback. Interpolating between thinned frames cuts through walls.
+   */
+  agent_frames?: AgentTimelineFrame[]
+}
+
+/** Just the agents at one simulation step. */
+export interface AgentTimelineFrame {
+  time_seconds: number
+  agents: AgentFrame[]
 }
 
 export interface FireRepresentative {
@@ -179,9 +190,22 @@ export interface FireRepresentative {
   support_fraction: number
 }
 
+/** One floor-plan cell of the batch's fire, summed over time and height. */
+export interface FireHeatmapCell {
+  /** The cell spans `column * cell_size_m` to `(column + 1) * cell_size_m` in x; rows likewise in y. */
+  column: number
+  row: number
+  /** Seconds the cell spent burning, averaged over the completed simulations. */
+  expected_burning_seconds: number
+  /** Share of the completed simulations in which the cell burned at all. */
+  burned_fraction: number
+}
+
 export interface FireEnsembleAnalysis {
   requested_top_k: number
   completed_simulation_count: number
+  config: { cell_size_m: number }
+  heatmap: FireHeatmapCell[]
   representatives: FireRepresentative[]
 }
 

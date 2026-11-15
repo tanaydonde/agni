@@ -1,25 +1,20 @@
-import { useThree } from '@react-three/fiber'
+import { useFrame, useThree } from '@react-three/fiber'
 import { useEffect, useMemo } from 'react'
 import * as THREE from 'three'
-import { FIRE_COLOR, HEATING_OPACITY, fireCellBoxes, type FireCellBox } from '../fire/cells'
+import { fireCellBoxes } from '../fire/cells'
 import { useFireFrame } from '../fire/fireStore'
 import type { SimulationFrame } from '../fire/types'
+import { fireVolume } from '../fire/volume'
+import { createFireVolumeRenderer } from '../fire/volumeRenderer'
 import { Z_UP_TO_Y_UP } from './placement'
 import type { Floor } from './types'
 
-const UNIT_BOX = new THREE.BoxGeometry(1, 1, 1)
-const BURNING = new THREE.MeshBasicMaterial({ color: FIRE_COLOR })
-const HEATING = new THREE.MeshBasicMaterial({
-  color: FIRE_COLOR,
-  transparent: true,
-  opacity: HEATING_OPACITY,
-  depthWrite: false,
-})
-const noRaycast = () => {}
+/** Longest step the flames take in one frame, so they don't jump after a pause. */
+const MAX_TICK_SECONDS = 0.1
 
 /**
- * The fire at the playback clock, drawn on one floor as orange blocks. Cells
- * ignore the pointer, so they never get in the way of selecting furniture.
+ * The fire at the playback clock, drawn on one floor as volumetric flames.
+ * They ignore the pointer, so they never get in the way of selecting furniture.
  */
 export function SurfaceFire({ floor }: { floor: Floor }) {
   const frame = useFireFrame()
@@ -34,30 +29,24 @@ export function SurfaceFireView({
   floor: Floor
   frame: SimulationFrame | undefined
 }) {
-  const boxes = useMemo(() => fireCellBoxes(frame, floor.objects), [frame, floor.objects])
+  const volume = useMemo(() => fireVolume(fireCellBoxes(frame, floor.objects)), [frame, floor.objects])
+  const fire = useMemo(() => createFireVolumeRenderer(THREE), [])
+  useEffect(() => () => fire.dispose(), [fire])
+
   // The canvas renders on demand; the clock runs outside it (usePlaybackClock).
   const invalidate = useThree((state) => state.invalidate)
-  useEffect(() => invalidate(), [boxes, invalidate])
+  useEffect(() => {
+    fire.setVolume(volume)
+    invalidate()
+  }, [fire, volume, invalidate])
+  // Flames move on their own, so keep drawing for as long as there are any.
+  useFrame((_, delta) => {
+    if (fire.tick(Math.min(delta, MAX_TICK_SECONDS))) invalidate()
+  })
 
   return (
     <group name="surface-fire" rotation={Z_UP_TO_Y_UP}>
-      {boxes.map((box) => (
-        <FireCell key={box.id} box={box} />
-      ))}
+      <primitive object={fire.object} />
     </group>
-  )
-}
-
-function FireCell({ box }: { box: FireCellBox }) {
-  const { position: p, rotation: q, scale: s } = box
-  return (
-    <mesh
-      geometry={UNIT_BOX}
-      material={box.burning ? BURNING : HEATING}
-      position={[p.x, p.y, p.z]}
-      quaternion={[q.x, q.y, q.z, q.w]}
-      scale={[s.x, s.y, s.z]}
-      raycast={noRaycast}
-    />
   )
 }

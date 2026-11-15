@@ -6,6 +6,7 @@ import {
   orbit,
   orientation,
   pinchTravel,
+  topDownZoom,
   wheelPixels,
   worldPerPixel,
   yawPitchFor,
@@ -85,5 +86,15 @@ describe('wheelPixels', () => {
   it('converts Firefox line deltas to pixels', () => {
     expect(wheelPixels({ deltaX: 1, deltaY: -2, deltaMode: 1 })).toEqual({ x: 16, y: -32 })
     expect(wheelPixels({ deltaX: 3, deltaY: 4, deltaMode: 0 })).toEqual({ x: 3, y: 4 })
+  })
+})
+
+describe('topDownZoom', () => {
+  const bounds = { min: { x: 0, y: 0 }, max: { x: 10, y: 5 }, height: 3 }
+
+  it('fits the tighter of the two spans, with the margin', () => {
+    expect(topDownZoom(bounds, 1000, 1000, 1)).toBeCloseTo(100)
+    expect(topDownZoom(bounds, 1000, 250, 1)).toBeCloseTo(50)
+    expect(topDownZoom(bounds, 1100, 1000)).toBeCloseTo(100)
   })
 })

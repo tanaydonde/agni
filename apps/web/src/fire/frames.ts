@@ -1,13 +1,23 @@
-import type { AgentFrame, FirefighterPhase, SimulationFrame } from './types'
+import type { Vec3 } from '../scene/types'
+import type {
+  AgentFrame,
+  AgentTimelineFrame,
+  FirefighterPhase,
+  SimulateFireResponse,
+  SimulationFrame,
+} from './types'
 
 /**
  * The newest frame at or before `seconds`, or undefined before the first.
  * Frames are ordered with strictly increasing times.
  */
-export function frameAtTime(frames: SimulationFrame[], seconds: number): SimulationFrame | undefined {
+export function frameAtTime<Frame extends { time_seconds: number }>(
+  frames: Frame[],
+  seconds: number,
+): Frame | undefined {
   let low = 0
   let high = frames.length - 1
-  let answer: SimulationFrame | undefined
+  let answer: Frame | undefined
   while (low <= high) {
     const middle = Math.floor((low + high) / 2)
     if (frames[middle].time_seconds <= seconds) {
@@ -39,18 +49,42 @@ const CREW_PHASE_LABELS: Record<FirefighterPhase, string> = {
   incapacitated: 'down',
 }
 
-/** What the first crew's leader is doing, for the playback bar, or null with no crew. */
-export function crewStatus(agents: AgentFrame[]): string | null {
-  const leader = agents
+/** The first crew's leader (`{crew_id}/1` of the first crew), if there is a crew. */
+export function leadFirefighter(agents: AgentFrame[]): AgentFrame | undefined {
+  return agents
     .filter((agent) => agent.role.type === 'firefighter')
     .sort((left, right) => left.id.localeCompare(right.id))[0]
+}
+
+/** Where the fire starts: the first cell to burn and its room, or null if nothing does. */
+export function fireOrigin(frames: SimulationFrame[]): { position_m: Vec3; room_id: string } | null {
+  for (const frame of frames) {
+    const node = frame.surface_fire.find((candidate) => candidate.state === 'burning')
+    if (node) return { position_m: node.position_m, room_id: node.room_id }
+  }
+  return null
+}
+
+/** What the first crew's leader is doing, for the playback bar, or null with no crew. */
+export function crewStatus(agents: AgentFrame[]): string | null {
+  const leader = leadFirefighter(agents)
   if (!leader || leader.role.type !== 'firefighter') return null
   return `Crew ${CREW_PHASE_LABELS[leader.role.phase]}`
 }
 
+/**
+ * Where everyone is in `run`: every simulation step when the server sent
+ * them (`agent_frames`), else the playback frames.
+ */
+export function agentTimeline(run: SimulateFireResponse): AgentTimelineFrame[] {
+  return run.agent_frames ?? run.results.frames
+}
+
 /** Linearly interpolated agent positions at the playback clock. Fire remains
- * frame-stepped, but people move smoothly between authoritative Rust frames. */
-export function agentsAtTime(frames: SimulationFrame[], seconds: number): AgentFrame[] {
+ * frame-stepped, but people move smoothly between authoritative Rust frames.
+ * Pass `agentTimeline(run)` so the straight lines stay short enough to keep
+ * people inside rooms. */
+export function agentsAtTime(frames: AgentTimelineFrame[], seconds: number): AgentFrame[] {
   const lower = frameAtTime(frames, seconds)
   if (!lower) return []
   const lowerIndex = frames.indexOf(lower)

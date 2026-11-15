@@ -2,13 +2,8 @@ import { Canvas } from '@react-three/fiber'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useWorld } from '../scene/api'
 import { burningObjectIds } from '../fire/cells'
-import { agentsAtTime, frameAtTime } from '../fire/frames'
-import {
-  PLAYBACK_RATES,
-  batchEndSeconds,
-  representativeRuns,
-  useFireStore,
-} from '../fire/fireStore'
+import { agentsAtTime, agentTimeline, frameAtTime } from '../fire/frames'
+import { representativeRuns, useFireStore } from '../fire/fireStore'
 import type { SimulateFireResponse } from '../fire/types'
 import { ReviewCamera } from '../scene/ReviewCamera'
 import { Furniture } from '../scene/Furniture'
@@ -21,6 +16,8 @@ import { SimulationAgentsView } from '../scene/SimulationAgents'
 import { SurfaceFireView } from '../scene/SurfaceFire'
 import type { Floor, Scene } from '../scene/types'
 import { ShowcaseViewport } from '../showcase/ShowcaseViewport'
+import { PlaybackBar } from './PlaybackBar'
+import { PrimaryButton, StageMessage } from './ViewportFrame'
 
 type ReviewView = 'mesh' | 'textured'
 
@@ -53,21 +50,7 @@ export function ScenarioReviewControls({
   geometry,
   meshUrl,
 }: ScenarioReviewControlsProps) {
-  const {
-    status,
-    batch,
-    error,
-    clockSeconds,
-    playbackRate,
-    startBatch,
-    play,
-    pause,
-    restart,
-    seekBy,
-    setClock,
-    setPlaybackRate,
-    clear,
-  } = useFireStore()
+  const { status, batch, error, clockSeconds, startBatch, clear } = useFireStore()
   const runs = useMemo(() => representativeRuns(batch), [batch])
   const revision = useWorld().data?.revision
   const canPage = runs.length > 1
@@ -115,29 +98,27 @@ export function ScenarioReviewControls({
   }, [canPage, nextRun, previousRun])
 
   if (status === 'loading') {
-    return <ReviewMessage title="Running scenarios…">Preparing four training views.</ReviewMessage>
+    return <StageMessage title="Running scenarios…">Preparing four training views.</StageMessage>
   }
 
   if (status === 'error' && !batch) {
     return (
-      <ReviewMessage title="Scenarios couldn't be completed">
+      <StageMessage title="Scenarios couldn't be completed">
         <span className="text-danger">{error}</span>
-        <RunButton startBatch={startBatch} label="Try again" />
-      </ReviewMessage>
+        <PrimaryButton onClick={() => void startBatch()}>Try again</PrimaryButton>
+      </StageMessage>
     )
   }
 
   if (!batch || runs.length === 0) {
     return (
-      <ReviewMessage title="No scenarios yet">
+      <StageMessage title="No scenarios yet">
         Gemini will choose varied fire origins and occupant locations, then prepare four synchronized
         simulations for review.
-        <RunButton startBatch={startBatch} label="Run multiple simulations" />
-      </ReviewMessage>
+        <PrimaryButton onClick={() => void startBatch()}>Run multiple simulations</PrimaryButton>
+      </StageMessage>
     )
   }
-
-  const end = batchEndSeconds(batch)
 
   return (
     <>
@@ -168,18 +149,7 @@ export function ScenarioReviewControls({
         />
       </div>
 
-      <GlobalPlaybackControls
-        status={status}
-        clockSeconds={clockSeconds}
-        end={end}
-        playbackRate={playbackRate}
-        play={play}
-        pause={pause}
-        restart={restart}
-        seekBy={seekBy}
-        setClock={setClock}
-        setPlaybackRate={setPlaybackRate}
-      />
+      <PlaybackBar label="All scenarios" />
     </>
   )
 }
@@ -218,8 +188,8 @@ function ReviewPanel({
     [run.results.frames, clockSeconds],
   )
   const agents = useMemo(
-    () => agentsAtTime(run.results.frames, clockSeconds),
-    [run.results.frames, clockSeconds],
+    () => agentsAtTime(agentTimeline(run), clockSeconds),
+    [run, clockSeconds],
   )
   const timeline = useMemo(() => ({ frame, agents }), [frame, agents])
   const burning = useMemo(() => burningObjectIds(frame), [frame])
@@ -462,126 +432,5 @@ function Pager({
         ›
       </button>
     </div>
-  )
-}
-
-function GlobalPlaybackControls({
-  status,
-  clockSeconds,
-  end,
-  playbackRate,
-  play,
-  pause,
-  restart,
-  seekBy,
-  setClock,
-  setPlaybackRate,
-}: {
-  status: string
-  clockSeconds: number
-  end: number
-  playbackRate: number
-  play: () => void
-  pause: () => void
-  restart: () => void
-  seekBy: (seconds: number) => void
-  setClock: (seconds: number) => void
-  setPlaybackRate: (rate: number) => void
-}) {
-  return (
-    <div className="absolute right-3 bottom-3 left-3 z-30 rounded-lg border border-hairline bg-white px-4 py-3 shadow-[0_4px_16px_rgba(26,31,54,0.12)]">
-      <div className="mb-2 flex items-center gap-3">
-        <span className="shrink-0 text-xs font-semibold text-ink">All scenarios</span>
-        <input
-          aria-label="Simulation time"
-          type="range"
-          min={0}
-          max={Math.max(end, 0.1)}
-          step={0.1}
-          value={clockSeconds}
-          onChange={(event) => setClock(Number(event.target.value))}
-          className="min-w-0 flex-1 accent-accent"
-        />
-        <span className="shrink-0 font-mono text-xs text-ink-secondary tabular-nums">
-          {Math.floor(clockSeconds)} s / {Math.floor(end)} s
-        </span>
-      </div>
-      <div className="flex flex-wrap items-center justify-center gap-2 text-xs">
-        <ControlButton label="Restart all scenarios" onClick={restart}>
-          Restart
-        </ControlButton>
-        <ControlButton label="Go back 10 seconds" onClick={() => seekBy(-10)}>
-          −10s
-        </ControlButton>
-        <ControlButton
-          label={status === 'playing' ? 'Pause' : 'Play'}
-          onClick={status === 'playing' ? pause : play}
-        >
-          {status === 'playing' ? 'Pause' : 'Play'}
-        </ControlButton>
-        <ControlButton label="Go forward 10 seconds" onClick={() => seekBy(10)}>
-          +10s
-        </ControlButton>
-        <div role="group" aria-label="Playback speed" className="ml-2 flex">
-          {PLAYBACK_RATES.map((rate) => (
-            <button
-              key={rate}
-              type="button"
-              aria-pressed={playbackRate === rate}
-              onClick={() => setPlaybackRate(rate)}
-              className={`border border-control-border px-2 py-1 font-medium first:rounded-l last:rounded-r [&:not(:first-child)]:-ml-px ${
-                playbackRate === rate ? 'bg-ink text-white' : 'text-ink hover:bg-canvas'
-              }`}
-            >
-              {rate}×
-            </button>
-          ))}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function ReviewMessage({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/85 p-8">
-      <div className="flex max-w-sm flex-col items-center gap-3 text-center text-sm leading-normal text-muted">
-        <h2 className="text-base font-semibold text-ink">{title}</h2>
-        <div className="flex flex-col items-center gap-3">{children}</div>
-      </div>
-    </div>
-  )
-}
-
-function RunButton({ startBatch, label }: { startBatch: () => Promise<void>; label: string }) {
-  return (
-    <button
-      type="button"
-      onClick={() => void startBatch()}
-      className="rounded-md border border-accent bg-accent px-4 py-2 font-medium text-white hover:border-accent-strong hover:bg-accent-strong"
-    >
-      {label}
-    </button>
-  )
-}
-
-function ControlButton({
-  label,
-  onClick,
-  children,
-}: {
-  label: string
-  onClick: () => void
-  children: ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      onClick={onClick}
-      className="rounded border border-control-border bg-white px-2 py-1 font-medium text-ink hover:bg-canvas"
-    >
-      {children}
-    </button>
   )
 }

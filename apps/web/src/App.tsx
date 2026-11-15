@@ -1,27 +1,16 @@
-import { ActionBar } from './components/ActionBar'
-import { SceneViewport } from './components/SceneViewport'
+import { useEffect } from 'react'
 import { useFireStore } from './fire/fireStore'
-import { useEditorStore } from './scene/editorStore'
+import { DemoPage } from './pages/DemoPage'
+import { EditorPage } from './pages/EditorPage'
+import { MethodsPage } from './pages/MethodsPage'
+import { usePathname } from './router'
 
 export default function App() {
-  const selectedObjectId = useEditorStore((state) => state.selectedObjectId)
-  const fireLoading = useFireStore((state) => state.status === 'loading')
-  const startFire = useFireStore((state) => state.start)
-  const scenario = useFireStore((state) => state.scenario)
-  const setScenario = useFireStore((state) => state.setScenario)
-
-  return (
-    <main className="flex h-full min-h-[600px] min-w-[960px] flex-col gap-3 bg-canvas p-3">
-      <header aria-label="Fire simulation setup" className="flex-none">
-        <ActionBar
-          canRunSimulation={selectedObjectId !== null && !fireLoading}
-          hasSelectedOrigin={selectedObjectId !== null}
-          onRunSimulation={() => selectedObjectId && void startFire(selectedObjectId)}
-          scenario={scenario}
-          onScenarioChange={setScenario}
-        />
-      </header>
-      <SceneViewport sceneId={__SCENE_ID__} />
-    </main>
-  )
+  const path = usePathname()
+  const restoreBatch = useFireStore((state) => state.restoreBatch)
+  // Typing a page's address reloads the app; bring back the last simulation.
+  useEffect(() => void restoreBatch(), [restoreBatch])
+  if (path === '/demo') return <DemoPage />
+  if (path === '/methods') return <MethodsPage />
+  return <EditorPage />
 }

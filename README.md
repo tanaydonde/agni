@@ -71,6 +71,11 @@ Edits live in the server's memory; restarting it reloads the file. The
 defurnished mesh is still served by Vite from
 `data/prepared-scenes/<model-id>.obj`.
 
+The app has three pages, linked in the header: the editor at `/`, the demo
+at `/demo` (run the simulations, then see the fire heatmap and the top
+scenario from the firefighter's eyes), and `/methods` (the same scenario in
+the basic and furnished worlds). See `docs/FIRE_FRONTEND.md`.
+
 ### Selecting and flying
 
 The view has two modes. The cursor is only captured while flying.

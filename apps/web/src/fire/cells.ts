@@ -1,19 +1,16 @@
-// Fire cells as plain boxes to draw, shared by the editor canvas and the
-// Matterport views. Placeholder look: swap for a shader or particles later.
+// Fire cells as boxes in canonical space, shared by the editor canvas and the
+// Matterport views. The volumetric fire is built from them (volume.ts).
 
 import type { FurnitureObject, Quaternion, Vec3 } from '../scene/types'
 import type { SimulationFrame } from './types'
 
-export const FIRE_COLOR = '#ff6a1a'
-/** Opacity of cells that are heating but not yet burning. */
-export const HEATING_OPACITY = 0.25
 /** Grows cells a little so they don't z-fight with furniture faces. */
 const CELL_INFLATE = 1.01
 /** Floor cells are 2 cm thin; lift them clear of the floor mesh. */
 const FLOOR_CELL_LIFT_M = 0.01
 const IDENTITY: Quaternion = { x: 0, y: 0, z: 0, w: 1 }
 
-/** One unit box to draw, in canonical Z-up coordinates. */
+/** One cell as a scaled unit box, in canonical Z-up coordinates. */
 export interface FireCellBox {
   id: string
   burning: boolean

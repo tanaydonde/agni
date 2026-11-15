@@ -1,17 +1,21 @@
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import { ControlsHint, type Controls } from '../components/ControlsHint'
 import { burningObjectIds, fireCellBoxes } from '../fire/cells'
+import { fireVolume } from '../fire/volume'
 import { useFireFrame, useSimulationAgents } from '../fire/fireStore'
 import { isShownAgent } from '../fire/frames'
 import { FlyIndicator } from '../components/FlyIndicator'
-import { wheelPixels } from '../scene/cameraMath'
+import { type CameraPose, wheelPixels } from '../scene/cameraMath'
 import type { ModelPlacement } from '../scene/modelChoice'
 import type { AgentFrame, SimulationFrame } from '../fire/types'
-import type { Floor, Scene } from '../scene/types'
+import type { Floor, Scene, Vec3 } from '../scene/types'
+import { chainLoops } from '../scene/geometry'
+import { vantagePose } from '../demo/cameras'
 import { fovFromProjection, orbitForFov, orbitPosition, orbitYawPitch, type Orbit } from '../scene/orbitCamera'
 import { type CameraDriver, createHopDriver } from './cameraDriver'
 import { activateDefurnishedView, showDollhouse, showSpaceVersion, type SpaceVersion } from './defurnish'
 import { createFlyDriver } from './flyDriver'
+import { createPoseDriver, type PoseDriver } from './poseDriver'
 import { mountAgents, type ShowcaseAgents } from './agents'
 import { mountFire, type ShowcaseFire } from './fire'
 import { furnitureItems, mountFurniture, type ShowcaseFurniture } from './furniture'
@@ -22,7 +26,9 @@ import {
   hideShowcaseControls,
   MODE,
   type MpSdk,
+  readMap,
   SWEEP_TRANSITION,
+  type SweepData,
   showcaseUrl,
   type Subscription,
   untilPlaying,
@@ -88,6 +94,25 @@ interface ShowcaseViewportProps {
   birdsEye?: boolean
   /** With `birdsEye`: the camera to show (input is handled by the caller). */
   orbit?: Orbit | null
+  /**
+   * Put the camera here (Three.js Y-up) and take no camera input: the viewer
+   * rides along instead of flying. Null holds the camera where it is. Whether
+   * the view is steered (by this or `vantageFocus`) is fixed when it mounts.
+   */
+  cameraPose?: CameraPose | null
+  /**
+   * Watch this point (canonical Z-up metres) in this room from a fixed spot
+   * chosen for the scene (see `vantagePose`), taking no camera input. Null
+   * waits for a point.
+   */
+  vantageFocus?: { position_m: Vec3; room_id: string } | null
+  /**
+   * With `vantageFocus`: start at the vantage but keep the fly controls, to
+   * look for a better spot. F goes back to the vantage.
+   */
+  flyFromVantage?: boolean
+  /** An agent to leave out, e.g. the firefighter whose eyes the camera is. */
+  hiddenAgentId?: string
 }
 
 /**
@@ -102,6 +127,10 @@ interface ShowcaseViewportProps {
  * pointer and works like the editor: right-click captures the pointer to fly
  * with a crosshair, Esc lets it go. If this Showcase won't hand over its
  * camera, WASD hops between scans and Showcase keeps its own mouse controls.
+ *
+ * With `cameraPose` or `vantageFocus` the camera is steered for the viewer
+ * instead, and the view takes no camera input at all (unless
+ * `flyFromVantage`, which only starts the flight at the vantage).
  */
 export function ShowcaseViewport({
   scene,
@@ -111,6 +140,10 @@ export function ShowcaseViewport({
   timeline,
   birdsEye = false,
   orbit = null,
+  cameraPose,
+  vantageFocus,
+  flyFromVantage = false,
+  hiddenAgentId,
 }: ShowcaseViewportProps) {
   const container = useRef<HTMLDivElement>(null)
   const inputLayer = useRef<HTMLDivElement>(null)
@@ -126,6 +159,10 @@ export function ShowcaseViewport({
   const fireFrame = timeline ? timeline.frame : storeFrame
   const simulationAgents = timeline ? timeline.agents : storeAgents
   const latestBirdsEye = useRef(birdsEye)
+  const steered = cameraPose !== undefined || (vantageFocus !== undefined && !flyFromVantage)
+  const latestSteered = useRef(steered)
+  const [poseDriver, setPoseDriver] = useState<PoseDriver | null>(null)
+  const [sweeps, setSweeps] = useState<SweepData[]>([])
   const [dollhouseReady, setDollhouseReady] = useState(false)
   /** Showcase's dollhouse camera is wider than ours; measured once it's up. */
   const dollhouseFov = useRef(DEFAULT_DOLLHOUSE_FOV_DEGREES)
@@ -137,13 +174,16 @@ export function ShowcaseViewport({
     [floor, scene.assets, burningKey],
   )
   const latestItems = useRef(items)
-  const fireCells = useMemo(() => fireCellBoxes(fireFrame, floor.objects), [fireFrame, floor.objects])
+  const fireVolumeNow = useMemo(
+    () => fireVolume(fireCellBoxes(fireFrame, floor.objects)),
+    [fireFrame, floor.objects],
+  )
   const fire = useRef<ShowcaseFire | null>(null)
-  const latestFireCells = useRef(fireCells)
+  const latestFireVolume = useRef(fireVolumeNow)
   const agents = useMemo(
     () =>
-      simulationAgents.filter((agent) => isShownAgent(agent, floor.id)),
-    [simulationAgents, floor.id],
+      simulationAgents.filter((agent) => agent.id !== hiddenAgentId && isShownAgent(agent, floor.id)),
+    [simulationAgents, floor.id, hiddenAgentId],
   )
   const agentOverlay = useRef<ShowcaseAgents | null>(null)
   const latestAgents = useRef(agents)
@@ -161,9 +201,9 @@ export function ShowcaseViewport({
   }, [models])
 
   useEffect(() => {
-    latestFireCells.current = fireCells
-    fire.current?.update(fireCells)
-  }, [fireCells])
+    latestFireVolume.current = fireVolumeNow
+    fire.current?.update(fireVolumeNow)
+  }, [fireVolumeNow])
 
   useEffect(() => {
     latestAgents.current = agents
@@ -191,6 +231,7 @@ export function ShowcaseViewport({
     let detachKeys = () => {}
     let environment: { dispose(): void } | null = null
     let dollhouseLock: Subscription | null = null
+    let steering: PoseDriver | null = null
     setStatus({ kind: 'loading', slow: false })
     const slowTimer = setTimeout(
       () => setStatus((current) => (current.kind === 'loading' ? { kind: 'loading', slow: true } : current)),
@@ -209,7 +250,10 @@ export function ShowcaseViewport({
       const sdk = await connectShowcase(iframe, signal)
       signal.throwIfAborted()
       if (iframe.contentDocument) {
-        hideShowcaseControls(iframe.contentDocument, { birdsEye: latestBirdsEye.current })
+        // A steered view hides the mode buttons too: they would walk off on their own.
+        hideShowcaseControls(iframe.contentDocument, {
+          birdsEye: latestBirdsEye.current || latestSteered.current,
+        })
       }
       await untilPlaying(sdk, signal)
       // Bird's-eye still steps inside first: going to the dollhouse from a scan
@@ -222,7 +266,7 @@ export function ShowcaseViewport({
       sdkRef.current = sdk
       furniture.current = await mountFurniture(sdk, latestItems.current)
       furnitureModels.current = mountModels(sdk, latestModels.current)
-      fire.current = await mountFire(sdk, latestFireCells.current)
+      fire.current = await mountFire(sdk, latestFireVolume.current)
       agentOverlay.current = await mountAgents(sdk, latestAgents.current)
       environment = await mountEnvironment(sdk)
       signal.throwIfAborted()
@@ -243,8 +287,21 @@ export function ShowcaseViewport({
         setStatus({ kind: 'ready', driver: null })
         return
       }
+      if (latestSteered.current) {
+        const scans = Object.values(await readMap(sdk.Sweep.data)).filter((sweep) => sweep.enabled)
+        steering = await createPoseDriver(sdk)
+        if (signal.aborted) return steering.dispose()
+        clearTimeout(slowTimer)
+        setSweeps(scans)
+        setPoseDriver(steering)
+        setStatus({ kind: 'ready', driver: null })
+        return
+      }
+      // Scans are where a vantage stands (see `vantage` below).
+      const scans = Object.values(await readMap(sdk.Sweep.data)).filter((sweep) => sweep.enabled)
       driver = await createDriver(sdk, startSweep)
       if (signal.aborted) return driver.dispose()
+      setSweeps(scans)
       // Hopping leaves the mouse to Showcase, which keeps keyboard focus once
       // clicked, so keys are caught in its window too. Free flight takes
       // input on the layer over it instead (see useFlightInput).
@@ -266,6 +323,8 @@ export function ShowcaseViewport({
       clearTimeout(slowTimer)
       detachKeys()
       driver?.dispose()
+      steering?.dispose()
+      setPoseDriver(null)
       furniture.current?.dispose()
       furniture.current = null
       furnitureModels.current?.dispose()
@@ -284,6 +343,23 @@ export function ShowcaseViewport({
 
   useDollhouseOrbit(sdkRef, dollhouseReady ? orbit : null, dollhouseFov)
 
+  const vantage = useMemo(() => {
+    if (!vantageFocus) return null
+    const room = floor.rooms.find((candidate) => candidate.id === vantageFocus.room_id)
+    const outline = room ? chainLoops(room.boundary)[0] : undefined
+    return vantagePose(scene.id, sweeps, vantageFocus.position_m, outline)
+  }, [scene.id, floor.rooms, sweeps, vantageFocus])
+  const steerTo = cameraPose ?? vantage
+  useEffect(() => {
+    if (steerTo) poseDriver?.setTarget(steerTo)
+  }, [poseDriver, steerTo])
+  // Flying from the vantage: start there (and on each new fire), then the
+  // viewer is free.
+  const flightDriver = status.kind === 'ready' ? status.driver : null
+  useEffect(() => {
+    if (flyFromVantage && vantage) flightDriver?.place?.(vantage)
+  }, [flyFromVantage, flightDriver, vantage])
+
   useFlightInput(inputLayer, status.kind === 'ready' ? status.driver : null, setFlying)
 
   if (!__MATTERPORT_SDK_KEY__) {
@@ -297,10 +373,10 @@ export function ShowcaseViewport({
 
   return (
     <div ref={container} className="absolute inset-0">
-      {/* In the bird's-eye view Showcase gets no input of its own: clicks
-          would fly inside. The review's orbit controls sit above this and
+      {/* In the bird's-eye and steered views Showcase gets no input of its
+          own: clicks would fly inside or walk away. The review's orbit controls sit above this and
           drive the camera through the `orbit` prop instead. */}
-      {birdsEye && <div aria-hidden className="absolute inset-0" />}
+      {(birdsEye || steered) && <div aria-hidden className="absolute inset-0" />}
       {freeFlight && (
         <div
           ref={inputLayer}
