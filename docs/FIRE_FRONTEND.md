@@ -55,6 +55,23 @@ the fire and people drawn into it. Like the 3D overview it is a fixed
 picture: Showcase's mode buttons are hidden and clicks don't reach it, so it
 can't fly inside, and scrolling over it pages runs as in 3D.
 
+Known limitations of the review and textured views (accepted for now):
+
+- **Textured load time.** Opening Textured takes about 8–13 s. Showcase
+  first steps inside to a scan and then moves to the dollhouse. Going straight
+  to the dollhouse from Showcase's intro is faster but leaves the model small
+  and far away, so the extra step stays.
+- **One Matterport player at a time.** The Building view's player unmounts
+  while Scenario Review is open, so returning to Building → Textured or
+  Furnished reloads it.
+- **Fire inside scanned-furniture models.** Fire cells are depth-tested like
+  any other object, so walls hide them. Burning furniture boxes turn
+  see-through so their cells show. The GLB stand-in models for scanned
+  furniture (Building → Textured) don't, so fire inside one can be hidden.
+- **Controls legend.** It lists only the essential editor controls. Trackpad
+  pinch (move to cursor) and two-finger swipe (look around) still work but
+  aren't listed.
+
 The batch accepts 1–32 distinct inputs. By default its `runs` array stays in
 request order even though the server executes up to four runs concurrently. A
 successful item has `{ "status": "completed", "index", "simulation" }`,
